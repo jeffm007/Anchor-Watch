@@ -28,6 +28,8 @@ struct GuideTopic: Identifiable {
         case bullets([String])
         case tip(String)
         case warning(String)
+        /// Equations and tables, in a fixed-width font that scrolls sideways if it's wide.
+        case formula(String)
     }
 
     let id: String
@@ -41,7 +43,7 @@ enum UserGuideContent {
         ("Getting started", [quickStart, mainScreen]),
         ("Keeping watch", [settingAnchor, alarmCircle, alarms, watchCheck, lockScreen]),
         ("Charts and weather", [charts, wind, tides, canada]),
-        ("Reference", [settings, troubleshooting, dataSources, safety]),
+        ("Reference", [settings, anchorMath, troubleshooting, dataSources, safety]),
     ]
 
     static var topics: [GuideTopic] { sections.flatMap(\.topics) }
@@ -83,18 +85,21 @@ enum UserGuideContent {
         .heading("Buttons down the right edge"),
         .bullets([
             "**Gear**: Settings and this guide.",
+            "**Anchor**: Anchoring. Set the wind, gusts, current, waves, bottom and rode out, see the rode drawn from the side, and get the safe gust limit and suggestions for your boat.",
             "**Waves**: Depth & Scope, with the tide.",
             "**Map**: choose the chart.",
             "**Wind**: show the wind forecast on the chart.",
             "**Target**: re-centre the chart on the boat and anchor.",
             "**+ and −**: zoom. You can also pinch and drag the chart with your fingers.",
         ]),
+        .text("These stay on screen unless you turn on **Settings → Fade the side buttons**. Then they fade with the bottom panel after \(GuideFacts.controlsFadeSeconds) seconds; **tap the chart** to bring them back."),
         .heading("On the chart"),
         .bullets([
-            "The blue **boat** is drawn to the real size of Nereus (53 ft) and points toward the anchor, as a boat lying to its rode does.",
+            "The blue **boat** is drawn to the real size of Nereus (47 ft) and points toward the anchor, as a boat lying to its rode does.",
             "The **anchor** symbol's red point is exactly where you dropped it.",
             "The dashed line runs from the anchor to the bow.",
-            "The purple line is the **track** of where the boat has been.",
+            "The small **dotted orange circle** round the anchor shows how far off the drop point may be: the GPS accuracy (±) when you dropped, plus the uncertainty in which way the bow pointed. The true spot is inside it about two times in three. It disappears if you move the anchor by hand.",
+            "The purple line is the **track** of where the boat has been. It starts when you drop the anchor, or as soon as you're moving if **Settings → Record track before anchoring** is on.",
             "The label under the circle reads **Nereus Circle of Safety**, and turns red when the alarm sounds.",
         ]),
         .heading("The bottom panel"),
@@ -106,6 +111,7 @@ enum UserGuideContent {
     static let settingAnchor = GuideTopic(id: "anchor", title: "Setting and moving the anchor", icon: "arrow.down.to.line", blocks: [
         .heading("Dropping it"),
         .text("Tap **Drop Anchor Here** once the boat has settled. The app uses the average of the last \(GuideFacts.averagingSeconds) seconds of GPS positions, so one stray reading can't put the anchor in the wrong place."),
+        .text("The phone is taken to be amidships, but the anchor goes over the bow, half a boat length ahead. So the app moves the drop point forward by half your boat length (from the Boat Profile) toward where the bow pointed: the direction you came in on over the last minute, if you moved at least 15 m (about 50 ft); otherwise into the forecast wind, if there's 5 knots or more. If it can't tell, it leaves the anchor at the phone and widens the dotted circle instead. A note under the controls says which it used."),
         .bullets([
             "If GPS accuracy is worse than about 26 ft, an orange warning appears and the button reads **Drop Anchor Anyway**. Waiting a minute usually helps.",
             "If accuracy is worse than about 165 ft, the button is disabled. Move the phone near a window, or outside.",
@@ -114,9 +120,11 @@ enum UserGuideContent {
         .bullets([
             "**Long-press the anchor symbol and drag** it to fine-tune the position.",
             "**Move Anchor**, then tap the chart where it should be.",
-            "**Anchor → Boat** moves the anchor to the boat's current position (averaged).",
+            "**Anchor → Boat** moves the anchor to the boat's bow (averaged position, moved forward along the rode).",
         ]),
         .text("Moving the anchor resets the Max distance and gives the alarm a fresh start."),
+        .heading("Finding the anchor from the swing"),
+        .text("After about 20 minutes at anchor, the app fits a circle to the edge of your swing to work out where the anchor really is. It shows a purple ring on the chart and a line on the bottom panel: either the swing agrees with your mark, or it says how far off the mark is with **Move there** to correct it. See **How Anchoring works it out** for the details."),
         .heading("Raising it"),
         .text("**Raise** ends the watch: it clears the anchor, the track and any alarm, and switches the audio and lock-screen card off."),
         .tip("Your anchor and radius are saved, so closing the app or restarting the phone doesn't lose the watch. If you reopen the app while at a different place, tap Raise first."),
@@ -133,7 +141,8 @@ enum UserGuideContent {
             "**Rode to pay out** = ratio × (depth + tide + bow height).",
             "**Suggested alarm radius** = how far the taut rode reaches, plus half the boat's length (the phone is assumed amidships), plus a safety margin. **Use suggested radius** applies it.",
         ]),
-        .text("Bow height, boat length and the safety margin live in the **Scope calculator** (the link on the bottom panel). Nereus is set to 53 ft."),
+        .text("Bow height and boat length live in **Settings → Boat Profile**, and also in the **Scope calculator** (the link on the bottom panel) along with the safety margin. Nereus is set to 47 ft, or 50 ft with the swim deck lowered."),
+        .text("If you enter the rode you carry in the Boat Profile, the scope screens warn when the scope calls for more than you have."),
         .tip("If the circle is too small for your GPS accuracy, the Watch check says so. A circle less than about 2½ times the GPS error invites false alarms."),
     ])
 
@@ -147,6 +156,8 @@ enum UserGuideContent {
             "**GPS too inaccurate**: positions keep arriving but none is usable for \(GuideFacts.gpsPoorSeconds) seconds.",
             "**Low battery**: \(GuideFacts.batteryAlarmPercent)% or less and not charging. You also get a quiet notice at \(GuideFacts.batteryNoticePercent)%, and another if the charger is unplugged.",
         ]),
+        .heading("Anchor dragging warning"),
+        .text("Separately from the siren, the app watches where the swing says the anchor is. If it moves steadily one way, a **red banner** says the anchor appears to be dragging, and a red arrow on the chart shows how far and which way. It can come well before the boat leaves the circle. It's a warning, not the siren: check your position and be ready to re-anchor. See **How Anchoring works it out** for how it decides."),
         .heading("Silence"),
         .text("**Silence** stops the siren. The same alarm can sound again after \(GuideFacts.snoozeSeconds) seconds if the problem is still there (\(GuideFacts.batterySnoozeMinutes) minutes for the battery alarm). Silencing one kind of alarm doesn't silence the others, and a drifting boat always takes over from a battery or GPS alarm."),
         .warning("Silence doesn't fix anything. If the boat really has dragged, deal with it, then check the circle and anchor position."),
@@ -248,9 +259,12 @@ enum UserGuideContent {
     static let settings = GuideTopic(id: "settings", title: "Settings", icon: "gearshape", blocks: [
         .bullets([
             "**Position source**: **iPhone GPS** for real use. **Simulator** moves a pretend boat around Roche Harbor or Sidney for practice. A yellow banner says SIMULATED GPS whenever it's on.",
-            "**Simulator options**: start location, scenario (swinging, wind shift, dragging anchor, GPS dropout) and speed.",
+            "**Simulator options**: start location, scenario (swinging, wind shift, dragging anchor, GPS dropout, wide swing, slow drag) and speed up to 60×. Sped up, the swing fit's waits shrink too, so **Wide swing** at 60× shows the anchor estimate about 22 seconds after you drop, and **Slow drag** shows the dragging warning a little later.",
+            "**Boat Profile**: the boat's size, windage, anchor and rode. It feeds the scope maths and works out the rode on board, the deepest water you can anchor in at your scope, and the wind load on the anchor at your gust limit. Leave anything you don't know blank.",
             "**Watch check and test siren**: see that topic.",
             "**Warn when gusts reach**: the gust limit for the wind warnings.",
+            "**Record track before anchoring**: draw the track under way, not only at anchor, and keep the way in after you drop the anchor. Raise clears it.",
+            "**Fade the side buttons**: hide the buttons down the right edge when idle. Tap the chart to bring them back.",
             "**Units**: feet or meters.",
         ]),
         .tip("Changing the simulator's start location raises any anchor, since the old anchor would be a long way from the new boat."),
@@ -367,6 +381,12 @@ struct GuideTopicView: View {
             callout(text, icon: "lightbulb.fill", color: .blue)
         case .warning(let text):
             callout(text, icon: "exclamationmark.triangle.fill", color: .orange)
+        case .formula(let text):
+            ScrollView(.horizontal, showsIndicators: false) {
+                Text(text).font(.system(.footnote, design: .monospaced)).fixedSize().textSelection(.enabled)
+                    .padding(12)
+            }
+            .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
         }
     }
 

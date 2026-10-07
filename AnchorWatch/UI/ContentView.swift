@@ -17,6 +17,10 @@ struct ContentView: View {
     @State private var showConditions = false
     // `-showDepth` opens the depth sheet at launch, for screenshots.
     @State private var showDepth = ProcessInfo.processInfo.arguments.contains("-showDepth")
+    // `-showAnchoring` opens the anchoring conditions screen at launch, for screenshots.
+    @State private var showAnchoring = ProcessInfo.processInfo.arguments.contains("-showAnchoring")
+    // `-showBoat` opens the boat profile at launch, for screenshots.
+    @State private var showBoat = ProcessInfo.processInfo.arguments.contains("-showBoat")
 
     var body: some View {
         ZStack {
@@ -25,6 +29,7 @@ struct ContentView: View {
 
             VStack(spacing: 8) {
                 if let alarm = engine.alarm { AlarmBanner(reason: alarm) }
+                if let drift = engine.anchorDrift { DriftBanner(drift: drift) }
                 StatsBar()
                 WindBar(showConditions: $showConditions)
                 AlertsBar(showAlerts: $showAlerts)
@@ -50,6 +55,8 @@ struct ContentView: View {
             VStack(spacing: 10) {
                 Spacer().frame(height: 110)
                 RoundButton(icon: "gearshape") { showSettings = true }
+                Button { showAnchoring = true } label: { RoundIcon(icon: anchorGlyph, isText: true) }
+                    .accessibilityLabel("Anchoring")
                 RoundButton(icon: "water.waves") { showDepth = true }
                 Menu {
                     Picker("Map", selection: $engine.mapLayer) {
@@ -66,15 +73,54 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
             .padding(.trailing, 12)
+            .opacity(engine.sideButtonsVisible ? 1 : 0)
+            .allowsHitTesting(engine.sideButtonsVisible)   // taps fall through to the map, which brings them back
+            .animation(.easeInOut(duration: 0.6), value: engine.sideButtonsVisible)
+            // Using a button restarts the fade timer.
+            .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in engine.pokeControls() })
         }
+        // Coming back from a sheet shows the buttons again, rather than leaving them faded.
+        .onChange(of: showSettings || showAnchoring || showDepth) { _, open in if !open { engine.pokeControls() } }
         .sheet(isPresented: $showSettings) { SettingsView() }
         .sheet(isPresented: $showDepth) { DepthView() }
         .sheet(isPresented: $showAlerts) { AlertsView() }
         .sheet(isPresented: $showWatchCheck) { WatchCheckView() }
-        .sheet(isPresented: $showGuide) { NavigationStack { UserGuideView() } }
-        .sheet(item: $guideTopic) { topic in NavigationStack { GuideTopicView(topic: topic) } }
+        .sheet(isPresented: $showGuide) {
+            NavigationStack { UserGuideView().toolbar { Button("Done") { showGuide = false } } }
+        }
+        .sheet(item: $guideTopic) { topic in
+            NavigationStack { GuideTopicView(topic: topic).toolbar { Button("Done") { guideTopic = nil } } }
+        }
         .sheet(isPresented: $showConditions) { ConditionsView() }
+        .sheet(isPresented: $showAnchoring) { AnchoringView() }
+        .sheet(isPresented: $showBoat) { NavigationStack { BoatProfileView() } }
         .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
+    }
+}
+
+/// Red warning when the rolling swing fits show the anchor moving: it can come well before the boat
+/// leaves the alarm circle.
+struct DriftBanner: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+    let drift: AnchorDrift.Result
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "arrow.up").font(.title3.bold())
+                .rotationEffect(.degrees(drift.bearing))        // points the way the anchor is moving (north up)
+                .frame(width: 30, height: 30)
+                .background(.white.opacity(0.25), in: Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Anchor appears to be dragging").bold()
+                Text("\(engine.units.format(drift.distance)) \(Compass.name(drift.bearing)) in \(Int(drift.minutes.rounded())) min (\(engine.units.format(drift.metersPerMinute * 10)) per 10 min). Check your position and be ready to re-anchor.")
+                    .font(.footnote)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(.red, in: RoundedRectangle(cornerRadius: 12))
+        .foregroundStyle(.white)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -161,6 +207,7 @@ struct ControlsPanel: View {
                     Button { showScope = true } label: {
                         Label("Scope calculator · suggests \(engine.units.format(engine.suggestedRadius))", systemImage: "ruler")
                     }.font(.footnote)
+                    swingFit
                 }
                 HStack {
                     Button { engine.placingAnchor.toggle() } label: {
@@ -174,6 +221,9 @@ struct ControlsPanel: View {
                     }
                 }
                 .buttonStyle(.bordered).font(.footnote)
+                if let placed = engine.anchorPlacement {
+                    Text(placementNote(placed)).font(.caption2).foregroundStyle(.secondary)
+                }
                 Text("Long-press and drag the ⚓ pin to fine-tune its position.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
@@ -185,6 +235,50 @@ struct ControlsPanel: View {
         .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in engine.pokeControls() })
         .onChange(of: showScope) { _, _ in engine.pokeControls() }
         .sheet(isPresented: $showScope) { ScopeView() }
+    }
+
+    /// What the swing says about where the anchor really is, with an offer to move the mark there.
+    @ViewBuilder private var swingFit: some View {
+        let units = engine.units
+        if let estimate = engine.anchorEstimate, let anchor = engine.anchor {
+            let off = Geo.distance(anchor, estimate.center)
+            let error = units.format(estimate.semiMajor)
+            if off <= estimate.semiMajor {
+                Label("Swing agrees with your anchor mark (±\(error))", systemImage: "checkmark.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                HStack {
+                    Label("Swing puts the anchor \(units.format(off)) \(Compass.name(Geo.bearing(from: anchor, to: estimate.center))) of your mark (±\(error))",
+                          systemImage: "scope")
+                        .font(.caption).foregroundStyle(.purple)
+                    Spacer(minLength: 4)
+                    Button("Move there") { engine.moveAnchorToEstimate() }
+                        .font(.caption.bold()).buttonStyle(.bordered).tint(.purple)
+                }
+            }
+            if estimate.windAgrees == false {
+                Text("The wind direction doesn't match this yet; give it more time.").font(.caption2).foregroundStyle(.orange)
+            }
+        } else if let pending = engine.estimatePending {
+            switch pending {
+            case .collecting(let minutes):
+                Text("Finding the anchor from the swing: \(Int(minutes)) of \(Int(AnchorEstimate.minMinutes)) min").font(.caption2).foregroundStyle(.secondary)
+            case .tooUncertain(let semiMajor):
+                Text("Not enough swing yet to pin down the anchor (±\(units.format(semiMajor)))").font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// Says how the drop point was moved from the phone to the bow roller.
+    private func placementNote(_ placed: AnchorPlacement.Result) -> String {
+        let offset = engine.units.format(ScopeCalculator.gpsFromBow(engine.scope))
+        let toward = placed.bowBearing.map { " toward \(Compass.name($0))" } ?? ""
+        switch placed.source {
+        case .approach: return "Anchor set \(offset) ahead of the phone\(toward), the way you came in."
+        case .wind: return "Anchor set \(offset) ahead of the phone\(toward), into the wind."
+        case .anchor: return "Anchor set \(offset) ahead of the phone\(toward), along the rode."
+        case .unknown: return "Bow direction unknown, so the anchor is at the phone; the dotted circle allows for it."
+        }
     }
 
     /// Slider works in metres; steps are 5 m regardless of display units.
@@ -210,6 +304,20 @@ struct SettingsView: View {
                 } footer: {
                     Text("How to use every part of the app.")
                 }
+                Section {
+                    NavigationLink {
+                        BoatProfileView()
+                    } label: {
+                        LabeledContent {
+                            Text(engine.boat.name)
+                        } label: {
+                            Label("Boat Profile", systemImage: "sailboat")
+                        }
+                    }
+                    .accessibilityIdentifier("boatProfile")
+                } footer: {
+                    Text("Size, windage and ground tackle, for the rode, scope, holding and wind-load calculations.")
+                }
                 Section("Position source") {
                     Picker("Source", selection: $engine.sourceKind) {
                         ForEach(AnchorWatchEngine.SourceKind.allCases) { Text($0.rawValue).tag($0) }
@@ -224,8 +332,10 @@ struct SettingsView: View {
                             ForEach(SimulatedLocationSource.Scenario.allCases) { Text($0.rawValue).tag($0) }
                         }
                         Picker("Speed", selection: $engine.simSpeed) {
-                            Text("1×").tag(1.0); Text("5×").tag(5.0); Text("10×").tag(10.0)
+                            Text("1×").tag(1.0); Text("5×").tag(5.0); Text("10×").tag(10.0); Text("30×").tag(30.0); Text("60×").tag(60.0)
                         }.pickerStyle(.segmented)
+                        Text("At 30× or 60×, swing-fit waits and the track speed up too: at 60× the anchor estimate appears about 22 seconds after you drop. Try the Wide swing scenario.")
+                            .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
                 Section {
@@ -244,6 +354,16 @@ struct SettingsView: View {
                 } header: { Text("Wind warnings") } footer: {
                     Text("A heads-up on the main screen, not the drag alarm. Also warns of wind shifts of 60° or more in the next 12 hours.")
                 }
+                Section {
+                    Toggle("Record track before anchoring", isOn: $engine.trackWhenUnanchored)
+                } header: { Text("Track") } footer: {
+                    Text("Draws the purple track while you're under way too, not just at anchor, and keeps the way in when you drop the anchor. Raising the anchor clears the track. Records while the app is open.")
+                }
+                Section {
+                    Toggle("Fade the side buttons", isOn: $engine.fadeSideButtons)
+                } header: { Text("Screen") } footer: {
+                    Text("Hide the buttons down the right edge after \(Int(engine.controlsFadeDelay)) seconds without a touch, for more chart. Tap the chart to bring them back. They stay up during an alarm.")
+                }
                 Section("Units") {
                     Picker("Distance", selection: $engine.units) {
                         ForEach(Units.allCases) { Text($0.rawValue).tag($0) }
@@ -257,11 +377,18 @@ struct SettingsView: View {
     }
 }
 
+/// Plain anchor glyph (text style, not emoji); SF Symbols has no anchor.
+let anchorGlyph = "\u{2693}\u{FE0E}"
+
 struct RoundIcon: View {
     let icon: String
     var active = false
+    /// Draws `icon` as text instead of an SF Symbol, for glyphs SF Symbols lacks.
+    var isText = false
     var body: some View {
-        Image(systemName: icon)
+        Group {
+            if isText { Text(icon).font(.title2) } else { Image(systemName: icon) }
+        }
             .frame(width: 44, height: 44)
             .background(active ? AnyShapeStyle(Color.orange.opacity(0.35)) : AnyShapeStyle(.regularMaterial), in: Circle())
             .overlay(Circle().stroke(active ? Color.orange : .clear, lineWidth: 2))
@@ -296,6 +423,10 @@ struct ScopeView: View {
                     row("Horizontal reach", ScopeCalculator.horizontalReach(engine.scope))
                     row("Suggested alarm radius", engine.suggestedRadius).bold()
                     Button("Use suggested radius") { engine.applySuggestedRadius(); dismiss() }
+                    if let shortfall = engine.rodeShortfall {
+                        Label("That's \(engine.units.format(shortfall)) more rode than the boat carries.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.footnote).foregroundStyle(.orange)
+                    }
                 }
                 Section {
                     Text("Depth is entered by hand for now. Phase 2 will read it from the sonar. The tide rise is added to the depth so the rode covers high water.")
@@ -423,9 +554,13 @@ struct DepthView: View {
                         ForEach([3.0, 5.0, 7.0, 10.0], id: \.self) { Text("\(Int($0)):1").tag($0) }
                     }.pickerStyle(.segmented)
                     LabeledContent("Rode to pay out", value: units.format(engine.rodeToPayOut)).bold()
+                    if let shortfall = engine.rodeShortfall {
+                        Label("That's \(units.format(shortfall)) more rode than the boat carries.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.footnote).foregroundStyle(.orange)
+                    }
                     LabeledContent("Suggested alarm radius", value: units.format(engine.suggestedRadius))
                     Button("Use suggested radius") { engine.applySuggestedRadius(); dismiss() }
-                    Text("Rode = ratio × (depth + tide + \(units.format(engine.scope.bowHeight)) bow height). Change the bow height and boat length under the scope calculator.")
+                    Text("Rode = ratio × (depth + tide + \(units.format(engine.scope.bowHeight)) bow height). Change the bow height and boat length in Settings → Boat Profile.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }

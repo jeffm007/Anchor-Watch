@@ -84,12 +84,33 @@ final class AnchorWatchEngine: ObservableObject {
     @Published private(set) var fix: Fix?
     @Published private(set) var track: [Fix] = []
     @Published private(set) var anchor: CLLocationCoordinate2D?
+    /// How far off the anchor point may be from GPS error alone (metres): the average accuracy of the
+    /// fixes averaged into it. Nil when the anchor was placed by hand.
+    @Published private(set) var anchorUncertainty: Double?
+    /// How the last drop or Anchor → Boat worked out the bow position, for the note under the controls.
+    @Published private(set) var anchorPlacement: AnchorPlacement.Result?
+    /// Where the swing says the anchor is, once there's enough track to tell.
+    @Published private(set) var anchorEstimate: AnchorEstimate.Result?
+    /// Why there's no estimate yet.
+    @Published private(set) var estimatePending: AnchorEstimate.Pending?
+    private var lastEstimate = Date.distantPast
+    /// Set when the rolling swing fits show the anchor moving steadily: a red warning, before the boat leaves the circle.
+    @Published private(set) var anchorDrift: AnchorDrift.Result?
+    /// Recent rolling-fit centres, and how many fits in a row have shown drift.
+    private(set) var driftSamples: [AnchorDrift.Sample] = []
+    private var driftStreak = 0
+    /// Seconds between swing fits.
+    let estimateInterval: TimeInterval = 60
     @Published private(set) var distance: Double?
     @Published private(set) var maxDistance = 0.0
     /// Fixes received per second over the last ~10 s, to diagnose slow GPS delivery.
     @Published private(set) var updateRate = 0.0
     private var arrivals: [Date] = []
     private var recent: [Fix] = []
+    /// The last couple of minutes of fixes, to tell which way the boat came in on.
+    private var approach: [Fix] = []
+    /// The approach direction is read from the fix about this long before the drop.
+    let approachLookback: TimeInterval = 60
 
     /// Accuracy (metres) above which the anchor point is flagged as unreliable (~25 ft).
     let goodAccuracy = 8.0
@@ -122,11 +143,20 @@ final class AnchorWatchEngine: ObservableObject {
         return CLLocationCoordinate2D(latitude: window.map(\.coordinate.latitude).reduce(0, +) / n,
                                       longitude: window.map(\.coordinate.longitude).reduce(0, +) / n)
     }
+
+    /// Average accuracy of the fixes in `averagedPosition`. GPS errors drift slowly, so averaging a few
+    /// seconds of fixes barely shrinks the error; this doesn't pretend it does.
+    private var averagedAccuracy: Double? {
+        guard let newest = recent.last else { return nil }
+        let window = recent.filter { newest.timestamp.timeIntervalSince($0.timestamp) <= averagingWindow }
+        return window.map(\.accuracy).reduce(0, +) / Double(window.count)
+    }
     @Published private(set) var alarm: AlarmReason?
     @Published private(set) var anchorDropped: Date?
     @Published var radius = 30.0 { didSet { save() } }
 
     @Published var scope = ScopeSettings() { didSet { saveScope() } }
+    @Published var boat = BoatProfile() { didSet { saveBoat() } }
 
     // MARK: Is the phone ready to keep watch?
     @Published private(set) var batteryLevel: Float?
@@ -380,12 +410,23 @@ final class AnchorWatchEngine: ObservableObject {
 
     var suggestedRadius: Double { ScopeCalculator.suggestedRadius(scope) }
     var rodeToPayOut: Double { ScopeCalculator.rode(scope) }
+    /// How much more rode the scope calls for than the boat carries. Nil when there is enough, or the rode isn't entered.
+    var rodeShortfall: Double? {
+        let carried = BoatMath.rodeCarried(boat)
+        return carried > 0 && rodeToPayOut > carried ? rodeToPayOut - carried : nil
+    }
 
     func applySuggestedRadius() { radius = min(max(suggestedRadius, 10), 300) }
 
     /// The bottom control panel fades out when idle; any tap on the map brings it back.
     @Published private(set) var controlsVisible = true
-    let controlsFadeDelay: TimeInterval = 6
+    /// The buttons down the right edge fade too, when the user turns this on in Settings.
+    @Published var fadeSideButtons = false {
+        didSet { defaults.set(fadeSideButtons, forKey: "anchorwatch.fadeSideButtons"); pokeControls() }
+    }
+    @Published private(set) var sideButtonsVisible = true
+    /// Settable so tests needn't wait the full delay.
+    var controlsFadeDelay: TimeInterval = 6
     private var hideTask: Task<Void, Never>?
 
     @Published var placingAnchor = false
@@ -427,6 +468,13 @@ final class AnchorWatchEngine: ObservableObject {
 
     // MARK: Tunables
     let maxTrackPoints = 5000
+    /// Record the track under way too, not only once anchored. The way in is kept when the anchor goes down.
+    @Published var trackWhenUnanchored = false {
+        didSet {
+            defaults.set(trackWhenUnanchored, forKey: "anchorwatch.trackUnanchored")
+            if !trackWhenUnanchored && anchor == nil { track = [] }
+        }
+    }
     let gpsLostAfter: TimeInterval = 30
     /// Consecutive outside-the-circle fixes needed before alarming, to ignore a single GPS glitch.
     let confirmFixes = 2
@@ -480,16 +528,20 @@ final class AnchorWatchEngine: ObservableObject {
         }
         // Dev aid: `-showWind` turns the wind overlay on at launch, for screenshots.
         if ProcessInfo.processInfo.arguments.contains("-showWind") { windOverlayOn = true }
+        // Dev aid: `-keepControls` stops the controls fading, for screenshots.
+        if ProcessInfo.processInfo.arguments.contains("-keepControls") { controlsFadeDelay = 1_000_000 }
         #if !targetEnvironment(simulator)
         if !demo { player.prepare() }
         #endif
         simulator.onFix = { [weak self] in self?.ingest($0) }
         gps?.onFix = { [weak self] in self?.ingest($0) }
         switchSource()
-        // Dev aid: `-autoDrop` drops the anchor shortly after launch, for screenshots and demos.
+        // Dev aid: `-autoDrop` drops a fresh anchor shortly after launch (raising any saved one first),
+        // for screenshots and demos.
         if demo {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-                if self?.anchor == nil { self?.dropAnchor() }
+                if self?.anchor != nil { self?.raiseAnchor() }
+                self?.dropAnchor()
             }
         }
         if armed { player.arm() }
@@ -538,6 +590,7 @@ final class AnchorWatchEngine: ObservableObject {
     }
 
     private func refreshData() {
+        if Date().timeIntervalSince(lastEstimate) >= max(2, estimateInterval / simTimeScale) { updateAnchorEstimate() }
         refreshPermissionsIfDue()
         refreshWindHereIfDue()
         refreshAlertsIfDue()
@@ -563,11 +616,18 @@ final class AnchorWatchEngine: ObservableObject {
     // MARK: Anchor control
 
     func dropAnchor() {
-        guard let fix, let position = averagedPosition else { return }
-        setAnchor(position)
+        guard let fix, let position = averagedPosition, let accuracy = averagedAccuracy else { return }
+        let placed = placeAtBow(position, accuracy: accuracy, lyingTo: nil)
+        setAnchor(placed.coordinate)
+        anchorUncertainty = placed.uncertainty
+        anchorPlacement = placed
+        anchorEstimate = nil
+        estimatePending = .collecting(minutes: 0)
+        resetDrift()
         pokeControls()
         anchorDropped = Date()
-        track = [fix]
+        // Keep the way in when recording under way; otherwise the track starts at the drop.
+        if trackWhenUnanchored { if track.last != fix { track.append(fix) } } else { track = [fix] }
         maxDistance = 0
         save()
     }
@@ -576,6 +636,8 @@ final class AnchorWatchEngine: ObservableObject {
     func moveAnchor(to coordinate: CLLocationCoordinate2D) {
         guard anchor != nil else { return }
         setAnchor(coordinate)
+        anchorUncertainty = nil     // placed by hand, not by GPS
+        anchorPlacement = nil
         pokeControls()
         maxDistance = distance ?? 0
         placingAnchor = false
@@ -583,12 +645,77 @@ final class AnchorWatchEngine: ObservableObject {
     }
 
     func moveAnchorToBoat() {
-        guard let position = averagedPosition else { return }
-        moveAnchor(to: position)
+        guard let position = averagedPosition, let accuracy = averagedAccuracy else { return }
+        let placed = placeAtBow(position, accuracy: accuracy, lyingTo: anchor)
+        moveAnchor(to: placed.coordinate)
+        anchorUncertainty = placed.uncertainty
+        anchorPlacement = placed
+        save()
+    }
+
+    /// Simulated seconds per real second: the sim speed when the simulator is the position source.
+    var simTimeScale: Double { sourceKind == .simulator ? simSpeed : 1 }
+
+    /// Refits the anchor position from the swing. Called once a minute; tests call it directly.
+    func updateAnchorEstimate() {
+        lastEstimate = Date()
+        guard let anchor, let anchorDropped else { anchorEstimate = nil; estimatePending = nil; return }
+        let wind = windNow
+        let modelRadius = ScopeCalculator.horizontalReach(scope) + ScopeCalculator.gpsFromBow(scope)
+        switch AnchorEstimate.evaluate(track: track, dropped: anchorDropped, mark: anchor, modelRadius: modelRadius,
+                                       windFrom: wind?.direction, windKnots: wind?.speed, timeScale: simTimeScale) {
+        case .success(let r): anchorEstimate = r; estimatePending = nil
+        case .failure(let p): anchorEstimate = nil; estimatePending = p.pending
+        }
+        updateDrift(anchor: anchor, dropped: anchorDropped, modelRadius: modelRadius)
+    }
+
+    private func updateDrift(anchor: CLLocationCoordinate2D, dropped: Date, modelRadius: Double) {
+        guard let sample = AnchorDrift.rollingSample(track: track, dropped: dropped, mark: anchor,
+                                                     modelRadius: modelRadius, timeScale: simTimeScale) else { return }
+        if let last = driftSamples.last, sample.minute <= last.minute { return }     // no new track since the last fit
+        driftSamples.append(sample)
+        driftSamples.removeAll { sample.minute - $0.minute > AnchorDrift.windowMinutes * 2 }
+        if let drift = AnchorDrift.assess(driftSamples) {
+            driftStreak += 1
+            if driftStreak >= AnchorDrift.confirmations { anchorDrift = drift }
+        } else {
+            driftStreak = 0
+            anchorDrift = nil
+        }
+    }
+
+    private func resetDrift() {
+        anchorDrift = nil
+        driftSamples = []
+        driftStreak = 0
+    }
+
+    /// Moves the anchor mark to the swing estimate; the dotted circle becomes its error ellipse's long axis.
+    func moveAnchorToEstimate() {
+        guard let estimate = anchorEstimate else { return }
+        moveAnchor(to: estimate.center)
+        anchorUncertainty = estimate.semiMajor
+        save()
+        updateAnchorEstimate()
+    }
+
+    /// Moves a phone position forward to the bow roller, using the best guess at which way the bow points.
+    private func placeAtBow(_ position: CLLocationCoordinate2D, accuracy: Double, lyingTo anchor: CLLocationCoordinate2D?) -> AnchorPlacement.Result {
+        let newest = approach.last?.timestamp ?? Date()
+        let from = approach.first { newest.timeIntervalSince($0.timestamp) <= approachLookback }?.coordinate
+        let wind = windNow
+        return AnchorPlacement.place(phone: position, gpsAccuracy: accuracy, bowOffset: ScopeCalculator.gpsFromBow(scope),
+                                     approachFrom: from, lyingTo: anchor, windFrom: wind?.direction, windKnots: wind?.speed)
     }
 
     func raiseAnchor() {
         anchor = nil
+        anchorUncertainty = nil
+        anchorPlacement = nil
+        anchorEstimate = nil
+        estimatePending = nil
+        resetDrift()
         distance = nil
         anchorDropped = nil
         placingAnchor = false
@@ -604,20 +731,26 @@ final class AnchorWatchEngine: ObservableObject {
 
     func recenter() { recenterTick += 1 }
 
-    /// Shows the controls and restarts the idle countdown. They stay up while there is no anchor,
-    /// while an alarm is active, and while the user is placing the anchor.
+    /// Shows the controls and restarts the idle countdown. Nothing hides while an alarm is active or
+    /// while the user is placing the anchor. The bottom panel also stays up until there is an anchor;
+    /// the side buttons (if set to fade) don't wait for one.
     func pokeControls() {
         controlsVisible = true
+        sideButtonsVisible = true
+        scheduleHide()
+    }
+
+    private func scheduleHide() {
         hideTask?.cancel()
         hideTask = Task { [weak self] in
             guard let delay = self?.controlsFadeDelay else { return }
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled, let self else { return }
-            if self.anchor != nil, self.alarm == nil, !self.placingAnchor {
-                self.controlsVisible = false
-            } else {
-                self.pokeControls()
-            }
+            let busy = self.alarm != nil || self.placingAnchor
+            if self.fadeSideButtons, !busy { self.sideButtonsVisible = false }
+            if self.anchor != nil, !busy { self.controlsVisible = false }
+            // Something couldn't hide yet: check again after another delay.
+            if self.controlsVisible || (self.fadeSideButtons && self.sideButtonsVisible) { self.scheduleHide() }
         }
     }
 
@@ -653,12 +786,14 @@ final class AnchorWatchEngine: ObservableObject {
 
         recent.append(new)
         recent.removeAll { new.timestamp.timeIntervalSince($0.timestamp) > averagingWindow }
+        approach.append(new)
+        approach.removeAll { new.timestamp.timeIntervalSince($0.timestamp) > approachLookback * 2 }
 
         if let last = track.last {
             if Geo.distance(last.coordinate, new.coordinate) >= 0.5 || new.timestamp.timeIntervalSince(last.timestamp) >= 10 {
                 track.append(new)
             }
-        } else if anchor != nil {
+        } else if anchor != nil || trackWhenUnanchored {
             track.append(new)
         }
         if track.count > maxTrackPoints { track.removeFirst(track.count - maxTrackPoints) }
@@ -726,17 +861,24 @@ final class AnchorWatchEngine: ObservableObject {
 
     private struct Saved: Codable {
         var latitude: Double, longitude: Double, radius: Double, dropped: Date?
+        var uncertainty: Double?
     }
     private let key = "anchorwatch.saved"
     private let scopeKey = "anchorwatch.scope.v3"
+    private let boatKey = "anchorwatch.boat.v3"
 
     private func saveScope() {
         defaults.set(try? JSONEncoder().encode(scope), forKey: scopeKey)
     }
 
+    private func saveBoat() {
+        defaults.set(try? JSONEncoder().encode(boat), forKey: boatKey)
+    }
+
     private func save() {
         guard let anchor else { defaults.removeObject(forKey: key); return }
-        let saved = Saved(latitude: anchor.latitude, longitude: anchor.longitude, radius: radius, dropped: anchorDropped)
+        let saved = Saved(latitude: anchor.latitude, longitude: anchor.longitude, radius: radius, dropped: anchorDropped,
+                          uncertainty: anchorUncertainty)
         defaults.set(try? JSONEncoder().encode(saved), forKey: key)
     }
 
@@ -747,14 +889,18 @@ final class AnchorWatchEngine: ObservableObject {
         }
         if defaults.object(forKey: "anchorwatch.gustLimit") != nil { gustLimit = defaults.double(forKey: "anchorwatch.gustLimit") }
         if let raw = defaults.string(forKey: "anchorwatch.source"), let kind = SourceKind(rawValue: raw) { sourceKind = kind }
+        fadeSideButtons = defaults.bool(forKey: "anchorwatch.fadeSideButtons")
+        trackWhenUnanchored = defaults.bool(forKey: "anchorwatch.trackUnanchored")
         // Dev aid: `-layer "NOAA Charts (US)"` overrides the saved map layer at launch.
         let args = ProcessInfo.processInfo.arguments
         let override = args.firstIndex(of: "-layer").flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
         if let raw = override ?? defaults.string(forKey: "anchorwatch.layer"), let layer = ChartLayer(rawValue: raw) { mapLayer = layer }
         if let data = defaults.data(forKey: scopeKey), let s = try? JSONDecoder().decode(ScopeSettings.self, from: data) { scope = s }
+        if let data = defaults.data(forKey: boatKey), let b = try? JSONDecoder().decode(BoatProfile.self, from: data) { boat = b }
         guard let data = defaults.data(forKey: key), let s = try? JSONDecoder().decode(Saved.self, from: data) else { return }
         anchor = CLLocationCoordinate2D(latitude: s.latitude, longitude: s.longitude)
         radius = s.radius
         anchorDropped = s.dropped
+        anchorUncertainty = s.uncertainty
     }
 }

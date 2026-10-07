@@ -137,6 +137,133 @@ final class EngineTests: XCTestCase {
         XCTAssertNil(e.anchor)
     }
 
+    func testSideButtonsFadeOnlyWhenSetAndComeBackOnATap() async throws {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false)
+        e.controlsFadeDelay = 0.05
+        e.pokeControls()
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(e.sideButtonsVisible)          // off by default: always shown
+
+        e.fadeSideButtons = true
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertFalse(e.sideButtonsVisible)         // fades even with no anchor down
+        XCTAssertTrue(e.controlsVisible)             // the bottom panel still waits for an anchor
+
+        e.pokeControls()                             // a tap on the chart
+        XCTAssertTrue(e.sideButtonsVisible)
+
+        let again = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false)
+        XCTAssertTrue(again.fadeSideButtons)         // remembered
+    }
+
+    func testDropRecordsGPSUncertaintyUntilMovedByHand() {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false)
+        e.ingest(fix(0)); e.dropAnchor()
+        // Didn't move and no wind: bow direction unknown, so the circle covers the half boat length too.
+        let expected = fix(0).accuracy + ScopeCalculator.gpsFromBow(e.scope)
+        XCTAssertEqual(e.anchorPlacement?.source, .unknown)
+        XCTAssertEqual(e.anchorUncertainty!, expected, accuracy: 0.001)
+
+        let again = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false)
+        XCTAssertEqual(again.anchorUncertainty!, expected, accuracy: 0.001)   // survives a relaunch
+
+        e.moveAnchor(to: Geo.destination(from: e.anchor!, bearing: 90, meters: 10))
+        XCTAssertNil(e.anchorUncertainty)                                      // placed by hand
+        e.moveAnchorToBoat()
+        XCTAssertEqual(e.anchorPlacement?.source, .anchor)                     // bow points along the rode
+        XCTAssertNotNil(e.anchorUncertainty)
+        e.raiseAnchor()
+        XCTAssertNil(e.anchorUncertainty)
+    }
+
+    func testDropAfterAnApproachPutsTheAnchorAtTheBow() {
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false)
+        // Motor 40 m east over half a minute, then stop.
+        for i in 0...10 {
+            var f = fix(Double(i) * 4)
+            f.timestamp = Date().addingTimeInterval(Double(i - 10) * 3)
+            e.ingest(f)
+        }
+        e.dropAnchor()
+        let half = ScopeCalculator.gpsFromBow(e.scope)
+        XCTAssertEqual(e.anchorPlacement?.source, .approach)
+        // The drop point averages the last 8 s of fixes (32, 36 and 40 m), then moves half a boat length east.
+        let averaged = fix(36).coordinate
+        XCTAssertEqual(Geo.distance(e.anchor!, averaged), half, accuracy: 0.05)
+        XCTAssertEqual(Geo.bearing(from: averaged, to: e.anchor!), 90, accuracy: 1)
+    }
+
+    func testTrackRecordsUnderWayOnlyWhenSet() {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false)
+        e.ingest(fix(0)); e.ingest(fix(5))
+        XCTAssertTrue(e.track.isEmpty)                  // off by default: no track until anchored
+
+        e.trackWhenUnanchored = true
+        e.ingest(fix(10)); e.ingest(fix(15))
+        XCTAssertEqual(e.track.count, 2)
+
+        e.dropAnchor()
+        XCTAssertEqual(e.track.count, 2)                // the way in is kept
+        e.raiseAnchor()
+        e.ingest(fix(20))
+        XCTAssertEqual(e.track.count, 1)                // and recording carries on under way
+
+        e.trackWhenUnanchored = false
+        XCTAssertTrue(e.track.isEmpty)
+        XCTAssertFalse(AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false).trackWhenUnanchored)
+    }
+
+    func testMoveToSwingEstimateThenItAgrees() {
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false)
+        e.scope = ScopeSettings(depth: 5, bowHeight: 1, boatLength: 14, scopeRatio: 5, margin: 0)
+        e.ingest(fix(0)); e.dropAnchor()
+        let mark = e.anchor!
+        let anchor = Geo.destination(from: mark, bearing: 45, meters: 12)
+        for i in 0..<240 {                              // 40 minutes swinging 120° on a 36 m circle
+            let bearing = 160 + 120 * (0.5 - 0.5 * cos(Double(i) / 240 * 4 * .pi))
+            e.ingest(Fix(coordinate: Geo.destination(from: anchor, bearing: bearing, meters: 36), accuracy: 3,
+                         course: nil, speed: nil, timestamp: Date().addingTimeInterval(180 + Double(i) * 10)))
+        }
+        e.updateAnchorEstimate()
+        let estimate = try! XCTUnwrap(e.anchorEstimate)
+        XCTAssertLessThan(Geo.distance(estimate.center, anchor), 2)
+
+        e.moveAnchorToEstimate()
+        XCTAssertLessThan(Geo.distance(e.anchor!, anchor), 2)
+        XCTAssertEqual(e.anchorUncertainty!, estimate.semiMajor, accuracy: 0.001)
+        XCTAssertLessThan(Geo.distance(e.anchor!, e.anchorEstimate!.center), e.anchorEstimate!.semiMajor)   // now agrees
+    }
+
+    func testAnchorThatStartsDraggingRaisesTheWarningOnlyAfterItMoves() {
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false)
+        e.scope = ScopeSettings(depth: 5, bowHeight: 1, boatLength: 14, scopeRatio: 5, margin: 0)
+        e.radius = 200                                  // keep the ordinary drag alarm out of the way
+        e.ingest(fix(0)); e.dropAnchor()
+        let pivot0 = e.anchor!
+        var warnedBeforeDrag = false
+        for i in 0..<(55 * 6) {                         // 55 minutes, a fix every 10 s
+            let minute = Double(i) / 6
+            let dragged = max(0, minute - 25) * 1.0     // 1 m/min east from minute 25
+            let pivot = Geo.destination(from: pivot0, bearing: 90, meters: dragged)
+            let bearing = 270 + 60 * sin(minute / 10 * 2 * .pi)   // swinging ±60° downwind (west of the anchor)
+            e.ingest(Fix(coordinate: Geo.destination(from: pivot, bearing: bearing, meters: 36), accuracy: 3,
+                         course: nil, speed: nil, timestamp: Date().addingTimeInterval(Double(i) * 10)))
+            if i % 6 == 5 {
+                e.updateAnchorEstimate()
+                if minute < 25 && e.anchorDrift != nil { warnedBeforeDrag = true }
+            }
+        }
+        XCTAssertFalse(warnedBeforeDrag)
+        let drift = try! XCTUnwrap(e.anchorDrift)
+        XCTAssertEqual(drift.bearing, 90, accuracy: 20)
+        XCTAssertGreaterThan(drift.distance, AnchorDrift.minMeters)
+        e.raiseAnchor()
+        XCTAssertNil(e.anchorDrift)
+    }
+
     func testAnchorSurvivesRelaunch() {
         let defaults = UserDefaults(suiteName: UUID().uuidString)!
         let a = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false)
@@ -144,6 +271,315 @@ final class EngineTests: XCTestCase {
         let b = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false)
         XCTAssertEqual(b.radius, 55)
         XCTAssertNotNil(b.anchor)
+    }
+}
+
+@MainActor
+final class BoatProfileTests: XCTestCase {
+    func testRodeCarriedFollowsRodeType() {
+        var b = BoatProfile()
+        b.rodeType = .chainAndRope; b.chainLength = 30; b.ropeLength = 60
+        XCTAssertEqual(BoatMath.rodeCarried(b), 90)
+        b.rodeType = .allChain
+        XCTAssertEqual(BoatMath.rodeCarried(b), 30)
+        b.rodeType = .rope
+        XCTAssertEqual(BoatMath.rodeCarried(b), 60)
+    }
+
+    func testDeepestWater() {
+        var b = BoatProfile()
+        b.rodeType = .allChain; b.chainLength = 60
+        XCTAssertEqual(BoatMath.deepestWater(b, scopeRatio: 5, bowHeight: 1)!, 11, accuracy: 0.001)   // 60 / 5 − 1
+        b.chainLength = 0
+        XCTAssertNil(BoatMath.deepestWater(b, scopeRatio: 5, bowHeight: 1))
+    }
+
+    func testWindageEstimateAndOverride() {
+        var b = BoatProfile()
+        b.freeboard = 0
+        XCTAssertNil(BoatMath.windage(b))
+        b.hullType = .sail; b.beam = 4; b.freeboard = 1.5; b.cabinHeight = 0.5; b.airDraft = 18
+        // 4 × 2 × 0.8 hull and cabin, plus 16 m of rig × 0.25
+        XCTAssertEqual(BoatMath.windage(b)!, 10.4, accuracy: 0.001)
+        b.hullType = .power
+        XCTAssertEqual(BoatMath.windage(b)!, 6.4, accuracy: 0.001)
+        b.windageArea = 12
+        XCTAssertEqual(BoatMath.windage(b)!, 12)
+    }
+
+    func testWindLoadGrowsWithTheSquareOfSpeed() {
+        var b = BoatProfile()
+        b.windageArea = 10
+        let at20 = BoatMath.windLoad(b, knots: 20)!
+        XCTAssertEqual(at20, 0.5 * 1.225 * 10 * pow(20 * 0.514444, 2), accuracy: 0.01)
+        XCTAssertEqual(BoatMath.windLoad(b, knots: 40)!, at20 * 4, accuracy: 0.01)
+    }
+
+    func testOldSavedProfileStillDecodes() throws {
+        let old = #"{"name":"Nereus","beam":4.6,"anchorType":"Something new"}"#.data(using: .utf8)!
+        let b = try JSONDecoder().decode(BoatProfile.self, from: old)
+        XCTAssertEqual(b.name, "Nereus")
+        XCTAssertEqual(b.beam, 4.6)
+        XCTAssertEqual(b.anchorType, BoatProfile().anchorType)   // unknown value falls back to the default
+        XCTAssertNil(b.windageArea)
+    }
+
+    func testDefaultsMatchNereussSurvey() {
+        let b = BoatProfile()
+        let u = Units.feet
+        XCTAssertEqual(b.beam * u.perMeter, 15 + 8.0 / 12, accuracy: 0.01)
+        XCTAssertEqual(b.displacement * u.perKilogram, 62_000, accuracy: 1)
+        XCTAssertEqual(b.fuelCapacity * u.perLiter, 1_100, accuracy: 0.5)
+        XCTAssertEqual(b.waterCapacity * u.perLiter, 300, accuracy: 0.5)
+        XCTAssertEqual(b.holdingCapacity * u.perLiter, 64, accuracy: 0.5)
+    }
+
+    func testLoadedWeightAddsFullTanks() {
+        var b = BoatProfile()
+        b.displacement = 10_000; b.fuelCapacity = 1_000; b.waterCapacity = 500; b.holdingCapacity = 100
+        XCTAssertEqual(BoatMath.loadedWeight(b)!, 10_000 + 850 + 600, accuracy: 0.001)
+        b.displacement = 0
+        XCTAssertNil(BoatMath.loadedWeight(b))
+    }
+
+    func testChainSizesInInches() {
+        XCTAssertEqual(Units.feet.formatSize(9.525), "3/8 in")
+        XCTAssertEqual(Units.feet.formatSize(25.4), "1 in")
+        XCTAssertEqual(Units.feet.formatSize(10), "≈ 3/8 in")
+        XCTAssertEqual(Units.meters.formatSize(10), "10 mm")
+    }
+
+    func testProfileSurvivesRelaunchAndFlagsShortRode() {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let a = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false)
+        a.scope = ScopeSettings(depth: 10, bowHeight: 1, boatLength: 12, scopeRatio: 5, margin: 0)   // needs 55 m
+        XCTAssertNil(a.rodeShortfall)   // nothing entered yet
+        a.boat.name = "Nereus"; a.boat.rodeType = .allChain; a.boat.chainLength = 50
+        let b = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false)
+        XCTAssertEqual(b.boat.name, "Nereus")
+        XCTAssertEqual(b.rodeShortfall!, 5, accuracy: 0.001)
+    }
+}
+
+final class AnchorPlacementTests: XCTestCase {
+    private let phone = CLLocationCoordinate2D(latitude: 48.6, longitude: -123.15)
+
+    func testApproachBeatsWindAndMovesTheDropForward() {
+        let from = Geo.destination(from: phone, bearing: 270, meters: 40)     // came in heading east
+        let r = AnchorPlacement.place(phone: phone, gpsAccuracy: 4, bowOffset: 7, approachFrom: from, windFrom: 180, windKnots: 15)
+        XCTAssertEqual(r.source, .approach)
+        XCTAssertEqual(r.bowBearing!, 90, accuracy: 0.1)
+        XCTAssertEqual(Geo.distance(phone, r.coordinate), 7, accuracy: 0.01)
+        XCTAssertEqual(r.uncertainty, (16 + pow(7 * sin(15.0 * .pi / 180), 2)).squareRoot(), accuracy: 0.001)
+    }
+
+    func testShortApproachFallsBackToTheWind() {
+        let from = Geo.destination(from: phone, bearing: 270, meters: 5)
+        let r = AnchorPlacement.place(phone: phone, gpsAccuracy: 4, bowOffset: 7, approachFrom: from, windFrom: 200, windKnots: 12)
+        XCTAssertEqual(r.source, .wind)
+        XCTAssertEqual(Geo.bearing(from: phone, to: r.coordinate), 200, accuracy: 0.1)   // bow into the wind
+    }
+
+    func testNoClueLeavesItAtThePhoneWithAWiderCircle() {
+        let r = AnchorPlacement.place(phone: phone, gpsAccuracy: 4, bowOffset: 7, approachFrom: nil, windFrom: 200, windKnots: 3)
+        XCTAssertEqual(r.source, .unknown)
+        XCTAssertEqual(r.coordinate, phone)
+        XCTAssertEqual(r.uncertainty, 11, accuracy: 0.001)
+    }
+
+    func testLyingToAnAnchorUsesTheRode() {
+        let old = Geo.destination(from: phone, bearing: 30, meters: 40)
+        let r = AnchorPlacement.place(phone: phone, gpsAccuracy: 4, bowOffset: 7, approachFrom: nil, lyingTo: old, windFrom: nil, windKnots: nil)
+        XCTAssertEqual(r.source, .anchor)
+        XCTAssertEqual(r.bowBearing!, 30, accuracy: 0.1)
+    }
+}
+
+final class AnchorEstimateTests: XCTestCase {
+    private let mark = CLLocationCoordinate2D(latitude: 48.6, longitude: -123.15)
+    private let dropped = Date(timeIntervalSince1970: 1_800_000_000)
+
+    /// A boat swinging on a circle of `radius` round the true anchor (12 m NE of the mark), from bearing
+    /// `from` through `through` degrees and back, with GPS noise and some lulls where it sits inside the circle.
+    private func swing(radius: Double, from: Double, through: Double, minutes: Double, noise: Double = 2) -> (track: [Fix], anchor: CLLocationCoordinate2D) {
+        let anchor = Geo.destination(from: mark, bearing: 45, meters: 12)
+        var seed: UInt64 = 42
+        func random() -> Double {                       // repeatable pseudo-random, -1...1
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Double(seed >> 11) / Double(1 << 53) * 2 - 1
+        }
+        let count = Int(minutes * 6)                    // a fix every 10 s
+        let track = (0..<count).map { i -> Fix in
+            let t = Double(i) / Double(count)
+            let bearing = from + (through - from) * (0.5 - 0.5 * cos(t * 4 * .pi))   // back and forth twice
+            let lull = i % 7 == 0 ? 0.85 : 1.0          // chain sagging in a lull
+            let onCircle = Geo.destination(from: anchor, bearing: bearing, meters: radius * lull)
+            let noisy = Geo.destination(from: onCircle, bearing: (random() + 1) * 180, meters: abs(random()) * noise)
+            return Fix(coordinate: noisy, accuracy: 4, course: nil, speed: nil,
+                       timestamp: dropped.addingTimeInterval(180 + Double(i) * 10))
+        }
+        return (track, anchor)
+    }
+
+    func testWideSwingFindsTheAnchorAndTheRadius() {
+        let (track, anchor) = swing(radius: 40, from: 150, through: 300, minutes: 40)
+        let r = AnchorEstimate.estimate(track: track, dropped: dropped, mark: mark, modelRadius: 30, windFrom: nil, windKnots: nil)!
+        XCTAssertEqual(r.method, .free)
+        XCTAssertGreaterThanOrEqual(r.arc, 90)
+        XCTAssertLessThan(Geo.distance(r.center, anchor), 3)
+        XCTAssertEqual(r.radius, 40, accuracy: 3)       // found the real radius, not the model's 30
+        XCTAssertLessThan(r.semiMajor, 10)
+    }
+
+    func testNarrowSwingFixesTheRadiusAndIsUncertainAcrossTheSwing() {
+        let (track, anchor) = swing(radius: 40, from: 200, through: 240, minutes: 40)
+        let r = AnchorEstimate.estimate(track: track, dropped: dropped, mark: mark, modelRadius: 40, windFrom: nil, windKnots: nil)
+        guard let r else { return }                     // too uncertain to show is also a fair answer
+        XCTAssertEqual(r.method, .fixedRadius)
+        XCTAssertLessThan(Geo.distance(r.center, anchor), r.semiMajor + 3)
+        XCTAssertGreaterThan(r.semiMajor, r.semiMinor)
+    }
+
+    func testTooSoonIsStillCollecting() {
+        let (track, _) = swing(radius: 40, from: 150, through: 300, minutes: 10)
+        let result = AnchorEstimate.evaluate(track: track, dropped: dropped, mark: mark, modelRadius: 40, windFrom: nil, windKnots: nil)
+        guard case .failure(let p) = result, case .collecting(let minutes) = p.pending else { return XCTFail("expected collecting") }
+        XCTAssertLessThan(minutes, AnchorEstimate.minMinutes)
+    }
+
+    func testWindPointingTheWrongWayDisagrees() {
+        let (track, _) = swing(radius: 40, from: 150, through: 300, minutes: 40)
+        // The boat ends the track at bearing ~150° from the anchor, so the wind should be from ~330°.
+        let good = AnchorEstimate.estimate(track: track, dropped: dropped, mark: mark, modelRadius: 40, windFrom: 330, windKnots: 15)!
+        let bad = AnchorEstimate.estimate(track: track, dropped: dropped, mark: mark, modelRadius: 40, windFrom: 150, windKnots: 15)!
+        XCTAssertEqual(good.windAgrees, true)
+        XCTAssertEqual(bad.windAgrees, false)
+    }
+
+    func testSpedUpSimulatorReachesTheWaitSooner() {
+        // 40 simulated minutes squeezed into 4 real minutes: fixes 1 s apart instead of 10 s.
+        let (slow, _) = swing(radius: 40, from: 150, through: 300, minutes: 40)
+        let fast = slow.enumerated().map { i, f in
+            Fix(coordinate: f.coordinate, accuracy: f.accuracy, course: nil, speed: nil,
+                timestamp: dropped.addingTimeInterval(18 + Double(i)))
+        }
+        XCTAssertNil(AnchorEstimate.estimate(track: fast, dropped: dropped, mark: mark, modelRadius: 30, windFrom: nil, windKnots: nil))
+        let r = AnchorEstimate.estimate(track: fast, dropped: dropped, mark: mark, modelRadius: 30, windFrom: nil, windKnots: nil, timeScale: 10)
+        XCTAssertEqual(r?.minutes ?? 0, (257 - 12) * 10 / 60.0, accuracy: 0.01)   // last fix 257 s; settle ends at 12 s
+    }
+
+    func testEllipseAxesFromCovariance() {
+        let (major, minor, bearing) = AnchorEstimate.ellipse((xx: 9, xy: 0, yy: 1), scale: 1)
+        XCTAssertEqual(major, 3, accuracy: 1e-9)
+        XCTAssertEqual(minor, 1, accuracy: 1e-9)
+        XCTAssertEqual(bearing, 90, accuracy: 1e-9)     // long axis east-west
+    }
+}
+
+final class AnchorDriftTests: XCTestCase {
+    private let start = CLLocationCoordinate2D(latitude: 48.6, longitude: -123.15)
+
+    private func samples(_ count: Int, position: (Double) -> (east: Double, north: Double)) -> [AnchorDrift.Sample] {
+        (0..<count).map { i in
+            let minute = 20 + Double(i)
+            let p = position(minute)
+            return AnchorDrift.Sample(minute: minute, center: AnchorEstimate.coordinate(AnchorEstimate.Point(x: p.east, y: p.north), from: start),
+                                      semiMajor: 2)
+        }
+    }
+
+    func testHoldingStillIsNotDrift() {
+        let jitter = [0.8, -1.1, 0.4, 1.2, -0.6, -0.9, 0.7, 0.1, -1.3, 0.9, 0.3, -0.4, 1.0, -0.8, 0.5, -0.2, 0.6, -1.0, 0.2, 0.8]
+        XCTAssertNil(AnchorDrift.assess(samples(20) { m in (jitter[Int(m) % 20], jitter[(Int(m) + 7) % 20]) }))
+    }
+
+    func testSteadyDriftIsCaughtWithSizeAndDirection() {
+        // 1 m/min toward the north-east, for 19 minutes.
+        let r = AnchorDrift.assess(samples(20) { m in ((m - 20) * 0.7071, (m - 20) * 0.7071) })!
+        XCTAssertEqual(r.distance, 19, accuracy: 0.5)
+        XCTAssertEqual(r.bearing, 45, accuracy: 1)
+        XCTAssertEqual(r.metersPerMinute, 1, accuracy: 0.05)
+    }
+
+    func testWanderingBackAndForthIsNotDrift() {
+        // 8 m either way along an east-west line, twice over: big moves, but no steady direction.
+        XCTAssertNil(AnchorDrift.assess(samples(20) { m in (8 * sin((m - 20) / 19 * 4 * .pi), 0) }))
+    }
+
+    func testSmallMovesAreNeverDrift() {
+        XCTAssertNil(AnchorDrift.assess(samples(20) { m in ((m - 20) * 0.2, 0) }))   // 3.8 m in 19 min
+    }
+}
+
+final class AnchoringTests: XCTestCase {
+    private func arcLength(_ shape: RodeShape) -> Double {
+        zip(shape.points, shape.points.dropFirst()).reduce(0) { sum, pair in
+            sum + hypot(pair.1.x - pair.0.x, pair.1.y - pair.0.y)
+        }
+    }
+
+    func testLiftOffAndChainNeededAreInverses() {
+        let w = AnchorMath.chainWeight(sizeMM: 10)
+        XCTAssertEqual(w, 0.022 * 100 * AnchorMath.submergedFraction * 9.81, accuracy: 0.001)
+        let load = AnchorMath.liftOffLoad(length: 50, height: 8, weight: w)
+        XCTAssertEqual(AnchorMath.chainNeeded(load: load, height: 8, weight: w), 50, accuracy: 0.001)
+    }
+
+    func testCatenaryWithChainOnTheBottomReachesTheBow() {
+        let w = AnchorMath.chainWeight(sizeMM: 10)
+        let shape = AnchorMath.shape(length: 60, height: 8, load: 1000, weight: w, samples: 400)
+        XCTAssertGreaterThan(shape.lying, 0)
+        XCTAssertEqual(shape.shankAngle, 0)
+        XCTAssertEqual(shape.points.last!.y, 8, accuracy: 0.01)
+        XCTAssertEqual(arcLength(shape), 60, accuracy: 0.05)
+    }
+
+    func testCatenaryLiftedOffPullsUpOnTheAnchor() {
+        let w = AnchorMath.chainWeight(sizeMM: 10)
+        let load = AnchorMath.liftOffLoad(length: 30, height: 8, weight: w) * 3
+        let shape = AnchorMath.shape(length: 30, height: 8, load: load, weight: w, samples: 400)
+        XCTAssertEqual(shape.lying, 0)
+        XCTAssertGreaterThan(shape.shankAngle, 0)
+        XCTAssertLessThan(shape.shankAngle, asin(8.0 / 30) * 180 / .pi)   // flatter than a straight, taut rode
+        XCTAssertEqual(shape.points.last!.y, 8, accuracy: 0.01)
+        XCTAssertEqual(arcLength(shape), 30, accuracy: 0.05)
+    }
+
+    func testGustReachingInvertsTheLoad() {
+        let b = BoatProfile()
+        let load = AnchorMath.load(b, wind: 30, current: 1, waveHeight: 0.5)
+        XCTAssertEqual(AnchorMath.gust(reaching: load.design, b, current: 1, waveHeight: 0.5)!, 30, accuracy: 0.01)
+    }
+
+    func testShortRodeInAStrongBlowIsDangerAndSaysLetOutMore() {
+        let b = BoatProfile()
+        let scope = ScopeSettings(depth: 6, bowHeight: 1.5, boatLength: 14.3, scopeRatio: 5, margin: 5)
+        var c = AnchorConditions()
+        c.gust = 30; c.rodeOut = 25; c.bottom = .sand
+        let r = AnchorMath.assess(b, scope: scope, c)
+        XCTAssertEqual(r.status, .danger)
+        XCTAssertGreaterThan(r.rodeNeeded!, 25)
+        XCTAssertTrue(AnchorMath.suggestions(b, scope: scope, c, r, units: .meters).contains { $0.hasPrefix("Let out") })
+    }
+
+    func testGaleBeyondTheChainOnBoardSaysFindShallowerWater() {
+        var b = BoatProfile()
+        b.chainLength = 30
+        let scope = ScopeSettings(depth: 10, bowHeight: 1.5, boatLength: 14.3, scopeRatio: 5, margin: 5)
+        var c = AnchorConditions()
+        c.gust = 50; c.rodeOut = 30
+        let r = AnchorMath.assess(b, scope: scope, c)
+        XCTAssertTrue(AnchorMath.suggestions(b, scope: scope, c, r, units: .meters).contains { $0.hasPrefix("Even all") })
+    }
+
+    func testLongRodeInABreezeHoldsWell() {
+        let b = BoatProfile()
+        let scope = ScopeSettings(depth: 6, bowHeight: 1.5, boatLength: 14.3, scopeRatio: 5, margin: 5)
+        var c = AnchorConditions()
+        c.wind = 10; c.gust = 15; c.current = 0.5; c.waveHeight = 0; c.rodeOut = 60; c.bottom = .sand
+        let r = AnchorMath.assess(b, scope: scope, c)
+        XCTAssertEqual(r.status, .good)
+        XCTAssertGreaterThan(r.safeGust!, 15)
     }
 }
 
@@ -712,11 +1148,33 @@ final class UserGuideTests: XCTestCase {
         XCTAssertEqual(GuideFacts.batterySnoozeMinutes, Int(AlarmReason.lowBattery(level: 0.05).snooze / 60))
     }
 
+    func testAnchorMathGuideWorkedExampleUsesTheModel() {
+        let text = UserGuideContent.anchorMath.blocks.compactMap { block -> String? in
+            if case .formula(let t) = block { return t }
+            return nil
+        }.joined(separator: "\n")
+        var c = AnchorConditions()
+        c.wind = 15; c.gust = 25; c.current = 0.5; c.waveHeight = 0.3048; c.bottom = .mud; c.rodeOut = 45.72
+        let scope = ScopeSettings(depth: 6.096, tideRise: 0, bowHeight: 1.219, boatLength: 14.326, scopeRatio: 5, margin: 5)
+        let r = AnchorMath.assess(BoatProfile(), scope: scope, c)
+        XCTAssertTrue(text.contains(String(format: "safe gust limit  = %.1f kt", r.safeGust!)))
+        XCTAssertTrue(text.contains("H_max = w × (L² − h²) / (2h)"))
+    }
+
+    func testAnchorMathFormulasFitAPhone() {
+        for block in UserGuideContent.anchorMath.blocks {
+            guard case .formula(let t) = block else { continue }
+            for line in t.split(separator: "\n") {
+                XCTAssertLessThanOrEqual(line.count, 42, "too wide for a phone: \(line)")
+            }
+        }
+    }
+
     func testGuideMentionsWhatItClaimsAboutDefaults() {
         // The guide says the siren, gust and fade numbers; make sure the quoted text actually contains them.
         let all = UserGuideContent.topics.flatMap(\.blocks).map { block -> String in
             switch block {
-            case .heading(let t), .text(let t), .tip(let t), .warning(let t): return t
+            case .heading(let t), .text(let t), .tip(let t), .warning(let t), .formula(let t): return t
             case .bullets(let items): return items.joined(separator: " ")
             }
         }.joined(separator: " ")

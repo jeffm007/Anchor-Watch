@@ -4,6 +4,8 @@ import SwiftUI
 final class AnchorAnnotation: MKPointAnnotation {}
 final class BoatAnnotation: MKPointAnnotation {}
 final class CircleLabelAnnotation: MKPointAnnotation {}
+/// Where the swing fit puts the anchor.
+final class EstimateAnnotation: MKPointAnnotation {}
 final class StationAnnotation: MKPointAnnotation {}
 final class WindAnnotation: MKPointAnnotation {
     var speed = 0.0
@@ -51,6 +53,16 @@ struct ChartMapView: UIViewRepresentable {
 
         private var circle: MKCircle?
         private var circleKey: [Double] = []
+        /// Dotted circle round the anchor: how far off the drop point may be from GPS error.
+        private var uncertainty: MKCircle?
+        private var uncertaintyKey: [Double] = []
+        /// The swing estimate: a marker and its error ellipse.
+        private let estimatePin = EstimateAnnotation()
+        private var estimateEllipse: MKPolygon?
+        private var estimateKey: [Double] = []
+        /// Red arrow showing which way, and how far, the anchor has moved.
+        private var driftArrow: MKPolyline?
+        private var driftKey: [Double] = []
         private var trackLine: MKPolyline?
         private var trackCount = 0
         private var tether: MKPolyline?
@@ -85,13 +97,19 @@ struct ChartMapView: UIViewRepresentable {
                 anchorPin.title = "Anchor"
                 if !map.annotations.contains(where: { $0 === anchorPin }) { map.addAnnotation(anchorPin) }
                 syncCircle(map, anchor: anchor)
+                syncUncertainty(map, anchor: anchor)
+                syncEstimate(map)
+                syncDrift(map)
                 syncTether(map, anchor: anchor)
                 syncCircleLabel(map, anchor: anchor)
             } else {
                 map.removeAnnotation(anchorPin)
                 map.removeAnnotation(labelPin)
-                for o in [circle, trackLine, tether] as [MKOverlay?] { if let o { map.removeOverlay(o) } }
-                circle = nil; trackLine = nil; tether = nil; circleKey = []; trackCount = 0
+                // The track may still be recording under way; syncTrack removes it once it's empty.
+                syncEstimate(map)
+                syncDrift(map)
+                for o in [circle, uncertainty, tether] as [MKOverlay?] { if let o { map.removeOverlay(o) } }
+                circle = nil; uncertainty = nil; tether = nil; circleKey = []; uncertaintyKey = []
             }
             syncTrack(map)
             frame(map)
@@ -230,6 +248,9 @@ struct ChartMapView: UIViewRepresentable {
             // Tiles go under everything else; re-add vector overlays on top afterwards.
             var vectors: [MKOverlay] = []
             if let circle { vectors.append(circle) }
+            if let uncertainty { vectors.append(uncertainty) }
+            if let estimateEllipse { vectors.append(estimateEllipse) }
+            if let driftArrow { vectors.append(driftArrow) }
             if let trackLine { vectors.append(trackLine) }
             if let tether { vectors.append(tether) }
             vectors.forEach(map.removeOverlay)
@@ -257,6 +278,67 @@ struct ChartMapView: UIViewRepresentable {
             let new = MKCircle(center: anchor, radius: engine.radius)
             circle = new
             map.addOverlay(new, level: .aboveLabels)
+        }
+
+        private func syncUncertainty(_ map: MKMapView, anchor: CLLocationCoordinate2D) {
+            let key = engine.anchorUncertainty.map { [anchor.latitude, anchor.longitude, $0] } ?? []
+            guard key != uncertaintyKey else { return }
+            uncertaintyKey = key
+            if let uncertainty { map.removeOverlay(uncertainty) }
+            uncertainty = nil
+            guard let meters = engine.anchorUncertainty, meters > 0 else { return }
+            let new = MKCircle(center: anchor, radius: meters)
+            new.title = "uncertainty"
+            uncertainty = new
+            map.addOverlay(new, level: .aboveLabels)
+        }
+
+        private func syncEstimate(_ map: MKMapView) {
+            let estimate = engine.anchor == nil ? nil : engine.anchorEstimate
+            let key = estimate.map { [$0.center.latitude, $0.center.longitude, $0.semiMajor, $0.semiMinor, $0.majorBearing] } ?? []
+            guard key != estimateKey else { return }
+            estimateKey = key
+            if let estimateEllipse { map.removeOverlay(estimateEllipse) }
+            estimateEllipse = nil
+            guard let estimate else { map.removeAnnotation(estimatePin); return }
+
+            estimatePin.coordinate = estimate.center
+            estimatePin.title = "Anchor by swing"
+            estimatePin.subtitle = "±\(engine.units.format(estimate.semiMajor)) · \(Int(estimate.minutes)) min of swing"
+            if !map.annotations.contains(where: { $0 === estimatePin }) { map.addAnnotation(estimatePin) }
+
+            // Error ellipse as a polygon: long axis along majorBearing.
+            var coords = (0..<72).map { i -> CLLocationCoordinate2D in
+                let t = Double(i) / 72 * 2 * .pi
+                let along = estimate.semiMajor * cos(t), across = estimate.semiMinor * sin(t)
+                let b = estimate.majorBearing.radians
+                let east = along * sin(b) + across * cos(b), north = along * cos(b) - across * sin(b)
+                return AnchorEstimate.coordinate(AnchorEstimate.Point(x: east, y: north), from: estimate.center)
+            }
+            let polygon = MKPolygon(coordinates: &coords, count: coords.count)
+            polygon.title = "estimate"
+            estimateEllipse = polygon
+            map.addOverlay(polygon, level: .aboveLabels)
+        }
+
+        private func syncDrift(_ map: MKMapView) {
+            let drift = engine.anchor == nil ? nil : engine.anchorDrift
+            let key = drift.map { [$0.from.latitude, $0.from.longitude, $0.to.latitude, $0.to.longitude] } ?? []
+            guard key != driftKey else { return }
+            driftKey = key
+            if let driftArrow { map.removeOverlay(driftArrow) }
+            driftArrow = nil
+            guard let drift else { return }
+            // Shaft from where the anchor was to where it is now, then a head drawn back over the tip.
+            let head = max(3, drift.distance * 0.3)
+            let back = (drift.bearing + 180).truncatingRemainder(dividingBy: 360)
+            var coords = [drift.from, drift.to,
+                          Geo.destination(from: drift.to, bearing: back - 30, meters: head), drift.to,
+                          Geo.destination(from: drift.to, bearing: back + 30, meters: head)]
+            let line = MKPolyline(coordinates: &coords, count: coords.count)
+            line.title = "drift"
+            driftArrow = line
+            map.addOverlay(line, level: .aboveLabels)
         }
 
         private func syncTrack(_ map: MKMapView) {
@@ -334,6 +416,13 @@ struct ChartMapView: UIViewRepresentable {
                 view.displayPriority = .required
                 view.collisionMode = .none
                 return view
+            case is EstimateAnnotation:
+                let view = MKAnnotationView(annotation: annotation, reuseIdentifier: "estimate")
+                view.image = EstimateIcon.image
+                view.canShowCallout = true
+                view.displayPriority = .required
+                view.collisionMode = .none
+                return view
             case let pin as StationAnnotation:
                 let view = MKAnnotationView(annotation: pin, reuseIdentifier: "station")
                 let speed = engine.observations.first { StationName.short($0.name) == pin.title }?.windSpeed
@@ -374,6 +463,13 @@ struct ChartMapView: UIViewRepresentable {
             switch overlay {
             case let tile as MKTileOverlay:
                 return MKTileOverlayRenderer(tileOverlay: tile)
+            case let circle as MKCircle where circle.title == "uncertainty":
+                let r = MKCircleRenderer(circle: circle)
+                r.strokeColor = UIColor.systemOrange
+                r.fillColor = UIColor.systemOrange.withAlphaComponent(0.1)
+                r.lineWidth = 2
+                r.lineDashPattern = [2, 5]
+                return r
             case let circle as MKCircle:
                 let r = MKCircleRenderer(circle: circle)
                 let color: UIColor = engine.alarm == nil ? .systemGreen : .systemRed
@@ -381,9 +477,21 @@ struct ChartMapView: UIViewRepresentable {
                 r.fillColor = color.withAlphaComponent(0.15)
                 r.lineWidth = 3
                 return r
+            case let polygon as MKPolygon where polygon.title == "estimate":
+                let r = MKPolygonRenderer(polygon: polygon)
+                r.strokeColor = UIColor.systemPurple
+                r.fillColor = UIColor.systemPurple.withAlphaComponent(0.12)
+                r.lineWidth = 2
+                r.lineDashPattern = [6, 4]
+                return r
             case let line as MKPolyline:
                 let r = MKPolylineRenderer(polyline: line)
-                if line.title == "tether" {
+                if line.title == "drift" {
+                    r.strokeColor = .systemRed
+                    r.lineWidth = 4
+                    r.lineCap = .round
+                    r.lineJoin = .round
+                } else if line.title == "tether" {
                     r.strokeColor = UIColor.systemOrange.withAlphaComponent(0.8)
                     r.lineWidth = 1.5
                     r.lineDashPattern = [4, 4]
@@ -462,6 +570,22 @@ enum BoatIcon {
 
 /// Anchor with a long pointed tip at the bottom. The tip's end is the point that marks where the
 /// anchor was dropped, so the image's bottom-centre must be placed on the coordinate.
+/// Swing-estimate marker: a purple ring with an anchor in it, centred on the estimate.
+enum EstimateIcon {
+    static let image: UIImage = {
+        let size = CGSize(width: 26, height: 26)
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            let ring = UIBezierPath(ovalIn: CGRect(x: 2, y: 2, width: 22, height: 22))
+            UIColor.white.withAlphaComponent(0.85).setFill(); ring.fill()
+            UIColor.systemPurple.setStroke(); ring.lineWidth = 2.5; ring.stroke()
+            let glyph = NSAttributedString(string: anchorGlyph, attributes: [
+                .font: UIFont.systemFont(ofSize: 14, weight: .bold), .foregroundColor: UIColor.systemPurple])
+            let g = glyph.size()
+            glyph.draw(at: CGPoint(x: (size.width - g.width) / 2, y: (size.height - g.height) / 2))
+        }
+    }()
+}
+
 enum AnchorIcon {
     /// On-screen size in points. The artwork is drawn at 40x56 and scaled down to this.
     static let size = CGSize(width: 20, height: 28)

@@ -12,6 +12,10 @@ final class SimulatedLocationSource: LocationSource {
         case windShift = "Wind shift"
         case dragging = "Dragging anchor"
         case gpsDropout = "GPS dropout"
+        /// Wind clocking well round and back, with lulls: gives the swing fit a wide arc to work with.
+        case wideSwing = "Wide swing (anchor finding)"
+        /// Wide swing, then from 25 simulated minutes the anchor creeps downwind: tests the drag warning.
+        case slowDrag = "Slow drag (drag warning)"
         var id: String { rawValue }
     }
 
@@ -31,7 +35,10 @@ final class SimulatedLocationSource: LocationSource {
 
     var onFix: ((Fix) -> Void)?
     var scenario: Scenario = .swinging
-    var speed: Double = 1
+    /// Simulated seconds per real second. Above 1× the simulator also sends more fixes per second
+    /// (up to 10), so a sped-up track is as dense as a real one.
+    var speed: Double = 1 { didSet { if timer != nil { start() } } }
+    private var stepsPerSecond: Int { Int(min(10, max(1, speed.rounded()))) }
 
     /// Defaults to Roche Harbor, San Juan Island, WA.
     var origin = Place.rocheHarbor.coordinate
@@ -44,7 +51,7 @@ final class SimulatedLocationSource: LocationSource {
 
     func start() {
         stop()
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 1 / Double(stepsPerSecond), repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
         tick()
@@ -62,7 +69,7 @@ final class SimulatedLocationSource: LocationSource {
     }
 
     private func tick() {
-        simTime += speed
+        simTime += speed / Double(stepsPerSecond)
         let t = simTime
 
         // Wind direction the boat lies toward, with a slow sheer.
@@ -70,16 +77,25 @@ final class SimulatedLocationSource: LocationSource {
         if scenario == .windShift, t > 60 {
             base += 90 * min(1, (t - 60) / 120)
         }
-        let heading = base + 35 * sin(2 * .pi * t / 90)
+        var heading = base + 35 * sin(2 * .pi * t / 90)
+        var reach = rode
+        if scenario == .wideSwing || scenario == .slowDrag {
+            // Wind clocks ±75° over 20 minutes; the boat sheers ±15° on top, and sags in toward the anchor in lulls.
+            heading = base + 75 * sin(2 * .pi * t / 1200) + 15 * sin(2 * .pi * t / 90)
+            reach = rode * (0.88 + 0.12 * max(0, sin(2 * .pi * t / 240)))
+        }
 
         var pivot = origin
         if scenario == .dragging, t > 45 {
             pivot = Geo.destination(from: origin, bearing: base, meters: 0.25 * (t - 45))
         }
+        if scenario == .slowDrag, t > 1500 {
+            pivot = Geo.destination(from: origin, bearing: base, meters: 0.01 * (t - 1500))   // 0.6 m/min
+        }
 
         if scenario == .gpsDropout, (60..<120).contains(t) { return }
 
-        let truth = Geo.destination(from: pivot, bearing: heading, meters: rode)
+        let truth = Geo.destination(from: pivot, bearing: heading, meters: reach)
         let noisy = Geo.destination(from: truth, bearing: .random(in: 0..<360), meters: noise())
 
         let now = Date()

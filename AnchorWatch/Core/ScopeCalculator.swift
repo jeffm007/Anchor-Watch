@@ -8,8 +8,8 @@ struct ScopeSettings: Codable, Equatable {
     var tideRise = 0.0
     /// Bow roller height above the water.
     var bowHeight = 1.219   // 4 ft
-    /// Bow to stern. Nereus is 53 ft. The phone is assumed to sit amidships.
-    var boatLength = 16.154
+    /// Bow to stern. Nereus is 47 ft (50 ft with the swim deck lowered). The phone is assumed to sit amidships.
+    var boatLength = 14.326
     /// Rode length : (depth + bow height).
     var scopeRatio = 5.0
     /// Extra allowance for GPS error and chain slack.
