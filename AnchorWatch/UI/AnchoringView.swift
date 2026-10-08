@@ -25,8 +25,8 @@ struct AnchoringView: View {
                 Section {
                     knob("Water depth", length($engine.scope.depth), 0...max(units == .feet ? 100 : 30, engine.scope.depth * units.perMeter),
                          step: units == .feet ? 1 : 0.5, format: (units == .feet ? "%.0f " : "%.1f ") + units.symbol)
-                    knob("Wind", $conditions.wind, 0...60, step: 1, format: "%.0f kt")
-                    knob("Gusts", $conditions.gust, 0...70, step: 1, format: "%.0f kt")
+                    knob("Wind", wind, 0...60, step: 1, format: "%.0f kt")
+                    knob("Gusts", gust, 0...70, step: 1, format: "%.0f kt")
                     knob("Current", $conditions.current, 0...4, step: 0.25, format: "%.2g kt")
                     knob("Waves", length($conditions.waveHeight), 0...(units == .feet ? 10 : 3), step: units == .feet ? 0.5 : 0.1,
                          format: "%.1f " + units.symbol)
@@ -39,7 +39,7 @@ struct AnchoringView: View {
                         Button("Use the forecast for the next 12 h") { fillFromForecast() }
                     }
                 } header: { Text("Conditions") } footer: {
-                    Text("Water depth is the same one Depth & Scope uses; the \(units.formatTenths(engine.scope.tideRise)) tide rise from there is added on top. Gusts drive the loads below.")
+                    Text("Water depth is the same one Depth & Scope uses; the \(units.formatTenths(engine.scope.tideRise)) tide rise from there is added on top. The wind sets how the chain lies; gusts drive the limits below.")
                 }
 
                 Section("Suggestions") {
@@ -49,9 +49,13 @@ struct AnchoringView: View {
                 }
 
                 Section {
-                    LabeledContent("Load at \(Int(conditions.gust)) kt gusts", value: units.formatForce(r.load.design))
-                    LabeledContent("  wind / current (steady)", value: "\(units.formatForce(r.load.wind)) / \(units.formatForce(r.load.current))")
+                    LabeledContent("Load now (\(Int(conditions.wind)) kt)", value: units.formatForce(r.steadyLoad.design))
+                    LabeledContent("Load in \(Int(conditions.gust)) kt gusts", value: units.formatForce(r.load.design))
+                    LabeledContent("  wind / current before allowances", value: "\(units.formatForce(r.load.wind)) / \(units.formatForce(r.load.current))")
                         .font(.footnote).foregroundStyle(.secondary)
+                    LabeledContent("  taken by chain on the bottom", value: "− \(units.formatForce(r.chainFriction))")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    LabeledContent("Reaching the anchor in gusts", value: units.formatForce(r.anchorLoad))
                     if let gust = r.liftOffGust {
                         LabeledContent("Chain lifts off at", value: gust > 0 ? "\(Int(gust)) kt" : "already")
                     }
@@ -67,10 +71,10 @@ struct AnchoringView: View {
                     if let needed = r.rodeNeeded {
                         LabeledContent("Rode for these gusts", value: units.format(needed))
                     }
-                    LabeledContent("Chain on the bottom", value: units.format(r.shape.lying))
-                    LabeledContent("Pull angle at the anchor", value: String(format: "%.0f°", r.shape.shankAngle))
+                    LabeledContent("Chain on the bottom", value: "\(units.format(r.steadyShape.lying)) now · \(units.format(r.shape.lying)) in gusts")
+                    LabeledContent("Pull angle at the anchor", value: String(format: "%.0f° now · %.0f° in gusts", r.steadyShape.shankAngle, r.shape.shankAngle))
                 } header: { Text("Worked out") } footer: {
-                    Text("Loads include an allowance for yawing and waves. Holding is a rough band for a \(boat.anchorType.rawValue.lowercased()) anchor of \(units.formatWeight(boat.anchorWeight)) in \(conditions.bottom.rawValue.lowercased()); a well-set anchor can do much better or worse.")
+                    Text("Loads include an allowance for yawing and waves. Holding is a rough band for a \(boat.anchorType.rawValue.lowercased()) anchor of \(units.formatWeight(boat.anchorWeight)) in \(conditions.bottom.rawValue.lowercased()); a well-set anchor can do much better or worse. The status, limits and suggestions are all worked out at the gusts, since gusts are what break an anchor out.")
                 }
 
                 Section {
@@ -118,13 +122,45 @@ struct AnchoringView: View {
         case .marginal: ("Marginal", .orange, "exclamationmark.triangle.fill")
         case .danger: ("At risk of dragging", .red, "xmark.octagon.fill")
         }
-        return HStack {
-            Label(text, systemImage: icon).foregroundStyle(color).bold()
-            Spacer()
-            if let safe = r.safeGust {
-                Text("good to \(Int(safe)) kt").foregroundStyle(.secondary)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Label(text, systemImage: icon).foregroundStyle(color).bold()
+                Spacer()
+                if let safe = r.safeGust {
+                    Text("good to \(Int(safe)) kt").foregroundStyle(.secondary)
+                }
+            }
+            if let why = statusReason(r) {
+                Text(why).font(.footnote).foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// One line saying what decided the status, so it can be checked against the picture.
+    private func statusReason(_ r: AnchorAssessment) -> String? {
+        let gust = Int(conditions.gust)
+        switch r.reason {
+        case .none: return nil
+        case .rodeTooShort:
+            return "Not enough rode out to reach the bottom at high water."
+        case .chainLifting:
+            return String(format: "In %d kt gusts the chain lifts off the bottom and pulls up on the anchor at %.0f°.", gust, r.shape.shankAngle)
+        case .holding:
+            let holding = units.formatForce(r.holding ?? 0)
+            let pull = units.formatForce(r.anchorLoad)
+            return r.status == .danger
+                ? "In \(gust) kt gusts the pull reaching the anchor (\(pull)) is more than its rough holding (\(holding))."
+                : "In \(gust) kt gusts the pull reaching the anchor (\(pull)) is within \(Int(AnchorMath.holdingSafety * 100 - 100))% of its rough holding (\(holding))."
+        }
+    }
+
+    /// Wind and gusts stay in step: gusts are never below the wind.
+    private var wind: Binding<Double> {
+        Binding(get: { conditions.wind }, set: { conditions.wind = $0; conditions.gust = max(conditions.gust, $0) })
+    }
+
+    private var gust: Binding<Double> {
+        Binding(get: { conditions.gust }, set: { conditions.gust = $0; conditions.wind = min(conditions.wind, $0) })
     }
 
     /// A metre value shown in the user's units.
@@ -152,14 +188,17 @@ struct RodeDiagram: View {
     /// Seabed sand, drawn solid and again see-through over the buried part of the anchor.
     private let seabed = Color(red: 0.80, green: 0.71, blue: 0.58)
     private let steel = Color(white: 0.32)
+    private let gustColor = Color.orange.opacity(0.7)
 
     var body: some View {
         Canvas { ctx, size in
-            let shape = result.shape
+            // The chain as it lies in the steady wind, with the gust shape dashed behind it.
+            let shape = result.steadyShape
+            let gustShape = result.shape
             let boatLength = max(scope.boatLength, 5)
             // The boat is drawn larger than life so its detail reads next to a long rode.
             let boatScale = 1.8
-            let worldWidth = max(shape.reach, 1) + boatLength * boatScale
+            let worldWidth = max(shape.reach, gustShape.reach, 1) + boatLength * boatScale
             let padLeft = 48.0, padRight = 12.0
             let sx = (size.width - padLeft - padRight) / worldWidth
             let cabin = max(boat.cabinHeight, 1.5)
@@ -203,6 +242,18 @@ struct RodeDiagram: View {
             let rodeColor: Color = shape.shankAngle >= 10 ? .red : shape.shankAngle > 0 ? .orange : .primary
             ctx.stroke(hanging, with: .color(rodeColor), style: StrokeStyle(lineWidth: 2.5, dash: boat.rodeType == .allChain ? [] : [6, 3]))
 
+            // Where the rode goes in the gusts: faint and dashed, labelled three-quarters of the way up,
+            // clear of the current arrow on the left.
+            let gustPoints = gustShape.points.filter { $0.x >= gustShape.lying }
+            if gustShape != shape, let first = gustPoints.first {
+                var gustLine = Path()
+                gustLine.move(to: p(first.x, first.y))
+                for point in gustPoints.dropFirst() { gustLine.addLine(to: p(point.x, point.y)) }
+                ctx.stroke(gustLine, with: .color(gustColor), style: StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
+                let at = gustPoints[gustPoints.count * 3 / 4]
+                ctx.draw(Text("in gusts").font(.caption2).foregroundStyle(gustColor), at: p(at.x, at.y), anchor: .bottomTrailing)   // above the dashed line
+            }
+
             // Anchor on the end of the rode, flukes dug in: the shank comes out of a mound of sand it ploughed up,
             // and the buried part shows faintly through the bottom.
             let shackle = CGPoint(x: p(0, 0).x, y: seabedY - 3)
@@ -232,7 +283,7 @@ struct RodeDiagram: View {
             ctx.draw(Text("\(units.format(conditions.rodeOut)) out · \(units.format(shape.lying)) on bottom").font(.caption2).foregroundStyle(.black.opacity(0.6)),
                      at: CGPoint(x: 8, y: labelY), anchor: .leading)
         }
-        .accessibilityLabel("Side view of the rode: \(units.format(conditions.rodeOut)) out, \(units.format(result.shape.lying)) lying on the bottom")
+        .accessibilityLabel("Side view of the rode: \(units.format(conditions.rodeOut)) out, \(units.format(result.steadyShape.lying)) lying on the bottom now, \(units.format(result.shape.lying)) in gusts")
     }
 
     /// A plow-style anchor in screen points: shackle at `at`, shank running back and down to the crown,

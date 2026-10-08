@@ -50,8 +50,12 @@ struct AnchorAssessment: Equatable {
 
     /// Height of the bow roller above the seabed at high water.
     let height: Double
+    /// At the gusts: what the limits, status and advice are worked out from.
     let load: AnchorLoad
     let shape: RodeShape
+    /// In the steady wind: how the boat lies most of the time, as drawn in the diagram.
+    let steadyLoad: AnchorLoad
+    let steadyShape: RodeShape
     /// Horizontal pull at which the last chain lifts off the bottom. Nil for rope.
     let liftOffLoad: Double?
     /// Gust at which the chain lifts off, with today's current and waves.
@@ -64,7 +68,19 @@ struct AnchorAssessment: Equatable {
     let safeGust: Double?
     /// Rode to keep chain on the bottom at the design load, with a margin.
     let rodeNeeded: Double?
+    /// Pull taken up by friction of the chain on the bottom, and what's left for the anchor, at the gusts.
+    let chainFriction: Double
+    let anchorLoad: Double
     let status: Status
+    /// What decided the status.
+    let reason: Reason
+
+    enum Reason: Equatable {
+        case none
+        case rodeTooShort
+        case chainLifting
+        case holding
+    }
 }
 
 enum AnchorMath {
@@ -93,25 +109,50 @@ enum AnchorMath {
     /// from published pull tests; real holding varies widely with how well it set.
     static func holdingRatio(_ type: BoatProfile.AnchorType, _ bottom: AnchorConditions.Bottom) -> Double {
         switch (bottom, type) {
-        case (.sand, .newGeneration): return 30
-        case (.sand, .plow): return 15
-        case (.sand, .claw): return 12
-        case (.sand, .fluke): return 40
-        case (.mud, .newGeneration): return 15
-        case (.mud, .plow): return 10
-        case (.mud, .claw): return 6
-        case (.mud, .fluke): return 25
-        case (.clay, .newGeneration): return 25
-        case (.clay, .plow), (.clay, .claw): return 12
-        case (.clay, .fluke): return 20
-        case (.gravel, .newGeneration): return 12
-        case (.gravel, .plow), (.gravel, .claw): return 8
+        case (.sand, .newGeneration): return 40
+        case (.sand, .plow): return 20
+        case (.sand, .claw): return 18
+        case (.sand, .fluke): return 50
+        case (.mud, .newGeneration): return 25
+        case (.mud, .plow): return 12
+        case (.mud, .claw): return 10
+        case (.mud, .fluke): return 30
+        case (.clay, .newGeneration): return 30
+        case (.clay, .plow), (.clay, .claw): return 15
+        case (.clay, .fluke): return 25
+        case (.gravel, .newGeneration): return 15
+        case (.gravel, .plow), (.gravel, .claw): return 10
         case (.gravel, .fluke): return 5
-        case (.weed, .newGeneration): return 5
-        case (.weed, .plow), (.weed, .claw): return 4
+        case (.weed, .newGeneration): return 6
+        case (.weed, .plow): return 4
+        case (.weed, .claw): return 5
         case (.weed, .fluke): return 2
         case (.rock, _): return 3
         }
+    }
+
+    /// Friction of chain lying on the bottom, as a share of its weight in water. Rough round numbers.
+    static func chainFriction(_ bottom: AnchorConditions.Bottom) -> Double {
+        switch bottom {
+        case .sand: return 0.7
+        case .mud: return 0.5
+        case .clay: return 0.6
+        case .gravel: return 0.75
+        case .weed: return 0.4
+        case .rock: return 0.5
+        }
+    }
+
+    /// Chain left on the bottom under horizontal pull `load` (zero for rope, or once it all lifts).
+    static func lyingChain(length: Double, height: Double, load: Double, weight: Double) -> Double {
+        guard weight > 0, length > height else { return 0 }
+        return max(0, length - chainNeeded(load: load, height: height, weight: weight))
+    }
+
+    /// What actually reaches the anchor: the pull less what the chain lying on the bottom takes by friction.
+    static func anchorLoad(_ load: Double, length: Double, height: Double, weight: Double, bottom: AnchorConditions.Bottom) -> Double {
+        let friction = chainFriction(bottom) * weight * lyingChain(length: length, height: height, load: load, weight: weight)
+        return max(0, load - friction)
     }
 
     /// Holding lost as the pull at the shank lifts off horizontal: about half at 10°.
@@ -209,27 +250,48 @@ enum AnchorMath {
         let allChain = b.rodeType == .allChain || (b.rodeType == .chainAndRope && c.rodeOut <= b.chainLength)
         let weight = allChain && b.chainSize > 0 ? chainWeight(sizeMM: b.chainSize) : 0
         let shape = self.shape(length: c.rodeOut, height: height, load: load.design, weight: weight)
+        let steadyLoad = self.load(b, wind: min(c.wind, c.gust), current: c.current, waveHeight: c.waveHeight)
+        let steadyShape = self.shape(length: c.rodeOut, height: height, load: steadyLoad.design, weight: weight)
 
         let liftOff = weight > 0 ? liftOffLoad(length: c.rodeOut, height: height, weight: weight) : nil
         let liftOffGust = liftOff.flatMap { gust(reaching: $0, b, current: c.current, waveHeight: c.waveHeight) }
 
+        // Chain lying on the bottom takes some of the pull by friction before it reaches the anchor.
+        let atAnchor = anchorLoad(load.design, length: c.rodeOut, height: height, weight: weight, bottom: c.bottom)
+
         let anchorWeight = b.anchorWeight * gravity
         let fullHolding = anchorWeight > 0 ? anchorWeight * holdingRatio(b.anchorType, c.bottom) : nil
         let holding = fullHolding.map { $0 * angleEfficiency(shape.shankAngle) }
-        // The holding limit assumes the rode keeps the pull flat, so use full holding for the gust that reaches it.
-        let holdingGust = fullHolding.flatMap { gust(reaching: $0 / holdingSafety, b, current: c.current, waveHeight: c.waveHeight) }
+        // The gust at which the pull reaching the anchor hits holding ÷ safety. Friction depends on how much chain
+        // is still down, which depends on the pull, so it's found by bisection on the gust speed.
+        let holdingGust = fullHolding.map { full -> Double in
+            func atAnchor(_ g: Double) -> Double {
+                let h = self.load(b, wind: g, current: c.current, waveHeight: c.waveHeight).design
+                return anchorLoad(h, length: c.rodeOut, height: height, weight: weight, bottom: c.bottom)
+            }
+            let target = full / holdingSafety
+            if atAnchor(0) >= target { return 0 }
+            var lo = 0.0, hi = 150.0
+            if atAnchor(hi) < target { return hi }
+            for _ in 0..<50 { let mid = (lo + hi) / 2; if atAnchor(mid) < target { lo = mid } else { hi = mid } }
+            return lo
+        }
         let safeGust = [liftOffGust, holdingGust].compactMap { $0 }.min()
 
         let rodeNeeded = weight > 0 ? chainNeeded(load: load.design, height: height, weight: weight) * rodeMargin : nil
 
         var status = AnchorAssessment.Status.good
-        if let holding, load.design > holding / holdingSafety { status = .marginal }
-        if shape.shankAngle > 0 { status = max(status, .marginal) }
-        if let holding, load.design > holding || shape.shankAngle >= 10 || c.rodeOut <= height { status = .danger }
+        var reason = AnchorAssessment.Reason.none
+        if let holding, atAnchor > holding / holdingSafety { status = .marginal; reason = .holding }
+        if shape.shankAngle > 0 { status = max(status, .marginal); if reason == .none { reason = .chainLifting } }
+        if let holding, atAnchor > holding { status = .danger; reason = .holding }
+        if shape.shankAngle >= 10 { status = .danger; reason = .chainLifting }
+        if c.rodeOut <= height { status = .danger; reason = .rodeTooShort }
 
-        return AnchorAssessment(height: height, load: load, shape: shape, liftOffLoad: liftOff, liftOffGust: liftOffGust,
+        return AnchorAssessment(height: height, load: load, shape: shape, steadyLoad: steadyLoad, steadyShape: steadyShape,
+                                liftOffLoad: liftOff, liftOffGust: liftOffGust,
                                 holding: holding, holdingGust: holdingGust, safeGust: safeGust, rodeNeeded: rodeNeeded,
-                                status: status)
+                                chainFriction: load.design - atAnchor, anchorLoad: atAnchor, status: status, reason: reason)
     }
 
     /// Plain-language advice for the conditions, worst first.
@@ -252,7 +314,7 @@ enum AnchorMath {
             tips.append(String(format: "The rode pulls up on the anchor at %.0f°, which cuts its holding to about %.0f%%.",
                                r.shape.shankAngle, angleEfficiency(r.shape.shankAngle) * 100))
         }
-        if let holding = r.holding, r.load.design > holding / holdingSafety {
+        if let holding = r.holding, r.anchorLoad > holding / holdingSafety {
             tips.append("Expected holding in \(c.bottom.rawValue.lowercased()) is close to the load. Back down hard to set it, consider a second anchor, or move to a better bottom.")
         }
         if c.bottom == .rock || c.bottom == .weed {

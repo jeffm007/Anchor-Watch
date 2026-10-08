@@ -85,7 +85,7 @@ private enum AnchorMathGuide {
         ρ_sea = \(n(A.seawaterDensity, 0)) kg/m³
         C_d   = \(n(A.hullDragCoefficient, 1))
         """),
-        .text("The row **wind / current (steady)** shows F_wind at the gust speed and F_current, before the allowances below."),
+        .text("The row **wind / current before allowances** shows F_wind at the gust speed and F_current, before the multipliers below."),
         .heading("4. Load at gusts"),
         .text("A boat at anchor doesn't sit still. It sails from side to side, which swings the pull off the centreline and adds momentum, and waves snatch at the rode. Two multipliers allow for that:"),
         .formula("""
@@ -97,7 +97,8 @@ private enum AnchorMathGuide {
         c = 0.5 with a snubber ≥ 5 m
         c = 1.0 without
         """),
-        .text("H is the **horizontal** pull the boat puts on the rode, and it's the number in **Load at N kt gusts**. Wind and current are assumed to come from the same direction, the worst case."),
+        .text("H is the **horizontal** pull the boat puts on the rode, and it's the number in **Load in N kt gusts**. Wind and current are assumed to come from the same direction, the worst case."),
+        .text("**Load now** is the same formula with the steady wind instead of the gust. The diagram draws the chain at that load (how the boat lies most of the time), with a faint dashed line for where it goes in the gusts. **Chain on the bottom** and **Pull angle** show both. Everything that decides safety (the limits, the status line and the advice) uses the gusts."),
     ]
 
     // MARK: Chain weight

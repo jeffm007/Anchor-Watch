@@ -572,6 +572,18 @@ final class AnchoringTests: XCTestCase {
         XCTAssertTrue(AnchorMath.suggestions(b, scope: scope, c, r, units: .meters).contains { $0.hasPrefix("Even all") })
     }
 
+    func testSteadyWindChangesHowTheChainLiesButNotTheGustLimits() {
+        let b = BoatProfile()
+        let scope = ScopeSettings(depth: 6, bowHeight: 1.5, boatLength: 14.3, scopeRatio: 5, margin: 5)
+        var light = AnchorConditions(); light.wind = 5; light.gust = 25; light.rodeOut = 60
+        var fresh = light; fresh.wind = 20
+        let a = AnchorMath.assess(b, scope: scope, light), z = AnchorMath.assess(b, scope: scope, fresh)
+        XCTAssertLessThan(a.steadyLoad.design, z.steadyLoad.design)
+        XCTAssertGreaterThan(a.steadyShape.lying, z.steadyShape.lying)     // more chain lifts in more wind
+        XCTAssertEqual(a.load.design, z.load.design)                       // gust load unchanged
+        XCTAssertEqual(a.safeGust, z.safeGust)
+    }
+
     func testLongRodeInABreezeHoldsWell() {
         let b = BoatProfile()
         let scope = ScopeSettings(depth: 6, bowHeight: 1.5, boatLength: 14.3, scopeRatio: 5, margin: 5)

@@ -7,13 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		B7B2C3D4E5F6A7B8C9D0E1F2 /* AnchorDrift.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7B2C3D4E5F6A7B8C9D0E1F2 /* AnchorDrift.swift */; };
-		B6B2C3D4E5F6A7B8C9D0E1F2 /* AnchorEstimate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6B2C3D4E5F6A7B8C9D0E1F2 /* AnchorEstimate.swift */; };
-		B5B2C3D4E5F6A7B8C9D0E1F2 /* AnchorMathGuide.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5B2C3D4E5F6A7B8C9D0E1F2 /* AnchorMathGuide.swift */; };
-		B4B2C3D4E5F6A7B8C9D0E1F2 /* AnchoringView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4B2C3D4E5F6A7B8C9D0E1F2 /* AnchoringView.swift */; };
-		B3B2C3D4E5F6A7B8C9D0E1F2 /* AnchoringModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3B2C3D4E5F6A7B8C9D0E1F2 /* AnchoringModel.swift */; };
-		B2B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfileView.swift */; };
-		B1B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfile.swift */; };
 		0134ACC1AC9E3211050EF160 /* AnchorWatchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F5F5217712C0CC191332E6B /* AnchorWatchTests.swift */; };
 		0C84AC4C086A223F5D831374 /* GPSLocationSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D91F62B8DCEC78142EF5741 /* GPSLocationSource.swift */; };
 		12D8834DFE0EA162E78E871A /* AnchorActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19186A028FEFB8D2C5ABA945 /* AnchorActivity.swift */; };
@@ -34,6 +27,13 @@
 		90F5AAB21EF15B9B6A6CFE34 /* AnchorActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19186A028FEFB8D2C5ABA945 /* AnchorActivity.swift */; };
 		91D9FC2D073834574154F4C4 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21BFBA88AE0B50E6E9C07BC9 /* ContentView.swift */; };
 		A706D395010CF287A42BB757 /* LiveActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 155D9E41B3F2AF484AB3143F /* LiveActivityController.swift */; };
+		B1B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfile.swift */; };
+		B2B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfileView.swift */; };
+		B3B2C3D4E5F6A7B8C9D0E1F2 /* AnchoringModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3B2C3D4E5F6A7B8C9D0E1F2 /* AnchoringModel.swift */; };
+		B4B2C3D4E5F6A7B8C9D0E1F2 /* AnchoringView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4B2C3D4E5F6A7B8C9D0E1F2 /* AnchoringView.swift */; };
+		B5B2C3D4E5F6A7B8C9D0E1F2 /* AnchorMathGuide.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5B2C3D4E5F6A7B8C9D0E1F2 /* AnchorMathGuide.swift */; };
+		B6B2C3D4E5F6A7B8C9D0E1F2 /* AnchorEstimate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6B2C3D4E5F6A7B8C9D0E1F2 /* AnchorEstimate.swift */; };
+		B7B2C3D4E5F6A7B8C9D0E1F2 /* AnchorDrift.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7B2C3D4E5F6A7B8C9D0E1F2 /* AnchorDrift.swift */; };
 		B9ABD4E905D08404E0F68166 /* SimulatedLocationSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1265034A4830D9C31F477C7B /* SimulatedLocationSource.swift */; };
 		BD6AEC2BB300D775F0B3B9C6 /* LocationSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 227DDA1B10737D49F8445A4F /* LocationSource.swift */; };
 		C60B095B35E4EE3D58578657 /* AlertService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46714C3CA4280837AF4C84A3 /* AlertService.swift */; };
@@ -73,13 +73,6 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		A7B2C3D4E5F6A7B8C9D0E1F2 /* AnchorDrift.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorDrift.swift; sourceTree = "<group>"; };
-		A6B2C3D4E5F6A7B8C9D0E1F2 /* AnchorEstimate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorEstimate.swift; sourceTree = "<group>"; };
-		A5B2C3D4E5F6A7B8C9D0E1F2 /* AnchorMathGuide.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorMathGuide.swift; sourceTree = "<group>"; };
-		A4B2C3D4E5F6A7B8C9D0E1F2 /* AnchoringView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchoringView.swift; sourceTree = "<group>"; };
-		A3B2C3D4E5F6A7B8C9D0E1F2 /* AnchoringModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchoringModel.swift; sourceTree = "<group>"; };
-		A2B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoatProfileView.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoatProfile.swift; sourceTree = "<group>"; };
 		1265034A4830D9C31F477C7B /* SimulatedLocationSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimulatedLocationSource.swift; sourceTree = "<group>"; };
 		155D9E41B3F2AF484AB3143F /* LiveActivityController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityController.swift; sourceTree = "<group>"; };
 		16802792B90A9D0C484ED686 /* TideService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TideService.swift; sourceTree = "<group>"; };
@@ -102,7 +95,14 @@
 		9528E204F2DFF023639CD8AF /* AnchorWatchTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AnchorWatchTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		96F3FF089F11507C073DCE25 /* AnchorWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AnchorWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9E1004BEA5E770B2CB860816 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		A1B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoatProfile.swift; sourceTree = "<group>"; };
+		A2B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoatProfileView.swift; sourceTree = "<group>"; };
+		A3B2C3D4E5F6A7B8C9D0E1F2 /* AnchoringModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchoringModel.swift; sourceTree = "<group>"; };
 		A428B8B5556401357AD0F48E /* AnchorLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorLiveActivity.swift; sourceTree = "<group>"; };
+		A4B2C3D4E5F6A7B8C9D0E1F2 /* AnchoringView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchoringView.swift; sourceTree = "<group>"; };
+		A5B2C3D4E5F6A7B8C9D0E1F2 /* AnchorMathGuide.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorMathGuide.swift; sourceTree = "<group>"; };
+		A6B2C3D4E5F6A7B8C9D0E1F2 /* AnchorEstimate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorEstimate.swift; sourceTree = "<group>"; };
+		A7B2C3D4E5F6A7B8C9D0E1F2 /* AnchorDrift.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorDrift.swift; sourceTree = "<group>"; };
 		AD5BCEE030753079CB5A646E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		B554637FC10A7BDCFB171EA2 /* ScopeCalculator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScopeCalculator.swift; sourceTree = "<group>"; };
 		C33A4095E0E5048A68AF7BF9 /* ChartLayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartLayer.swift; sourceTree = "<group>"; };
