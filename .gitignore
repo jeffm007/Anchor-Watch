@@ -1,0 +1,7 @@
+# Xcode per-user state
+xcuserdata/
+
+# SMB share leftovers
+.smbdelete*
+
+.DS_Store
