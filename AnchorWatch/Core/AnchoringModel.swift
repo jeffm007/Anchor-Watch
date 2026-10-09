@@ -48,7 +48,7 @@ struct AnchorAssessment: Equatable {
         static func < (a: Status, b: Status) -> Bool { a.rawValue < b.rawValue }
     }
 
-    /// Height of the bow roller above the seabed at high water.
+    /// Height of the bow roller above the seabed at the tide being modelled.
     let height: Double
     /// At the gusts: what the limits, status and advice are worked out from.
     let load: AnchorLoad
@@ -160,6 +160,9 @@ enum AnchorMath {
         max(0.1, 1 - degrees / 20)
     }
 
+    /// Least water under the keel before the app warns.
+    static let keelClearance = 0.6     // 2 ft
+
     /// Waves snatch at the rode; a snubber of 5 m or more takes out about half of it.
     static func waveFactor(height: Double, snubber: Double) -> Double {
         1 + height * (snubber >= 5 ? 0.5 : 1.0)
@@ -174,14 +177,14 @@ enum AnchorMath {
     static func load(_ b: BoatProfile, wind: Double, current: Double, waveHeight: Double) -> AnchorLoad {
         let w = BoatMath.windLoad(b, knots: wind) ?? 0
         let c = currentLoad(b, knots: current)
-        let design = (w + c) * yawFactor * waveFactor(height: waveHeight, snubber: b.snubberLength)
+        let design = (w + c) * yawFactor * waveFactor(height: waveHeight, snubber: b.snubber)
         return AnchorLoad(wind: w, current: c, design: design)
     }
 
     /// Wind speed that brings the design load up to `limit`, holding current and waves fixed.
     static func gust(reaching limit: Double, _ b: BoatProfile, current: Double, waveHeight: Double) -> Double? {
         guard let area = BoatMath.windage(b), area > 0 else { return nil }
-        let windShare = limit / (yawFactor * waveFactor(height: waveHeight, snubber: b.snubberLength)) - currentLoad(b, knots: current)
+        let windShare = limit / (yawFactor * waveFactor(height: waveHeight, snubber: b.snubber)) - currentLoad(b, knots: current)
         guard windShare > 0 else { return 0 }
         return (windShare / (0.5 * BoatMath.airDensity * BoatMath.dragCoefficient * area)).squareRoot() / 0.514444
     }
@@ -300,7 +303,7 @@ enum AnchorMath {
         let carried = BoatMath.rodeCarried(b)
 
         if c.rodeOut <= r.height {
-            tips.append("The rode doesn't reach the bottom at high water. Let out at least \(units.format(r.height * 3)).")
+            tips.append("The rode doesn't reach the bottom at this tide. Let out at least \(units.format(r.height * 3)).")
         }
         if let needed = r.rodeNeeded, needed > c.rodeOut {
             if carried > 0, needed > carried {
@@ -320,14 +323,18 @@ enum AnchorMath {
         if c.bottom == .rock || c.bottom == .weed {
             tips.append("\(c.bottom.rawValue) bottoms are unreliable. Dive or watch the anchor set before trusting it.")
         }
-        if c.waveHeight >= 0.5 && b.snubberLength < 5 {
-            tips.append("Rig a nylon snubber of at least \(units.format(6)): waves are snatching at all-chain rode.")
+        if c.waveHeight >= 0.5 && b.snubber < 5 {
+            tips.append(b.hasSnubber
+                ? "Lengthen the snubber to at least \(units.format(6)): waves are snatching at the rode and a short one does little."
+                : "Rig a nylon snubber of at least \(units.format(6)): waves are snatching at the rode.")
         }
         if c.current >= 1.5 {
             tips.append("Strong current: expect the boat to lie to the current, not the wind, at slack-wind times. Allow for a full swing.")
         }
-        if s.tideRise > 0 {
-            tips.append("Figures are at high water (+\(units.formatTenths(s.tideRise)) tide), when scope is shortest.")
+        if b.draft > 0 && s.designDepth < b.draft + AnchorMath.keelClearance {
+            tips.append(s.designDepth <= b.draft
+                ? "Aground at this tide: \(units.format(s.designDepth)) of water for a \(units.format(b.draft)) draft. Anchor in deeper water."
+                : "Only \(units.format(s.designDepth - b.draft)) under the keel at this tide. Anchor in deeper water or check the low.")
         }
         if tips.isEmpty || r.status == .good {
             if let safe = r.safeGust {

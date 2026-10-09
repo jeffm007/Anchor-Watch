@@ -2,17 +2,10 @@ import Foundation
 
 /// The boat and its ground tackle: what the rode, holding and load calculations need.
 /// Lengths in metres, areas in square metres, weights in kilograms, volumes in litres, rope and chain sizes in millimetres.
-/// Zero means "not entered yet". The defaults are Nereus (ex-Kinship), a 2005 Selene 47, from the Edwards Marine Survey of 30 Sep 2024;
+/// Always a powerboat. Zero means "not entered yet". The defaults are Nereus (ex-Kinship), a 2005 Selene 47, from the Edwards Marine Survey of 30 Sep 2024;
 /// the survey doesn't give freeboard, heights, anchor weights or rode lengths, so those are marked GUESS until measured. Length overall and bow roller height live in `ScopeSettings`,
 /// which the scope maths already uses, so they are not repeated here.
 struct BoatProfile: Codable, Equatable {
-    enum HullType: String, Codable, CaseIterable, Identifiable {
-        case sail = "Sailboat", catamaran = "Catamaran", power = "Powerboat"
-        var id: String { rawValue }
-        /// Sailboats carry a mast, rigging and furled sails above the cabin.
-        var hasRig: Bool { self != .power }
-    }
-
     enum AnchorType: String, Codable, CaseIterable, Identifiable {
         case newGeneration = "New generation", plow = "Plow", claw = "Claw", fluke = "Fluke"
         var id: String { rawValue }
@@ -34,7 +27,6 @@ struct BoatProfile: Codable, Equatable {
     }
 
     var name = "Nereus"
-    var hullType = HullType.power
 
     // Hull
     var waterlineLength = 14.046   // 46' 1"
@@ -51,10 +43,10 @@ struct BoatProfile: Codable, Equatable {
     var freeboard = 1.676           // GUESS 5' 6"
     /// Cabin top, doghouse or flybridge above the deck.
     var cabinHeight = 2.743         // GUESS 9 ft: pilothouse and flybridge
-    /// Highest point above the water: masthead, antenna or radar arch.
-    var airDraft = 7.925            // GUESS 26 ft: radar mast
     /// Measured frontal windage area. Nil uses the estimate from beam and heights.
     var windageArea: Double?
+    /// Measured side windage area. Nil uses the estimate from length and heights.
+    var sideWindageArea: Double?
 
     // Ground tackle
     var anchorType = AnchorType.claw
@@ -64,13 +56,10 @@ struct BoatProfile: Codable, Equatable {
     var chainSize = 9.525           // GUESS 3/8"
     var ropeLength = 0.0
     var ropeSize = 0.0
+    var hasSnubber = true
     var snubberLength = 6.096       // GUESS 20 ft
-
-    // Second anchor (Nereus carries a CQR on chain and nylon as well as the claw)
-    var hasSecondAnchor = true
-    var secondAnchorType = AnchorType.plow
-    var secondAnchorWeight = 34.0   // GUESS 75 lb
-    var secondRodeType = RodeType.chainAndRope
+    /// Length of snubber in use: zero when there's none.
+    var snubber: Double { hasSnubber ? snubberLength : 0 }
 
     init() {}
 
@@ -81,7 +70,6 @@ struct BoatProfile: Codable, Equatable {
             (try? c.decodeIfPresent(T.self, forKey: key)) ?? fallback
         }
         name = value(.name, name)
-        hullType = value(.hullType, hullType)
         waterlineLength = value(.waterlineLength, waterlineLength)
         beam = value(.beam, beam)
         draft = value(.draft, draft)
@@ -91,8 +79,8 @@ struct BoatProfile: Codable, Equatable {
         holdingCapacity = value(.holdingCapacity, holdingCapacity)
         freeboard = value(.freeboard, freeboard)
         cabinHeight = value(.cabinHeight, cabinHeight)
-        airDraft = value(.airDraft, airDraft)
         windageArea = try? c.decodeIfPresent(Double.self, forKey: .windageArea)
+        sideWindageArea = try? c.decodeIfPresent(Double.self, forKey: .sideWindageArea)
         anchorType = value(.anchorType, anchorType)
         anchorWeight = value(.anchorWeight, anchorWeight)
         rodeType = value(.rodeType, rodeType)
@@ -101,10 +89,7 @@ struct BoatProfile: Codable, Equatable {
         ropeLength = value(.ropeLength, ropeLength)
         ropeSize = value(.ropeSize, ropeSize)
         snubberLength = value(.snubberLength, snubberLength)
-        hasSecondAnchor = value(.hasSecondAnchor, hasSecondAnchor)
-        secondAnchorType = value(.secondAnchorType, secondAnchorType)
-        secondAnchorWeight = value(.secondAnchorWeight, secondAnchorWeight)
-        secondRodeType = value(.secondRodeType, secondRodeType)
+        hasSnubber = value(.hasSnubber, snubberLength > 0)
     }
 }
 
@@ -115,8 +100,6 @@ enum BoatMath {
     static let dragCoefficient = 1.0
     /// Hull and cabin are not full rectangles seen from ahead.
     static let hullFill = 0.8
-    /// Effective width of a mast with its rigging and furled sails.
-    static let rigWidth = 0.25
     /// Yawing, gusts and surge in waves can roughly double the steady load.
     static let peakFactor = 2.0
 
@@ -134,15 +117,20 @@ enum BoatMath {
         (b.rodeType.hasChain ? b.chainLength : 0) + (b.rodeType.hasRope ? b.ropeLength : 0)
     }
 
-    /// Frontal area from beam, freeboard and cabin, plus the rig on a sailboat. Nil until beam and freeboard are entered.
+    /// Frontal area from beam, freeboard and cabin. Nil until beam and freeboard are entered.
+    /// The radar mast is small next to the flybridge and is left out.
     static func estimatedWindage(_ b: BoatProfile) -> Double? {
         guard b.beam > 0, b.freeboard > 0 else { return nil }
-        let hull = b.beam * (b.freeboard + b.cabinHeight) * hullFill
-        let rig = b.hullType.hasRig ? max(0, b.airDraft - b.freeboard - b.cabinHeight) * rigWidth : 0
-        return hull + rig
+        return b.beam * (b.freeboard + b.cabinHeight) * hullFill
     }
 
     /// The measured area if entered, otherwise the estimate.
+    /// Side area from length overall, freeboard and cabin. Nil until length and freeboard are entered.
+    static func estimatedSideWindage(_ b: BoatProfile, length: Double) -> Double? {
+        guard length > 0, b.freeboard > 0 else { return nil }
+        return length * (b.freeboard + b.cabinHeight) * hullFill
+    }
+
     static func windage(_ b: BoatProfile) -> Double? {
         if let area = b.windageArea, area > 0 { return area }
         return estimatedWindage(b)

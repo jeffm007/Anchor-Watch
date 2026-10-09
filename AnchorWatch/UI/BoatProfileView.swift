@@ -12,22 +12,12 @@ struct BoatProfileView: View {
     var body: some View {
         Form {
             Section {
-                TextField("Boat name", text: $engine.boat.name)
-                    .focused($editing)
-                Picker("Type", selection: $engine.boat.hullType) {
-                    ForEach(BoatProfile.HullType.allCases) { Text($0.rawValue).tag($0) }
-                }.pickerStyle(.segmented)
-            }
-
-            Section {
                 length("Length overall", $engine.scope.boatLength)
                 length("Waterline length", $engine.boat.waterlineLength)
                 length("Beam", $engine.boat.beam)
                 length("Draft", $engine.boat.draft)
                 number("Dry weight", weight($engine.boat.displacement), unit: units.weightSymbol)
-            } header: { Text("Hull") } footer: {
-                Text("The length also sizes the boat on the chart and the suggested alarm radius. Dry weight is without fuel, water or waste aboard.")
-            }
+            } header: { Text("Hull") }
 
             Section {
                 number("Fuel", volume($engine.boat.fuelCapacity), unit: units.volumeSymbol)
@@ -36,21 +26,17 @@ struct BoatProfileView: View {
                 if let loaded = BoatMath.loadedWeight(boat) {
                     LabeledContent("Weight with full tanks", value: units.formatWeight(loaded))
                 }
-            } header: { Text("Tanks") } footer: {
-                Text("Full tanks add weight, and a heavier boat surges harder on the rode in gusts and waves.")
-            }
+            } header: { Text("Tanks") }
 
             Section {
                 length("Freeboard at the bow", $engine.boat.freeboard)
                 length("Cabin above deck", $engine.boat.cabinHeight)
-                length(boat.hullType.hasRig ? "Masthead above water" : "Highest point above water", $engine.boat.airDraft)
-                if let estimate = BoatMath.estimatedWindage(boat) {
-                    LabeledContent("Estimated frontal area", value: units.formatArea(estimate))
-                }
-                optionalNumber("Measured frontal area", area($engine.boat.windageArea), unit: units.areaSymbol)
-            } header: { Text("Windage") } footer: {
-                Text("Cabin includes a doghouse or flybridge. Windage is what the wind pushes on when the boat lies head to wind. Leave the measured area blank to use the estimate from the beam and heights.")
-            }
+                optionalNumber("Windage (Front)", area($engine.boat.windageArea, estimate: BoatMath.estimatedWindage(boat)),
+                               unit: units.areaSymbol)
+                optionalNumber("Windage (Side)", area($engine.boat.sideWindageArea,
+                                                     estimate: BoatMath.estimatedSideWindage(boat, length: engine.scope.boatLength)),
+                               unit: units.areaSymbol)
+            } header: { Text("Windage") }
 
             Section {
                 Picker("Anchor type", selection: $engine.boat.anchorType) {
@@ -58,9 +44,7 @@ struct BoatProfileView: View {
                 }
                 number("Anchor weight", weight($engine.boat.anchorWeight), unit: units.weightSymbol)
                 length("Bow roller above water", $engine.scope.bowHeight)
-            } header: { Text("Anchor") } footer: {
-                Text("\(boat.anchorType.rawValue): \(boat.anchorType.examples).")
-            }
+            } header: { Text("Anchor") }
 
             Section {
                 Picker("Rode", selection: $engine.boat.rodeType) {
@@ -74,48 +58,14 @@ struct BoatProfileView: View {
                     length("Rope length", $engine.boat.ropeLength)
                     sizePicker("Rope size", $engine.boat.ropeSize, sizes: units.ropeSizes)
                 }
-                length("Snubber or bridle", $engine.boat.snubberLength)
+                Toggle("Snubber or bridle", isOn: snubberOn)
+                if boat.hasSnubber {
+                    length("Snubber length", $engine.boat.snubberLength)
+                }
             } header: { Text("Rode") }
-
-            Section {
-                Toggle("Second anchor", isOn: $engine.boat.hasSecondAnchor)
-                if boat.hasSecondAnchor {
-                    Picker("Anchor type", selection: $engine.boat.secondAnchorType) {
-                        ForEach(BoatProfile.AnchorType.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                    number("Anchor weight", weight($engine.boat.secondAnchorWeight), unit: units.weightSymbol)
-                    Picker("Rode", selection: $engine.boat.secondRodeType) {
-                        ForEach(BoatProfile.RodeType.allCases) { Text($0.rawValue).tag($0) }
-                    }.pickerStyle(.segmented)
-                }
-            } footer: {
-                if boat.hasSecondAnchor {
-                    Text("\(boat.secondAnchorType.rawValue): \(boat.secondAnchorType.examples). The rode and scope maths use the main anchor above.")
-                }
-            }
-
-            Section {
-                LabeledContent("Rode on board", value: carried)
-                if let deepest = BoatMath.deepestWater(boat, scopeRatio: engine.scope.scopeRatio, bowHeight: engine.scope.bowHeight) {
-                    LabeledContent("Deepest water at \(Int(engine.scope.scopeRatio)):1", value: units.format(deepest))
-                }
-                if let shortfall = engine.rodeShortfall {
-                    Label("Today's scope needs \(units.format(shortfall)) more rode than you carry.", systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                }
-                if let area = BoatMath.windage(boat) {
-                    LabeledContent("Windage area", value: units.formatArea(area))
-                }
-                if let load = BoatMath.windLoad(boat, knots: engine.gustLimit) {
-                    LabeledContent("Wind load at \(Int(engine.gustLimit)) kt", value: units.formatForce(load))
-                    LabeledContent("Peak with yawing and surge", value: units.formatForce(load * BoatMath.peakFactor))
-                }
-            } header: { Text("Worked out from your boat") } footer: {
-                Text("Wind loads use your gust warning limit from Settings. They are estimates for a boat head to wind; a boat sailing at anchor, or pitching in waves, can load the anchor harder.")
-            }
         }
         .scrollDismissesKeyboard(.interactively)
-        .navigationTitle(boat.name.isEmpty ? "Boat Profile" : boat.name)
+        .navigationTitle("\(boat.name) - 2005 Selene 47'")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
@@ -125,9 +75,13 @@ struct BoatProfileView: View {
         }
     }
 
-    private var carried: String {
-        let rode = BoatMath.rodeCarried(boat)
-        return rode > 0 ? units.format(rode) : "Not entered"
+    /// Turning the snubber on with no length entered starts it at 20 ft.
+    private var snubberOn: Binding<Bool> {
+        Binding(get: { boat.hasSnubber },
+                set: { on in
+                    engine.boat.hasSnubber = on
+                    if on && engine.boat.snubberLength == 0 { engine.boat.snubberLength = 6.096 }
+                })
     }
 
     // MARK: Fields
@@ -149,8 +103,9 @@ struct BoatProfileView: View {
                 set: { liters.wrappedValue = max(0, $0 / units.perLiter) })
     }
 
-    private func area(_ squareMeters: Binding<Double?>) -> Binding<Double?> {
-        Binding(get: { squareMeters.wrappedValue.map { $0 * units.perSquareMeter } },
+    /// An area that shows the estimate until one is entered; clearing it goes back to the estimate.
+    private func area(_ squareMeters: Binding<Double?>, estimate: Double?) -> Binding<Double?> {
+        Binding(get: { (squareMeters.wrappedValue ?? estimate).map { $0 * units.perSquareMeter } },
                 set: { squareMeters.wrappedValue = $0.flatMap { $0 > 0 ? $0 / units.perSquareMeter : nil } })
     }
 

@@ -1,6 +1,6 @@
 import Foundation
 
-/// The user-guide page that shows how the Anchoring screen's "Worked out" numbers are calculated.
+/// The user-guide page that shows the maths behind the Anchoring screen's "Calculated" numbers.
 /// Every constant is read from `AnchorMath` and `BoatMath`, and the worked example runs the real model,
 /// so this page can't drift from the code.
 extension UserGuideContent {
@@ -23,7 +23,7 @@ private enum AnchorMathGuide {
     // MARK: The pipeline
 
     static let overview: [GuideTopic.Block] = [
-        .text("The **Worked out** section on the Anchoring screen is a static force balance: how hard the wind, current and waves push the boat back, against how much of that the rode and anchor can resist. Everything is in SI units inside (metres, kilograms, newtons, m/s) and converted for display."),
+        .text("The **Calculated** section on the Anchoring screen is a static force balance: how hard the wind, current and waves push the boat back, against how much of that the rode and anchor can resist. Everything is in SI units inside (metres, kilograms, newtons, m/s) and converted for display."),
         .formula("""
         Boat Profile  → A, A_u, w
         Conditions    → wind, gust, current,
@@ -51,16 +51,12 @@ private enum AnchorMathGuide {
         .formula("""
         A = f_hull × beam
               × (freeboard + cabin height)
-            + rig
 
         f_hull = \(n(B.hullFill))
           (hull and cabin aren't full
            rectangles seen from ahead)
-        rig = \(n(B.rigWidth)) m × (masthead
-                  − freeboard − cabin)
-          (sailboats and catamarans only)
         """),
-        .text("A powerboat has no rig term; its radar mast is small next to the flybridge and is left out."),
+        .text("The radar mast is small next to the flybridge and is left out."),
     ]
 
     // MARK: Loads
@@ -227,7 +223,7 @@ private enum AnchorMathGuide {
         let r = A.assess(boat, scope: scope, c)
         let area = B.windage(boat) ?? 0
         let w = A.chainWeight(sizeMM: boat.chainSize)
-        let kWave = A.waveFactor(height: c.waveHeight, snubber: boat.snubberLength)
+        let kWave = A.waveFactor(height: c.waveHeight, snubber: boat.snubber)
         let hMax = r.liftOffLoad ?? 0
         let lifted = r.load.design > hMax
         let fullHolding = boat.anchorWeight * A.gravity * A.holdingRatio(boat.anchorType, c.bottom)

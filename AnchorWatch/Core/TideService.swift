@@ -69,6 +69,23 @@ enum TideMath {
         return best - current
     }
 
+    /// Lowest and highest water expected in the next `hours`, and when each comes.
+    static func extremes(from now: Date, hours: Double, events: [TideEvent]) -> (low: TideEvent, high: TideEvent)? {
+        guard let current = height(at: now, events: events) else { return nil }
+        var low = TideEvent(time: now, height: current, isHigh: false)
+        var high = TideEvent(time: now, height: current, isHigh: true)
+        var t = now
+        let end = now.addingTimeInterval(hours * 3600)
+        while t <= end {
+            if let h = height(at: t, events: events) {
+                if h < low.height { low = TideEvent(time: t, height: h, isHigh: false) }
+                if h > high.height { high = TideEvent(time: t, height: h, isHigh: true) }
+            }
+            t = t.addingTimeInterval(300)
+        }
+        return (low, high)
+    }
+
     static func nearest(to point: CLLocationCoordinate2D, in stations: [TideStation]) -> TideStation? {
         stations.min { Geo.distance($0.coordinate, point) < Geo.distance($1.coordinate, point) }
     }

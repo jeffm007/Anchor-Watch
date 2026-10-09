@@ -6,19 +6,69 @@ struct AnchoringView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var conditions = AnchorConditions()
     @State private var started = false
+    @State private var tide = TideChoice.high
+
+    enum TideChoice: String, CaseIterable, Identifiable {
+        case low = "Low tide", now = "Now", high = "High tide"
+        var id: String { rawValue }
+    }
 
     private var units: Units { engine.units }
     private var boat: BoatProfile { engine.boat }
-    private var result: AnchorAssessment { AnchorMath.assess(boat, scope: engine.scope, conditions) }
+    private var result: AnchorAssessment { AnchorMath.assess(boat, scope: tideScope, conditions) }
+
+    /// Lowest and highest water in the Tides window, from the predictions for the nearest station.
+    private var tideExtremes: (low: TideEvent, high: TideEvent)? {
+        engine.tide.flatMap { TideMath.extremes(from: Date(), hours: engine.tideWindowHours, events: $0.events) }
+    }
+
+    /// Change in water level from now at the chosen tide. High falls back to the rise entered in Depth & Scope.
+    private var tideChange: Double? {
+        let now = engine.tideNow
+        switch tide {
+        case .now: return 0
+        case .low: return now.flatMap { n in tideExtremes.map { $0.low.height - n } }
+        case .high: return now.flatMap { n in tideExtremes.map { $0.high.height - n } } ?? engine.scope.tideRise
+        }
+    }
+
+    /// The scope settings with the depth moved to the chosen tide.
+    private var tideScope: ScopeSettings {
+        var s = engine.scope
+        s.tideRise = max(tideChange ?? 0, -s.depth)
+        return s
+    }
+
+    private var tideNote: String {
+        let depth = units.format(tideScope.designDepth)
+        guard let change = tideChange else { return "No tide data yet: showing the depth now, \(depth)." }
+        let sign = change >= 0 ? "+" : "−"
+        let shift = "\(sign)\(units.formatTenths(abs(change)))"
+        switch tide {
+        case .now:
+            return "\(depth) deep now."
+        case .low, .high:
+            guard let ext = tideExtremes else { return "\(depth) deep with the \(shift) rise from Depth & Scope (no tide data yet)." }
+            let event = tide == .low ? ext.low : ext.high
+            let when = event.time.formatted(date: .omitted, time: .shortened)
+            return "\(depth) deep at \(tide == .low ? "low" : "high") water, \(when) (\(shift) from now)."
+        }
+    }
 
     var body: some View {
         let r = result
         NavigationStack {
             Form {
                 Section {
-                    RodeDiagram(boat: boat, scope: engine.scope, conditions: conditions, result: r, units: units)
+                    RodeDiagram(boat: boat, scope: tideScope, conditions: conditions, result: r, units: units)
                         .frame(height: 240)
                         .listRowInsets(EdgeInsets())
+                    VStack(alignment: .leading, spacing: 6) {
+                        Picker("Tide", selection: $tide) {
+                            ForEach(TideChoice.allCases) { Text($0.rawValue).tag($0) }
+                        }.pickerStyle(.segmented)
+                        Text(tideNote).font(.footnote).foregroundStyle(.secondary)
+                    }
                     statusRow(r)
                 }
 
@@ -39,7 +89,7 @@ struct AnchoringView: View {
                         Button("Use the forecast for the next 12 h") { fillFromForecast() }
                     }
                 } header: { Text("Conditions") } footer: {
-                    Text("Water depth is the same one Depth & Scope uses; the \(units.formatTenths(engine.scope.tideRise)) tide rise from there is added on top. The wind sets how the chain lies; gusts drive the limits below.")
+                    Text("Water depth is the depth now, the same one Depth & Scope uses; the tide buttons above move it to low or high water. The wind sets how the chain lies; gusts drive the limits below.")
                 }
 
                 Section("Suggestions") {
@@ -73,7 +123,7 @@ struct AnchoringView: View {
                     }
                     LabeledContent("Chain on the bottom", value: "\(units.format(r.steadyShape.lying)) now · \(units.format(r.shape.lying)) in gusts")
                     LabeledContent("Pull angle at the anchor", value: String(format: "%.0f° now · %.0f° in gusts", r.steadyShape.shankAngle, r.shape.shankAngle))
-                } header: { Text("Worked out") } footer: {
+                } header: { Text("Calculated:") } footer: {
                     Text("Loads include an allowance for yawing and waves. Holding is a rough band for a \(boat.anchorType.rawValue.lowercased()) anchor of \(units.formatWeight(boat.anchorWeight)) in \(conditions.bottom.rawValue.lowercased()); a well-set anchor can do much better or worse. The status, limits and suggestions are all worked out at the gusts, since gusts are what break an anchor out.")
                 }
 
@@ -86,6 +136,24 @@ struct AnchoringView: View {
                 } footer: {
                     Text("Chain size and length, anchor weights, freeboard, cabin height and snubber are guesses until you measure them. Change them in the Boat Profile.")
                 }
+
+                Section {
+                    LabeledContent("Rode on board", value: carriedText)
+                    if let deepest = BoatMath.deepestWater(boat, scopeRatio: engine.scope.scopeRatio, bowHeight: engine.scope.bowHeight) {
+                        LabeledContent("Deepest water at \(Int(engine.scope.scopeRatio)):1", value: units.format(deepest))
+                    }
+                    if let shortfall = engine.rodeShortfall {
+                        Label("Today's scope needs \(units.format(shortfall)) more rode than you carry.", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                    if let area = BoatMath.windage(boat) {
+                        LabeledContent("Windage (Front)", value: units.formatArea(area))
+                    }
+                    if let load = BoatMath.windLoad(boat, knots: engine.gustLimit) {
+                        LabeledContent("Wind load at \(Int(engine.gustLimit)) kt", value: units.formatForce(load))
+                        LabeledContent("Peak with yawing and surge", value: units.formatForce(load * BoatMath.peakFactor))
+                    }
+                } header: { Text("Calculated from your boat:") }
             }
             .navigationTitle("Anchoring")
             .navigationBarTitleDisplayMode(.inline)
@@ -97,6 +165,11 @@ struct AnchoringView: View {
     /// Most rode the slider offers: everything on board, or enough for the scope if more.
     private var rodeMax: Double {
         max(BoatMath.rodeCarried(boat), engine.rodeToPayOut, conditions.rodeOut)
+    }
+
+    private var carriedText: String {
+        let rode = BoatMath.rodeCarried(boat)
+        return rode > 0 ? units.format(rode) : "Not entered"
     }
 
     /// Opens on the scope calculator's rode (capped to what's aboard) and the forecast, once.
@@ -142,7 +215,7 @@ struct AnchoringView: View {
         switch r.reason {
         case .none: return nil
         case .rodeTooShort:
-            return "Not enough rode out to reach the bottom at high water."
+            return "Not enough rode out to reach the bottom at this tide."
         case .chainLifting:
             return String(format: "In %d kt gusts the chain lifts off the bottom and pulls up on the anchor at %.0f°.", gust, r.shape.shankAngle)
         case .holding:
@@ -278,7 +351,7 @@ struct RodeDiagram: View {
 
             // Depth and rode labels along the bottom.
             let labelY = size.height - 9
-            ctx.draw(Text("\(units.format(result.height - scope.bowHeight)) at high water").font(.caption2).foregroundStyle(.black.opacity(0.6)),
+            ctx.draw(Text("\(units.format(result.height - scope.bowHeight)) deep").font(.caption2).foregroundStyle(.black.opacity(0.6)),
                      at: CGPoint(x: size.width - 8, y: labelY), anchor: .trailing)
             ctx.draw(Text("\(units.format(conditions.rodeOut)) out · \(units.format(shape.lying)) on bottom").font(.caption2).foregroundStyle(.black.opacity(0.6)),
                      at: CGPoint(x: 8, y: labelY), anchor: .leading)

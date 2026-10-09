@@ -298,13 +298,24 @@ final class BoatProfileTests: XCTestCase {
         var b = BoatProfile()
         b.freeboard = 0
         XCTAssertNil(BoatMath.windage(b))
-        b.hullType = .sail; b.beam = 4; b.freeboard = 1.5; b.cabinHeight = 0.5; b.airDraft = 18
-        // 4 × 2 × 0.8 hull and cabin, plus 16 m of rig × 0.25
-        XCTAssertEqual(BoatMath.windage(b)!, 10.4, accuracy: 0.001)
-        b.hullType = .power
+        b.beam = 4; b.freeboard = 1.5; b.cabinHeight = 0.5
+        // 4 × 2 × 0.8 hull and cabin; the radar mast is left out
         XCTAssertEqual(BoatMath.windage(b)!, 6.4, accuracy: 0.001)
         b.windageArea = 12
         XCTAssertEqual(BoatMath.windage(b)!, 12)
+        // 15 × 2 × 0.8 along the side
+        XCTAssertEqual(BoatMath.estimatedSideWindage(b, length: 15)!, 24, accuracy: 0.001)
+        XCTAssertNil(BoatMath.estimatedSideWindage(b, length: 0))
+    }
+
+    func testSnubberOffCountsAsNone() {
+        var b = BoatProfile()
+        b.snubberLength = 6
+        XCTAssertEqual(b.snubber, 6)
+        b.hasSnubber = false
+        XCTAssertEqual(b.snubber, 0)
+        let old = #"{"snubberLength":0}"#.data(using: .utf8)!
+        XCTAssertFalse(try JSONDecoder().decode(BoatProfile.self, from: old).hasSnubber)   // saved before the toggle existed
     }
 
     func testWindLoadGrowsWithTheSquareOfSpeed() {
@@ -617,6 +628,15 @@ final class TideTests: XCTestCase {
         XCTAssertEqual(TideMath.rise(from: t0, hours: 12, events: events)!, 2, accuracy: 0.01)
         // From midway up the flood, only 1 m of rise remains.
         XCTAssertEqual(TideMath.rise(from: t0.addingTimeInterval(3 * 3600), hours: 12, events: events)!, 1, accuracy: 0.01)
+    }
+
+    func testExtremesFindTheLowAndHighAhead() {
+        // From midway down the ebb (1 m), the low is 3 h ahead and the next high 9 h ahead.
+        let ext = TideMath.extremes(from: t0.addingTimeInterval(9 * 3600), hours: 12, events: events)!
+        XCTAssertEqual(ext.low.height, 0, accuracy: 0.01)
+        XCTAssertEqual(ext.low.time.timeIntervalSince(t0), 12 * 3600, accuracy: 600)   // 5-min sampling
+        XCTAssertEqual(ext.high.height, 2, accuracy: 0.01)
+        XCTAssertEqual(ext.high.time.timeIntervalSince(t0), 18 * 3600, accuracy: 600)   // 5-min sampling
     }
 
     func testRiseIsZeroWhenTideIsFalling() {
