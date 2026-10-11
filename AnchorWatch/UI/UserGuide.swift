@@ -100,7 +100,7 @@ enum UserGuideContent {
             "The dashed line runs from the anchor to the bow.",
             "The small **dotted orange circle** round the anchor shows how far off the drop point may be: the GPS accuracy (±) when you dropped, plus the uncertainty in which way the bow pointed. The true spot is inside it about two times in three. It disappears if you move the anchor by hand.",
             "The purple line is the **track** of where the boat has been. It starts when you drop the anchor, or as soon as you're moving if **Settings → Track** is on.",
-            "The label under the circle reads **Nereus Circle of Safety**, and turns red when the alarm sounds.",
+            "The label under the circle shows the **Alarm Radius**, and turns red when the alarm sounds.",
         ]),
         .heading("The bottom panel"),
         .text("The controls fade away after \(GuideFacts.controlsFadeSeconds) seconds so you can see the chart. **Tap the chart** to bring them back. They stay up while an alarm is sounding."),

@@ -93,7 +93,7 @@ private enum AnchorMathGuide {
         c = 0.5 with a snubber ≥ 5 m
         c = 1.0 without
         """),
-        .text("H is the **horizontal** pull the boat puts on the rode, and it's the number in **Load in N kt gusts**. Wind and current are assumed to come from the same direction, the worst case."),
+        .text("H is the **horizontal** pull the boat puts on the rode, and it's the number in **Load in N kt gusts**. With **Current runs: With wind**, wind and current push the same way, the worst case for a boat lying head to wind. With **Across** or **Against**, the boat can lie beam-on, so the wind pushes on the **side windage** instead (about three times the front on a trawler); the current is still added on top."),
         .text("**Load now** is the same formula with the steady wind instead of the gust. The diagram draws the chain at that load (how the boat lies most of the time), with a faint dashed line for where it goes in the gusts. **Chain on the bottom** and **Pull angle** show both. Everything that decides safety (the limits, the status line and the advice) uses the gusts."),
     ]
 

@@ -12,6 +12,13 @@ struct AnchorConditions: Equatable {
     var current = 0.5
     var waveHeight = 0.3
     var bottom = Bottom.mud
+    /// Which way the current runs relative to the wind.
+    var currentDirection = CurrentDirection.with
+
+    enum CurrentDirection: String, CaseIterable, Identifiable {
+        case with = "With wind", across = "Across", against = "Against"
+        var id: String { rawValue }
+    }
     /// Rode let out, measured from the bow roller.
     var rodeOut = 45.0
 }
@@ -174,16 +181,17 @@ enum AnchorMath {
         return 0.5 * seawaterDensity * hullDragCoefficient * area * v * v
     }
 
-    static func load(_ b: BoatProfile, wind: Double, current: Double, waveHeight: Double) -> AnchorLoad {
-        let w = BoatMath.windLoad(b, knots: wind) ?? 0
+    /// `windArea` is the area the wind pushes on; nil uses the front windage (the boat head to wind).
+    static func load(_ b: BoatProfile, wind: Double, current: Double, waveHeight: Double, windArea: Double? = nil) -> AnchorLoad {
+        let w = (windArea ?? BoatMath.windage(b)).map { BoatMath.windForce(area: $0, knots: wind) } ?? 0
         let c = currentLoad(b, knots: current)
         let design = (w + c) * yawFactor * waveFactor(height: waveHeight, snubber: b.snubber)
         return AnchorLoad(wind: w, current: c, design: design)
     }
 
     /// Wind speed that brings the design load up to `limit`, holding current and waves fixed.
-    static func gust(reaching limit: Double, _ b: BoatProfile, current: Double, waveHeight: Double) -> Double? {
-        guard let area = BoatMath.windage(b), area > 0 else { return nil }
+    static func gust(reaching limit: Double, _ b: BoatProfile, current: Double, waveHeight: Double, windArea: Double? = nil) -> Double? {
+        guard let area = windArea ?? BoatMath.windage(b), area > 0 else { return nil }
         let windShare = limit / (yawFactor * waveFactor(height: waveHeight, snubber: b.snubber)) - currentLoad(b, knots: current)
         guard windShare > 0 else { return 0 }
         return (windShare / (0.5 * BoatMath.airDensity * BoatMath.dragCoefficient * area)).squareRoot() / 0.514444
@@ -247,17 +255,24 @@ enum AnchorMath {
         return RodeShape(points: points, lying: 0, shankAngle: atan(u0) * 180 / .pi)
     }
 
+    /// Area the wind pushes on. With current against or across the wind the boat can lie beam-on, so the side
+    /// windage is used; current is still added on top, so these never show less load than with the wind.
+    static func windArea(_ b: BoatProfile, scope s: ScopeSettings, _ c: AnchorConditions) -> Double? {
+        c.currentDirection == .with ? BoatMath.windage(b) : BoatMath.sideWindage(b, length: s.boatLength) ?? BoatMath.windage(b)
+    }
+
     static func assess(_ b: BoatProfile, scope s: ScopeSettings, _ c: AnchorConditions) -> AnchorAssessment {
         let height = s.designDepth + s.bowHeight
-        let load = self.load(b, wind: c.gust, current: c.current, waveHeight: c.waveHeight)
+        let area = windArea(b, scope: s, c)
+        let load = self.load(b, wind: c.gust, current: c.current, waveHeight: c.waveHeight, windArea: area)
         let allChain = b.rodeType == .allChain || (b.rodeType == .chainAndRope && c.rodeOut <= b.chainLength)
         let weight = allChain && b.chainSize > 0 ? chainWeight(sizeMM: b.chainSize) : 0
         let shape = self.shape(length: c.rodeOut, height: height, load: load.design, weight: weight)
-        let steadyLoad = self.load(b, wind: min(c.wind, c.gust), current: c.current, waveHeight: c.waveHeight)
+        let steadyLoad = self.load(b, wind: min(c.wind, c.gust), current: c.current, waveHeight: c.waveHeight, windArea: area)
         let steadyShape = self.shape(length: c.rodeOut, height: height, load: steadyLoad.design, weight: weight)
 
         let liftOff = weight > 0 ? liftOffLoad(length: c.rodeOut, height: height, weight: weight) : nil
-        let liftOffGust = liftOff.flatMap { gust(reaching: $0, b, current: c.current, waveHeight: c.waveHeight) }
+        let liftOffGust = liftOff.flatMap { gust(reaching: $0, b, current: c.current, waveHeight: c.waveHeight, windArea: area) }
 
         // Chain lying on the bottom takes some of the pull by friction before it reaches the anchor.
         let atAnchor = anchorLoad(load.design, length: c.rodeOut, height: height, weight: weight, bottom: c.bottom)
@@ -269,7 +284,7 @@ enum AnchorMath {
         // is still down, which depends on the pull, so it's found by bisection on the gust speed.
         let holdingGust = fullHolding.map { full -> Double in
             func atAnchor(_ g: Double) -> Double {
-                let h = self.load(b, wind: g, current: c.current, waveHeight: c.waveHeight).design
+                let h = self.load(b, wind: g, current: c.current, waveHeight: c.waveHeight, windArea: area).design
                 return anchorLoad(h, length: c.rodeOut, height: height, weight: weight, bottom: c.bottom)
             }
             let target = full / holdingSafety
@@ -298,7 +313,9 @@ enum AnchorMath {
     }
 
     /// Plain-language advice for the conditions, worst first.
-    static func suggestions(_ b: BoatProfile, scope s: ScopeSettings, _ c: AnchorConditions, _ r: AnchorAssessment, units: Units) -> [String] {
+    /// `tideTurn` is the next high or low, when a tidal current reverses.
+    static func suggestions(_ b: BoatProfile, scope s: ScopeSettings, _ c: AnchorConditions, _ r: AnchorAssessment, units: Units,
+                            tideTurn: Date? = nil) -> [String] {
         var tips: [String] = []
         let carried = BoatMath.rodeCarried(b)
 
@@ -327,6 +344,12 @@ enum AnchorMath {
             tips.append(b.hasSnubber
                 ? "Lengthen the snubber to at least \(units.format(6)): waves are snatching at the rode and a short one does little."
                 : "Rig a nylon snubber of at least \(units.format(6)): waves are snatching at the rode.")
+        }
+        if c.current > 0 && c.currentDirection != .with {
+            tips.append("\(c.currentDirection == .against ? "Wind against current" : "Current across the wind"): the boat may lie beam-on, so loads use the side windage. Expect steeper chop; raise the wave height to match.")
+            if let turn = tideTurn {
+                tips.append("The current reverses around \(turn.formatted(date: .omitted, time: .shortened)) and the anchor will have to reset as the boat swings. Watch it then.")
+            }
         }
         if c.current >= 1.5 {
             tips.append("Strong current: expect the boat to lie to the current, not the wind, at slack-wind times. Allow for a full swing.")

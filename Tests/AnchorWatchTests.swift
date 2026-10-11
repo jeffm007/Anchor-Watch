@@ -1274,17 +1274,6 @@ final class FixSelectorTests: XCTestCase {
         var t = FixSelector()
         XCTAssertTrue(t.accept(fix(30, at: 0, external: true)), "only source: always passed on")
     }
-
-    func testPreferenceForcesOneSource() {
-        var s = FixSelector()
-        s.preference = .phone
-        XCTAssertTrue(s.accept(fix(5, at: 0, external: true)))
-        XCTAssertTrue(s.accept(fix(20, at: 1, external: false)))
-        XCTAssertFalse(s.accept(fix(5, at: 2, external: true)), "iPhone forced even though worse")
-        s.preference = .external
-        XCTAssertTrue(s.accept(fix(40, at: 3, external: true)))
-        XCTAssertFalse(s.accept(fix(2, at: 4, external: false)), "receiver forced even though worse")
-    }
 }
 
 final class GPSQualityTests: XCTestCase {
@@ -1331,5 +1320,37 @@ final class HoldingWarningTests: XCTestCase {
         var samples = forecast(gustAt3h: 15)
         samples.append(WindSample(time: now.addingTimeInterval(20 * 3600), speed: 40, direction: 200, gust: 80))
         XCTAssertNil(AnchorMath.forecastWarning(BoatProfile(), scope: scope, bottom: .mud, rodeOut: 40, forecast: samples, now: now))
+    }
+}
+
+final class CurrentDirectionTests: XCTestCase {
+    private let scope = ScopeSettings(depth: 6, bowHeight: 1.2, boatLength: 14.3, scopeRatio: 5, margin: 5)
+
+    func testAgainstUsesSideWindageAndNeverLess() {
+        let b = BoatProfile()
+        var c = AnchorConditions(); c.wind = 15; c.gust = 25; c.current = 1; c.rodeOut = 60
+        let with = AnchorMath.assess(b, scope: scope, c)
+        c.currentDirection = .against
+        let against = AnchorMath.assess(b, scope: scope, c)
+        let side = BoatMath.sideWindage(b, length: scope.boatLength)!, front = BoatMath.windage(b)!
+        XCTAssertEqual(against.load.wind / with.load.wind, side / front, accuracy: 0.001)
+        XCTAssertGreaterThan(against.load.design, with.load.design)
+        XCTAssertLessThan(against.safeGust!, with.safeGust!)
+    }
+
+    func testGustRoundTripWithSideArea() {
+        let b = BoatProfile()
+        let area = BoatMath.sideWindage(b, length: 14.3)!
+        let load = AnchorMath.load(b, wind: 30, current: 1, waveHeight: 0.5, windArea: area)
+        XCTAssertEqual(AnchorMath.gust(reaching: load.design, b, current: 1, waveHeight: 0.5, windArea: area)!, 30, accuracy: 0.01)
+    }
+
+    func testTipsMentionTheTurnOnlyAcrossOrAgainst() {
+        let b = BoatProfile(), turn = Date(timeIntervalSince1970: 1_800_000_000)
+        var c = AnchorConditions(); c.current = 1; c.rodeOut = 60
+        let r = AnchorMath.assess(b, scope: scope, c)
+        XCTAssertFalse(AnchorMath.suggestions(b, scope: scope, c, r, units: .feet, tideTurn: turn).contains { $0.contains("reverses") })
+        c.currentDirection = .against
+        XCTAssertTrue(AnchorMath.suggestions(b, scope: scope, c, r, units: .feet, tideTurn: turn).contains { $0.contains("reverses") })
     }
 }

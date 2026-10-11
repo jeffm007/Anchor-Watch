@@ -475,10 +475,6 @@ final class AnchorWatchEngine: ObservableObject {
     /// Latest position from each receiver, before the app picks one: for the Testing page.
     @Published private(set) var receiverFix: Fix?
     @Published private(set) var phoneFix: Fix?
-    /// Which receiver wins while both report. Set on the Testing page.
-    @Published var gpsPreference = FixSelector.Preference.auto {
-        didSet { defaults.set(gpsPreference.rawValue, forKey: "anchorwatch.gpsPreference"); gps?.preference = gpsPreference }
-    }
     /// Settable so tests needn't wait the full delay.
     var controlsFadeDelay: TimeInterval = 6
     private var hideTask: Task<Void, Never>?
@@ -950,9 +946,6 @@ final class AnchorWatchEngine: ObservableObject {
         if defaults.object(forKey: "anchorwatch.gustLimit") != nil { gustLimit = defaults.double(forKey: "anchorwatch.gustLimit") }
         if let raw = defaults.string(forKey: "anchorwatch.source"), let kind = SourceKind(rawValue: raw) { sourceKind = kind }
         fadeSideButtons = defaults.bool(forKey: "anchorwatch.fadeSideButtons")
-        if let raw = defaults.string(forKey: "anchorwatch.gpsPreference"), let choice = FixSelector.Preference(rawValue: raw) {
-            gpsPreference = choice
-        }
         trackWhenUnanchored = defaults.bool(forKey: "anchorwatch.trackUnanchored")
         if let raw = defaults.string(forKey: "anchorwatch.bottom"), let bottom = AnchorConditions.Bottom(rawValue: raw) { anchorBottom = bottom }
         // Dev aid: `-layer "NOAA Charts (US)"` overrides the saved map layer at launch.

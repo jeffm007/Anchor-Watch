@@ -136,9 +136,19 @@ enum BoatMath {
         return estimatedWindage(b)
     }
 
+    /// The measured side area if entered, otherwise the estimate from length overall.
+    static func sideWindage(_ b: BoatProfile, length: Double) -> Double? {
+        if let area = b.sideWindageArea, area > 0 { return area }
+        return estimatedSideWindage(b, length: length)
+    }
+
     /// Steady pull of the wind on the boat, in newtons, for a wind speed in knots.
     static func windLoad(_ b: BoatProfile, knots: Double) -> Double? {
-        guard let area = windage(b) else { return nil }
+        windage(b).map { windForce(area: $0, knots: knots) }
+    }
+
+    /// Pull of the wind on `area` square metres, in newtons.
+    static func windForce(area: Double, knots: Double) -> Double {
         let v = knots * 0.514444
         return 0.5 * airDensity * dragCoefficient * area * v * v
     }

@@ -259,11 +259,15 @@ struct ChartMapView: UIViewRepresentable {
             clampZoom(map)
         }
 
+        private var circleText: String {
+            engine.alarm == nil ? CircleLabel.safe(engine.units.format(engine.radius)) : CircleLabel.alarm
+        }
+
         /// Small caption centred just below the south edge of the alarm circle.
         private func syncCircleLabel(_ map: MKMapView, anchor: CLLocationCoordinate2D) {
             labelPin.coordinate = Geo.destination(from: anchor, bearing: 180, meters: engine.radius)
             if !map.annotations.contains(where: { $0 === labelPin }) { map.addAnnotation(labelPin) }
-            let text = engine.alarm == nil ? CircleLabel.safe : CircleLabel.alarm
+            let text = circleText
             if text != labelText, let view = map.view(for: labelPin) {
                 labelText = text
                 view.image = CircleLabel.image(text, alarm: engine.alarm != nil)
@@ -439,7 +443,7 @@ struct ChartMapView: UIViewRepresentable {
                 return view
             case is CircleLabelAnnotation:
                 let view = MKAnnotationView(annotation: annotation, reuseIdentifier: "circleLabel")
-                labelText = engine.alarm == nil ? CircleLabel.safe : CircleLabel.alarm
+                labelText = circleText
                 view.image = CircleLabel.image(labelText, alarm: engine.alarm != nil)
                 view.centerOffset = CGPoint(x: 0, y: (view.image?.size.height ?? 0) / 2 + 4)   // hang below the circle edge
                 view.canShowCallout = false
@@ -638,7 +642,7 @@ enum AnchorIcon {
 
 /// Caption under the alarm circle.
 enum CircleLabel {
-    static let safe = "Nereus Circle of Safety"
+    static func safe(_ radius: String) -> String { "Alarm Radius = \(radius)" }
     static let alarm = "Nereus is on the move!"
 
     static func image(_ text: String, alarm: Bool) -> UIImage {
@@ -659,27 +663,35 @@ enum CircleLabel {
     }
 }
 
-/// Arrow showing where the wind is blowing TO, with the speed in knots beneath it.
+/// Arrow showing where the wind is blowing TO, centred on the forecast point, with the speed in knots just past its tip.
 final class WindAnnotationView: MKAnnotationView {
     private let arrow = UIImageView()
     private let label = UILabel()
     private var from = 0.0
+    private static let side = 84.0
+    /// Centre of the speed label from the centre of the arrow: half its length plus a small gap.
+    private static let labelDistance = WindIcon.length / 2 + 10
 
     override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
         super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
-        frame = CGRect(x: 0, y: 0, width: 44, height: 48)
-        arrow.frame = CGRect(x: 12, y: 0, width: 20, height: 30)
+        frame = CGRect(x: 0, y: 0, width: Self.side, height: Self.side)
+        arrow.frame = CGRect(x: (Self.side - WindIcon.width) / 2, y: (Self.side - WindIcon.length) / 2,
+                             width: WindIcon.width, height: WindIcon.length)
+        // A faint halo keeps the thin arrow visible over dark satellite water.
+        arrow.layer.shadowColor = UIColor.white.cgColor
+        arrow.layer.shadowOpacity = 0.7
+        arrow.layer.shadowRadius = 1
+        arrow.layer.shadowOffset = .zero
         // The speed sits on a small white pill so it stays readable over dark satellite water as well as pale charts.
-        label.frame = CGRect(x: 8, y: 31, width: 28, height: 15)
-        label.font = .systemFont(ofSize: 11, weight: .bold)
+        label.bounds = CGRect(x: 0, y: 0, width: 24, height: 14)
+        label.font = .systemFont(ofSize: 10, weight: .bold)
         label.textAlignment = .center
         label.textColor = .black
         label.backgroundColor = UIColor.white.withAlphaComponent(0.9)
-        label.layer.cornerRadius = 7.5
+        label.layer.cornerRadius = 7
         label.layer.masksToBounds = true
         addSubview(arrow)
         addSubview(label)
-        centerOffset = CGPoint(x: 0, y: 8)      // puts the arrow's centre on the coordinate
         canShowCallout = true
         displayPriority = .defaultLow
         collisionMode = .none
@@ -696,12 +708,17 @@ final class WindAnnotationView: MKAnnotationView {
     }
 
     func setMapHeading(_ heading: Double) {
-        arrow.transform = CGAffineTransform(rotationAngle: (from + 180 - heading).radians)
+        let angle = (from + 180 - heading).radians       // clockwise from straight up
+        arrow.transform = CGAffineTransform(rotationAngle: angle)
+        // The label stays upright, moved out along the arrow to sit past its tip.
+        label.center = CGPoint(x: Self.side / 2 + Self.labelDistance * sin(angle),
+                               y: Self.side / 2 - Self.labelDistance * cos(angle))
     }
 }
 
 enum WindIcon {
     private static var cache: [Int: UIImage] = [:]
+    static let width = 10.0, length = 36.0
 
     private static let bands: [(upTo: Double, color: UIColor)] = [
         (5, UIColor(white: 0.55, alpha: 1)),                       // light
@@ -715,19 +732,26 @@ enum WindIcon {
     static func arrow(speed: Double) -> UIImage {
         let band = bands.firstIndex { speed < $0.upTo } ?? bands.count - 1
         if let cached = cache[band] { return cached }
-        let size = CGSize(width: 20, height: 30)
-        let image = UIGraphicsImageRenderer(size: size).image { _ in
-            let path = UIBezierPath()
-            path.move(to: CGPoint(x: 10, y: 1))
-            path.addLine(to: CGPoint(x: 19, y: 14))
-            path.addLine(to: CGPoint(x: 13, y: 14))
-            path.addLine(to: CGPoint(x: 13, y: 29))
-            path.addLine(to: CGPoint(x: 7, y: 29))
-            path.addLine(to: CGPoint(x: 7, y: 14))
-            path.addLine(to: CGPoint(x: 1, y: 14))
-            path.close()
-            bands[band].color.setFill(); path.fill()
-            UIColor.white.setStroke(); path.lineWidth = 1.5; path.lineJoinStyle = .round; path.stroke()
+        // A long thin shaft that fades in from the tail, under a small swept arrowhead. Drawn pointing up.
+        let image = UIGraphicsImageRenderer(size: CGSize(width: width, height: length)).image { context in
+            let color = bands[band].color
+            let cg = context.cgContext
+            let headBase = 8.0
+            cg.saveGState()
+            cg.clip(to: CGRect(x: width / 2 - 0.9, y: headBase - 1, width: 1.8, height: length - headBase))
+            let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                      colors: [color.withAlphaComponent(0).cgColor, color.cgColor] as CFArray,
+                                      locations: [0, 1])!
+            cg.drawLinearGradient(gradient, start: CGPoint(x: 0, y: length), end: CGPoint(x: 0, y: headBase), options: [])
+            cg.restoreGState()
+
+            let head = UIBezierPath()
+            head.move(to: CGPoint(x: width / 2, y: 0.5))
+            head.addLine(to: CGPoint(x: width - 0.5, y: headBase + 1.5))
+            head.addLine(to: CGPoint(x: width / 2, y: headBase - 1))
+            head.addLine(to: CGPoint(x: 0.5, y: headBase + 1.5))
+            head.close()
+            color.setFill(); head.fill()
         }
         cache[band] = image
         return image

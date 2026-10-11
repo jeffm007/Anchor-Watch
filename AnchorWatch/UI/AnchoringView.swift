@@ -39,20 +39,23 @@ struct AnchoringView: View {
         return s
     }
 
-    private var tideNote: String {
-        let depth = units.format(tideScope.designDepth)
-        guard let change = tideChange else { return "No tide data yet: showing the depth now, \(depth)." }
-        let sign = change >= 0 ? "+" : "−"
-        let shift = "\(sign)\(units.formatTenths(abs(change)))"
-        switch tide {
-        case .now:
-            return "\(depth) deep now."
-        case .low, .high:
-            guard let ext = tideExtremes else { return "\(depth) deep with the \(shift) rise from Depth & Scope (no tide data yet)." }
-            let event = tide == .low ? ext.low : ext.high
-            let when = event.time.formatted(date: .omitted, time: .shortened)
-            return "\(depth) deep at \(tide == .low ? "low" : "high") water, \(when) (\(shift) from now)."
-        }
+    /// Depth at the chosen tide, under the depth-now slider. Nil for Now, which the slider already shows.
+    private var tideDepthLine: String? {
+        guard tide != .now else { return nil }
+        let name = tide == .low ? "low" : "high"
+        guard let change = tideChange else { return "No tide data yet: showing the depth now." }
+        let depth = units.formatTenths(tideScope.designDepth)
+        let shift = "\(change >= 0 ? "+" : "−")\(units.formatTenths(abs(change)))"
+        guard let ext = tideExtremes else { return "At high water (rise from Depth & Scope): \(depth) (\(shift))" }
+        let when = (tide == .low ? ext.low : ext.high).time.formatted(date: .omitted, time: .shortened)
+        return "At \(name) tide, \(when): \(depth) (\(shift))"
+    }
+
+    /// Orange when the water under the keel at the chosen tide is getting thin, red when it's less than the draft.
+    private var tideDepthColor: Color {
+        let depth = tideScope.designDepth
+        guard boat.draft > 0 else { return .secondary }
+        return depth <= boat.draft ? .red : depth < boat.draft + AnchorMath.keelClearance ? .orange : .secondary
     }
 
     var body: some View {
@@ -63,21 +66,24 @@ struct AnchoringView: View {
                     RodeDiagram(boat: boat, scope: tideScope, conditions: conditions, result: r, units: units)
                         .frame(height: 240)
                         .listRowInsets(EdgeInsets())
-                    VStack(alignment: .leading, spacing: 6) {
-                        Picker("Tide", selection: $tide) {
-                            ForEach(TideChoice.allCases) { Text($0.rawValue).tag($0) }
-                        }.pickerStyle(.segmented)
-                        Text(tideNote).font(.footnote).foregroundStyle(.secondary)
-                    }
+                    Picker("Tide", selection: $tide) {
+                        ForEach(TideChoice.allCases) { Text($0.rawValue).tag($0) }
+                    }.pickerStyle(.segmented)
                     statusRow(r)
                 }
 
                 Section {
-                    knob("Water depth", length($engine.scope.depth), 0...max(units == .feet ? 100 : 30, engine.scope.depth * units.perMeter),
+                    knob("Water depth now", length($engine.scope.depth), 0...max(units == .feet ? 100 : 30, engine.scope.depth * units.perMeter),
                          step: units == .feet ? 1 : 0.5, format: (units == .feet ? "%.0f " : "%.1f ") + units.symbol)
+                    if let line = tideDepthLine {
+                        Text(line).font(.footnote.bold()).foregroundStyle(tideDepthColor)
+                    }
                     knob("Wind", wind, 0...60, step: 1, format: "%.0f kt")
                     knob("Gusts", gust, 0...70, step: 1, format: "%.0f kt")
                     knob("Current", $conditions.current, 0...4, step: 0.25, format: "%.2g kt")
+                    Picker("Current runs", selection: $conditions.currentDirection) {
+                        ForEach(AnchorConditions.CurrentDirection.allCases) { Text($0.rawValue).tag($0) }
+                    }.pickerStyle(.segmented)
                     knob("Waves", length($conditions.waveHeight), 0...(units == .feet ? 10 : 3), step: units == .feet ? 0.5 : 0.1,
                          format: "%.1f " + units.symbol)
                     Picker("Bottom", selection: $conditions.bottom) {
@@ -93,7 +99,7 @@ struct AnchoringView: View {
                 }
 
                 Section("Suggestions") {
-                    ForEach(AnchorMath.suggestions(boat, scope: engine.scope, conditions, r, units: units), id: \.self) { tip in
+                    ForEach(AnchorMath.suggestions(boat, scope: tideScope, conditions, r, units: units, tideTurn: engine.nextTide?.time), id: \.self) { tip in
                         Label(tip, systemImage: "lightbulb").font(.subheadline)
                     }
                 }
@@ -346,8 +352,23 @@ struct RodeDiagram: View {
             arrow(&ctx, from: CGPoint(x: 12, y: 16), length: 46 + min(conditions.gust, 60), color: .secondary,
                   label: "Wind \(Int(conditions.wind)) G\(Int(conditions.gust)) kt")
             if conditions.current > 0 {
-                arrow(&ctx, from: CGPoint(x: 12, y: p(0, waterLevel).y + 20), length: 30 + conditions.current * 20, color: .blue,
-                      label: String(format: "Current %.2g kt", conditions.current))
+                let y = p(0, waterLevel).y + 20
+                let length = 30 + conditions.current * 20
+                let label = String(format: "Current %.2g kt", conditions.current)
+                switch conditions.currentDirection {
+                case .with:
+                    arrow(&ctx, from: CGPoint(x: 12, y: y), length: length, color: .blue, label: label)
+                case .against:
+                    arrow(&ctx, from: CGPoint(x: 12 + length, y: y), length: -length, color: .blue, label: label + " against")
+                case .across:
+                    // Seen from the side, current across the wind runs into the page: a circled cross.
+                    let c = CGPoint(x: 20, y: y)
+                    var mark = Path(ellipseIn: CGRect(x: c.x - 7, y: c.y - 7, width: 14, height: 14))
+                    mark.move(to: CGPoint(x: c.x - 4, y: c.y - 4)); mark.addLine(to: CGPoint(x: c.x + 4, y: c.y + 4))
+                    mark.move(to: CGPoint(x: c.x + 4, y: c.y - 4)); mark.addLine(to: CGPoint(x: c.x - 4, y: c.y + 4))
+                    ctx.stroke(mark, with: .color(.blue), lineWidth: 2)
+                    ctx.draw(Text(label + " across").font(.caption2.bold()).foregroundStyle(.blue), at: CGPoint(x: c.x + 12, y: c.y), anchor: .leading)
+                }
             }
 
             // Depth and rode labels along the bottom.
@@ -511,12 +532,14 @@ struct RodeDiagram: View {
         ctx.stroke(rail, with: .color(Color.gray), lineWidth: 1)
     }
 
+    /// Horizontal arrow; a negative `length` points left. The label sits past whichever end is further right.
     private func arrow(_ ctx: inout GraphicsContext, from start: CGPoint, length: Double, color: Color, label: String) {
         let end = CGPoint(x: start.x + length, y: start.y)
+        let back = length >= 0 ? -6.0 : 6.0
         var line = Path()
         line.move(to: start); line.addLine(to: end)
-        line.move(to: CGPoint(x: end.x - 6, y: end.y - 4)); line.addLine(to: end); line.addLine(to: CGPoint(x: end.x - 6, y: end.y + 4))
+        line.move(to: CGPoint(x: end.x + back, y: end.y - 4)); line.addLine(to: end); line.addLine(to: CGPoint(x: end.x + back, y: end.y + 4))
         ctx.stroke(line, with: .color(color), lineWidth: 2)
-        ctx.draw(Text(label).font(.caption2.bold()).foregroundStyle(color), at: CGPoint(x: end.x + 6, y: end.y), anchor: .leading)
+        ctx.draw(Text(label).font(.caption2.bold()).foregroundStyle(color), at: CGPoint(x: max(start.x, end.x) + 6, y: end.y), anchor: .leading)
     }
 }

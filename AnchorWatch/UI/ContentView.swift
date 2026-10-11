@@ -42,7 +42,14 @@ struct ContentView: View {
                         .background(.yellow, in: Capsule()).foregroundStyle(.black)
                 }
                 Spacer()
-                if engine.windOverlayOn { WindTimeBar() }
+                if engine.windOverlayOn {
+                    WindTimeBar()
+                        .opacity(engine.controlsVisible ? 1 : 0)
+                        .allowsHitTesting(engine.controlsVisible)
+                        .animation(.easeInOut(duration: 0.6), value: engine.controlsVisible)
+                        // Dragging the hour slider keeps the controls up.
+                        .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in engine.pokeControls() })
+                }
                 if engine.placingAnchor {
                     Text("Tap the map to place the anchor")
                         .padding(8).background(.thinMaterial, in: Capsule())
@@ -373,18 +380,15 @@ struct TestingView: View {
             }
             if engine.sourceKind == .gps {
                 Section {
-                    Picker("Use", selection: $engine.gpsPreference) {
-                        ForEach(FixSelector.Preference.allCases) { Text($0.rawValue).tag($0) }
-                    }.pickerStyle(.segmented)
                     TimelineView(.periodic(from: .now, by: 1)) { context in
                         VStack(spacing: 8) {
                             reading("External (GLO)", engine.receiverFix, now: context.date)
-                            reading("iPhone", engine.phoneFix, now: context.date)
+                            phoneReading(now: context.date)
                             LabeledContent("In use", value: engine.fix.map { $0.external ? "External" : "iPhone" } ?? "--")
                         }
                     }
                 } header: { Text("GPS receiver") } footer: {
-                    Text("Auto uses the external receiver while it's within ±\(engine.units.format(FixSelector.trustedExternal)) or better than the iPhone. Either choice falls back to the other after \(Int(FixSelector.timeout)) s without a position.")
+                    Text("While an external receiver is connected, iOS sends only its positions. If it goes quiet for \(Int(FixSelector.timeout)) s, the iPhone's own GPS takes over.")
                 }
             }
             if engine.sourceKind == .simulator {
@@ -419,6 +423,19 @@ struct TestingView: View {
         }
         .navigationTitle("Testing")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// iOS stops sending the iPhone's own positions while an external receiver reports; say so rather than show a stale one.
+    private func phoneReading(now: Date) -> some View {
+        let receiverActive = engine.receiverFix.map { now.timeIntervalSince($0.timestamp) < FixSelector.timeout } ?? false
+        let phoneStale = engine.phoneFix.map { now.timeIntervalSince($0.timestamp) >= FixSelector.timeout } ?? true
+        return Group {
+            if receiverActive && phoneStale {
+                LabeledContent("iPhone", value: "Not reporting while an external receiver is connected")
+            } else {
+                reading("iPhone", engine.phoneFix, now: now)
+            }
+        }
     }
 
     private func reading(_ title: String, _ fix: Fix?, now: Date) -> some View {
