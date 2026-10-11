@@ -32,6 +32,8 @@ struct ContentView: View {
                 if let drift = engine.anchorDrift { DriftBanner(drift: drift) }
                 StatsBar()
                 WindBar(showConditions: $showConditions)
+                HoldingBar(show: $showAnchoring)
+                TideBar(show: $showDepth)
                 AlertsBar(showAlerts: $showAlerts)
                 ReadinessBar(show: $showWatchCheck)
                 if engine.sourceKind == .simulator {
@@ -151,21 +153,40 @@ struct StatsBar: View {
             stat("Radius", engine.anchor == nil ? "--" : engine.units.format(engine.radius))
             stat("Max", engine.anchor == nil ? "--" : engine.units.format(engine.maxDistance))
             TimelineView(.periodic(from: .now, by: 1)) { context in
-                stat("GPS ± · age", engine.fix.map {
-                    "\(engine.units.format($0.accuracy)) · \(max(0, Int(context.date.timeIntervalSince($0.timestamp))))s"
-                } ?? "--")
+                stat(gpsTitle, engine.fix.map { fix in
+                    let age = Int(context.date.timeIntervalSince(fix.timestamp))
+                    return engine.units.format(fix.accuracy) + (age > 5 ? " · \(age)s" : "")   // age only once it's stale
+                } ?? "--", color: gpsColor)
             }
-            stat("Fixes/s", String(format: "%.1f", engine.updateRate))
+            stat("Anchor", bearing)
             stat("Depth", engine.units.format(engine.scope.depth))   // manual for now; Phase 2: Raspberry Pi sonar
         }
         .padding(10)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
 
-    private func stat(_ title: String, _ value: String) -> some View {
+    /// Which receiver the position is coming from.
+    private var gpsTitle: String {
+        if engine.sourceKind == .simulator { return "Sim ±" }
+        return engine.fix?.external == true ? "Ext GPS ±" : "iPhone ±"
+    }
+
+    /// Green good enough to anchor, orange poor, red ignored.
+    private var gpsColor: Color {
+        guard engine.fix != nil else { return .primary }
+        return engine.gpsIsUnusable ? .red : engine.gpsIsPoor ? .orange : .green
+    }
+
+    /// Which way the anchor lies from the boat.
+    private var bearing: String {
+        guard let anchor = engine.anchor, let fix = engine.fix else { return "--" }
+        return Compass.name(Geo.bearing(from: fix.coordinate, to: anchor))
+    }
+
+    private func stat(_ title: String, _ value: String, color: Color = .primary) -> some View {
         VStack {
             Text(title).font(.caption2).foregroundStyle(.secondary)
-            Text(value).font(.system(.callout, design: .rounded).bold()).monospacedDigit()
+            Text(value).font(.system(.callout, design: .rounded).bold()).monospacedDigit().foregroundStyle(color)
                 .lineLimit(1).minimumScaleFactor(0.5)
         }
         .frame(maxWidth: .infinity)
@@ -301,79 +322,109 @@ struct SettingsView: View {
                         Label("User Guide", systemImage: "book")
                     }
                     .accessibilityIdentifier("userGuide")
-                } footer: {
-                    Text("How to use every part of the app.")
-                }
-                Section {
                     NavigationLink {
                         BoatProfileView()
                     } label: {
-                        LabeledContent {
-                            Text(engine.boat.name)
-                        } label: {
-                            Label("Boat Profile", systemImage: "sailboat")
-                        }
+                        Label("Boat Profile", systemImage: "sailboat")
                     }
                     .accessibilityIdentifier("boatProfile")
-                } footer: {
-                    Text("Size, windage and ground tackle, for the rode, scope, holding and wind-load calculations.")
                 }
-                Section("Position source") {
-                    Picker("Source", selection: $engine.sourceKind) {
-                        ForEach(AnchorWatchEngine.SourceKind.allCases) { Text($0.rawValue).tag($0) }
-                    }.pickerStyle(.segmented)
-                }
-                if engine.sourceKind == .simulator {
-                    Section("Simulator") {
-                        Picker("Start location", selection: $engine.simPlace) {
-                            ForEach(SimulatedLocationSource.Place.allCases) { Text($0.rawValue).tag($0) }
+                Section {
+                    Stepper(value: $engine.gustLimit, in: 10...50, step: 5) {
+                        LabeledContent("Gust Warning", value: "\(Int(engine.gustLimit)) kt")
+                    }
+                    Toggle("Track", isOn: $engine.trackWhenUnanchored)
+                    Toggle("Fade Buttons", isOn: $engine.fadeSideButtons)
+                    LabeledContent("Units") {
+                        Picker("Units", selection: $engine.units) {
+                            Text("Metric").tag(Units.meters)
+                            Text("Feet").tag(Units.feet)
                         }
-                        Picker("Scenario", selection: $engine.scenario) {
-                            ForEach(SimulatedLocationSource.Scenario.allCases) { Text($0.rawValue).tag($0) }
-                        }
-                        Picker("Speed", selection: $engine.simSpeed) {
-                            Text("1×").tag(1.0); Text("5×").tag(5.0); Text("10×").tag(10.0); Text("30×").tag(30.0); Text("60×").tag(60.0)
-                        }.pickerStyle(.segmented)
-                        Text("At 30× or 60×, swing-fit waits and the track speed up too: at 60× the anchor estimate appears about 22 seconds after you drop. Try the Wide swing scenario.")
-                            .font(.footnote).foregroundStyle(.secondary)
+                        .pickerStyle(.segmented)
+                        .fixedSize()
                     }
                 }
                 Section {
                     NavigationLink {
-                        WatchCheckList().navigationTitle("Watch check").navigationBarTitleDisplayMode(.inline)
+                        TestingView()
                     } label: {
-                        Label("Watch check and test siren", systemImage: "checklist")
+                        Label("Testing", systemImage: "wrench.and.screwdriver")
                     }
-                } footer: {
-                    Text("Checks volume, battery, permissions and GPS, and lets you hear the siren.")
-                }
-                Section {
-                    Stepper(value: $engine.gustLimit, in: 10...50, step: 5) {
-                        LabeledContent("Warn when gusts reach", value: "\(Int(engine.gustLimit)) kt")
-                    }
-                } header: { Text("Wind warnings") } footer: {
-                    Text("A heads-up on the main screen, not the drag alarm. Also warns of wind shifts of 60° or more in the next 12 hours.")
-                }
-                Section {
-                    Toggle("Record track before anchoring", isOn: $engine.trackWhenUnanchored)
-                } header: { Text("Track") } footer: {
-                    Text("Draws the purple track while you're under way too, not just at anchor, and keeps the way in when you drop the anchor. Raising the anchor clears the track. Records while the app is open.")
-                }
-                Section {
-                    Toggle("Fade the side buttons", isOn: $engine.fadeSideButtons)
-                } header: { Text("Screen") } footer: {
-                    Text("Hide the buttons down the right edge after \(Int(engine.controlsFadeDelay)) seconds without a touch, for more chart. Tap the chart to bring them back. They stay up during an alarm.")
-                }
-                Section("Units") {
-                    Picker("Distance", selection: $engine.units) {
-                        ForEach(Units.allCases) { Text($0.rawValue).tag($0) }
-                    }.pickerStyle(.segmented)
+                    .accessibilityIdentifier("testing")
                 }
             }
             .navigationTitle("Settings")
             .toolbar { Button("Done") { dismiss() } }
         }
         .presentationDetents([.medium, .large])
+    }
+}
+
+/// Position source, the simulator and the watch check: things for trying the app out, kept off the main settings.
+struct TestingView: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+
+    var body: some View {
+        Form {
+            Section("Position source") {
+                Picker("Source", selection: $engine.sourceKind) {
+                    ForEach(AnchorWatchEngine.SourceKind.allCases) { Text($0.rawValue).tag($0) }
+                }.pickerStyle(.segmented)
+            }
+            if engine.sourceKind == .gps {
+                Section {
+                    Picker("Use", selection: $engine.gpsPreference) {
+                        ForEach(FixSelector.Preference.allCases) { Text($0.rawValue).tag($0) }
+                    }.pickerStyle(.segmented)
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        VStack(spacing: 8) {
+                            reading("External (GLO)", engine.receiverFix, now: context.date)
+                            reading("iPhone", engine.phoneFix, now: context.date)
+                            LabeledContent("In use", value: engine.fix.map { $0.external ? "External" : "iPhone" } ?? "--")
+                        }
+                    }
+                } header: { Text("GPS receiver") } footer: {
+                    Text("Auto uses the external receiver while it's within ±\(engine.units.format(FixSelector.trustedExternal)) or better than the iPhone. Either choice falls back to the other after \(Int(FixSelector.timeout)) s without a position.")
+                }
+            }
+            if engine.sourceKind == .simulator {
+                Section("Simulator") {
+                    Picker("Start location", selection: $engine.simPlace) {
+                        ForEach(SimulatedLocationSource.Place.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    Picker("Scenario", selection: $engine.scenario) {
+                        ForEach(SimulatedLocationSource.Scenario.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    Picker("Speed", selection: $engine.simSpeed) {
+                        Text("1×").tag(1.0); Text("5×").tag(5.0); Text("10×").tag(10.0); Text("30×").tag(30.0); Text("60×").tag(60.0)
+                    }.pickerStyle(.segmented)
+                    Text("At 30× or 60×, swing-fit waits and the track speed up too: at 60× the anchor estimate appears about 22 seconds after you drop. Try the Wide swing scenario.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            Section {
+                NavigationLink {
+                    GPSQualityView()
+                } label: {
+                    Label("GPS Quality", systemImage: "scope")
+                }
+            }
+            Section {
+                NavigationLink {
+                    WatchCheckList().navigationTitle("Watch check").navigationBarTitleDisplayMode(.inline)
+                } label: {
+                    Label("Watch check and test siren", systemImage: "checklist")
+                }
+            }
+        }
+        .navigationTitle("Testing")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func reading(_ title: String, _ fix: Fix?, now: Date) -> some View {
+        LabeledContent(title, value: fix.map {
+            "±\(engine.units.format($0.accuracy)) · \(max(0, Int(now.timeIntervalSince($0.timestamp))))s ago"
+        } ?? "Nothing yet")
     }
 }
 
@@ -637,6 +688,49 @@ struct WindBar: View {
 
     /// "9449880 - Friday Harbor, WA" → "Friday Harbor, WA"; "NEW DUNGENESS - 17 NM NE of Port Angeles" → "NEW DUNGENESS".
     private func shortName(_ name: String) -> String { StationName.short(name) }
+}
+
+/// The tide at a glance: which way it's going and the next high or low. Tap for the tide details.
+struct TideBar: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+    @Binding var show: Bool
+
+    var body: some View {
+        if let next = engine.nextTide, let now = engine.tideNow {
+            Button { show = true } label: {
+                let change = next.height - now
+                Label("Tide \(next.isHigh ? "rising" : "falling") · \(next.isHigh ? "High" : "Low") \(next.time.formatted(date: .omitted, time: .shortened)) (\(change >= 0 ? "+" : "−")\(engine.units.formatTenths(abs(change))))",
+                      systemImage: next.isHigh ? "arrow.up.right" : "arrow.down.right")
+                    .font(.caption.bold())
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 60)     // keep clear of the round buttons down the right edge
+        }
+    }
+}
+
+/// Forecast gusts beyond what the anchoring maths says this setup can hold. Tap to open Anchoring.
+struct HoldingBar: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+    @Binding var show: Bool
+
+    var body: some View {
+        if let w = engine.holdingWarning {
+            Button { show = true } label: {
+                Label("Forecast gusts \(Int(w.gust.rounded())) kt around \(w.time.formatted(date: .omitted, time: .shortened)). With \(engine.units.format(w.rodeOut)) out in \(engine.anchorBottom.rawValue.lowercased()), your setup is good to about \(Int(w.safeGust)) kt. Tap to plan more scope.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.bold()).foregroundStyle(.orange)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 60)
+        }
+    }
 }
 
 enum StationName {

@@ -958,6 +958,28 @@ final class SafetyTests: XCTestCase {
         XCTAssertTrue(e.gpsIsUnusable)
     }
 
+    func testExternalReceiverWithoutALockIsIgnored() {
+        let e = make()
+        e.ingest(fix(0)); e.dropAnchor(); e.radius = 30
+        // A GLO 2 indoors: ±50 m, which an iPhone fix could just pass, while wandering 120 m off.
+        for _ in 0..<5 {
+            var wandering = fix(120, accuracy: 50)
+            wandering.external = true
+            e.ingest(wandering)
+        }
+        XCTAssertNil(e.alarm)
+        XCTAssertEqual(e.distance ?? 99, 0, accuracy: 1)
+        XCTAssertTrue(e.gpsIsUnusable)
+    }
+
+    func testGPSLogKeepsEveryPositionEvenUnusableOnes() {
+        let e = make()
+        e.ingest(fix(0)); e.ingest(fix(5, accuracy: 120))
+        XCTAssertEqual(e.gpsLog.count, 2)
+        e.clearGPSLog()
+        XCTAssertTrue(e.gpsLog.isEmpty)
+    }
+
     func testAlarmNeedsToBeBeyondTheRadiusPlusTheFixError() {
         let e = make()
         e.ingest(fix(0)); e.dropAnchor(); e.radius = 30
@@ -1213,5 +1235,101 @@ final class UserGuideTests: XCTestCase {
         for phrase in ["30 seconds", "60 seconds", "10 minutes", "6 seconds", "25 knots", "60°", "Test siren in 15 seconds", "Drop Anchor Here", "Depth & Scope"] {
             XCTAssertTrue(all.contains(phrase), "the guide should mention \"\(phrase)\"")
         }
+    }
+}
+
+final class FixSelectorTests: XCTestCase {
+    private let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func fix(_ accuracy: Double, at seconds: Double, external: Bool) -> Fix {
+        Fix(coordinate: CLLocationCoordinate2D(latitude: 48.6, longitude: -123.15), accuracy: accuracy,
+            course: nil, speed: nil, timestamp: t0.addingTimeInterval(seconds), external: external)
+    }
+
+    func testDecentReceiverWinsOverAConfidentIPhone() {
+        var s = FixSelector()
+        XCTAssertTrue(s.accept(fix(5, at: 0, external: true)))
+        XCTAssertFalse(s.accept(fix(2, at: 1, external: false)), "iPhone under a roof claiming 2 m is ignored")
+        XCTAssertTrue(s.accept(fix(5, at: 2, external: true)))
+    }
+
+    func testPoorReceiverGivesWayToABetterIPhone() {
+        var s = FixSelector()
+        XCTAssertTrue(s.accept(fix(4, at: 0, external: false)))
+        XCTAssertFalse(s.accept(fix(30, at: 1, external: true)), "receiver indoors at 30 m is dropped")
+        XCTAssertTrue(s.accept(fix(4, at: 2, external: false)))
+    }
+
+    func testPoorReceiverStillBeatsAWorseIPhone() {
+        var s = FixSelector()
+        XCTAssertTrue(s.accept(fix(40, at: 0, external: false)))
+        XCTAssertTrue(s.accept(fix(30, at: 1, external: true)))
+        XCTAssertFalse(s.accept(fix(40, at: 2, external: false)))
+    }
+
+    func testQuietSourceNeverBlocks() {
+        var s = FixSelector()
+        XCTAssertTrue(s.accept(fix(5, at: 0, external: true)))
+        XCTAssertTrue(s.accept(fix(8, at: 11, external: false)), "receiver silent for over 10 s")
+        var t = FixSelector()
+        XCTAssertTrue(t.accept(fix(30, at: 0, external: true)), "only source: always passed on")
+    }
+
+    func testPreferenceForcesOneSource() {
+        var s = FixSelector()
+        s.preference = .phone
+        XCTAssertTrue(s.accept(fix(5, at: 0, external: true)))
+        XCTAssertTrue(s.accept(fix(20, at: 1, external: false)))
+        XCTAssertFalse(s.accept(fix(5, at: 2, external: true)), "iPhone forced even though worse")
+        s.preference = .external
+        XCTAssertTrue(s.accept(fix(40, at: 3, external: true)))
+        XCTAssertFalse(s.accept(fix(2, at: 4, external: false)), "receiver forced even though worse")
+    }
+}
+
+final class GPSQualityTests: XCTestCase {
+    private let origin = CLLocationCoordinate2D(latitude: 48.6, longitude: -123.15)
+
+    func testSpreadAroundTheAverage() {
+        // Four positions 10 m out on each compass point, and one in the middle.
+        let ring = [0.0, 90, 180, 270].map { Geo.destination(from: origin, bearing: $0, meters: 10) } + [origin]
+        let c = GPSQuality.center(ring)!
+        XCTAssertEqual(Geo.distance(c, origin), 0, accuracy: 0.01)
+        XCTAssertEqual(GPSQuality.spread(ring, share: 0.95)!, 10, accuracy: 0.01)
+        XCTAssertEqual(GPSQuality.spread(ring, share: 0.2)!, 0, accuracy: 0.01)   // the middle one
+        XCTAssertNil(GPSQuality.spread([], share: 0.5))
+    }
+
+    func testOffsetEastAndNorth() {
+        let o = GPSQuality.offset(Geo.destination(from: origin, bearing: 45, meters: 100), from: origin)
+        XCTAssertEqual(o.east, 70.71, accuracy: 0.1)
+        XCTAssertEqual(o.north, 70.71, accuracy: 0.1)
+    }
+}
+
+final class HoldingWarningTests: XCTestCase {
+    private let now = Date(timeIntervalSince1970: 1_800_000_000)
+    private let scope = ScopeSettings(depth: 6, bowHeight: 1.2, boatLength: 14.3, scopeRatio: 5, margin: 5)
+
+    private func forecast(gustAt3h gust: Double) -> [WindSample] {
+        (0...12).map { h in
+            WindSample(time: now.addingTimeInterval(Double(h) * 3600), speed: 10, direction: 200, gust: h == 3 ? gust : 15)
+        }
+    }
+
+    func testWarnsWhenForecastGustsBeatTheSafeLimit() {
+        let b = BoatProfile()
+        var c = AnchorConditions(); c.gust = 15; c.wind = 10; c.bottom = .mud; c.rodeOut = 40
+        let safe = AnchorMath.assess(b, scope: scope, c).safeGust!
+        let w = AnchorMath.forecastWarning(b, scope: scope, bottom: .mud, rodeOut: 40, forecast: forecast(gustAt3h: safe + 10), now: now)
+        XCTAssertNotNil(w)
+        XCTAssertEqual(w?.time, now.addingTimeInterval(3 * 3600))
+        XCTAssertNil(AnchorMath.forecastWarning(b, scope: scope, bottom: .mud, rodeOut: 40, forecast: forecast(gustAt3h: safe - 5), now: now))
+    }
+
+    func testIgnoresGustsBeyondTheWindow() {
+        var samples = forecast(gustAt3h: 15)
+        samples.append(WindSample(time: now.addingTimeInterval(20 * 3600), speed: 40, direction: 200, gust: 80))
+        XCTAssertNil(AnchorMath.forecastWarning(BoatProfile(), scope: scope, bottom: .mud, rodeOut: 40, forecast: samples, now: now))
     }
 }

@@ -344,3 +344,27 @@ enum AnchorMath {
         return tips
     }
 }
+
+/// The forecast has gusts stronger than the setup can take.
+struct HoldingWarning: Equatable {
+    let gust: Double
+    let time: Date
+    let safeGust: Double
+    let rodeOut: Double
+}
+
+extension AnchorMath {
+    /// Strongest forecast gust in the next `hours`, if it's above the safe gust limit for this boat, rode, high-water depth and bottom.
+    static func forecastWarning(_ b: BoatProfile, scope s: ScopeSettings, bottom: AnchorConditions.Bottom, rodeOut: Double,
+                                forecast: [WindSample], now: Date = Date(), hours: Double = 12) -> HoldingWarning? {
+        let window = forecast.filter { $0.time >= now.addingTimeInterval(-1800) && $0.time <= now.addingTimeInterval(hours * 3600) }
+        guard let peak = window.max(by: { $0.gust < $1.gust }) else { return nil }
+        var c = AnchorConditions()
+        c.gust = peak.gust
+        c.wind = min(window.map(\.speed).max() ?? peak.gust, peak.gust)
+        c.bottom = bottom
+        c.rodeOut = rodeOut
+        guard let safe = assess(b, scope: s, c).safeGust, peak.gust > safe else { return nil }
+        return HoldingWarning(gust: peak.gust, time: peak.time, safeGust: safe, rodeOut: rodeOut)
+    }
+}

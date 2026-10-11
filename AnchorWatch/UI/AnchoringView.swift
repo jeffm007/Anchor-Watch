@@ -159,6 +159,7 @@ struct AnchoringView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("Done") { dismiss() } }
             .onAppear(perform: start)
+            .onChange(of: conditions.bottom) { _, bottom in engine.anchorBottom = bottom }
         }
     }
 
@@ -176,8 +177,8 @@ struct AnchoringView: View {
     private func start() {
         guard !started else { return }
         started = true
-        let carried = BoatMath.rodeCarried(boat)
-        conditions.rodeOut = carried > 0 ? min(engine.rodeToPayOut, carried) : engine.rodeToPayOut
+        conditions.rodeOut = engine.rodeOutEstimate
+        conditions.bottom = engine.anchorBottom
         fillFromForecast()
     }
 

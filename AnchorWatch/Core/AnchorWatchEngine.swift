@@ -116,6 +116,10 @@ final class AnchorWatchEngine: ObservableObject {
     let goodAccuracy = 8.0
     /// Fixes worse than this (~165 ft) are ignored for distance, track and the alarm.
     let usableAccuracy = 50.0
+    /// Stricter for an external receiver (~100 ft): a Garmin GLO 2 without a satellite lock reports about ±50 m
+    /// while its position wanders hundreds of feet.
+    let usableExternalAccuracy = 30.0
+    func usableLimit(for fix: Fix?) -> Double { fix?.external == true ? usableExternalAccuracy : usableAccuracy }
     /// Seconds with fixes arriving but none usable before the "GPS too inaccurate" alarm.
     let gpsPoorAfter: TimeInterval = 60
     /// A fix counts as outside the circle only if it is beyond the radius by more than its own accuracy,
@@ -133,7 +137,7 @@ final class AnchorWatchEngine: ObservableObject {
 
     var gpsIsPoor: Bool { (fix?.accuracy ?? .infinity) > goodAccuracy }
     /// Too inaccurate to anchor with at all.
-    var gpsIsUnusable: Bool { (fix?.accuracy ?? .infinity) > usableAccuracy }
+    var gpsIsUnusable: Bool { (fix?.accuracy ?? .infinity) > usableLimit(for: fix) }
 
     /// Average of the last few seconds of fixes, to smooth out single-fix GPS error.
     private var averagedPosition: CLLocationCoordinate2D? {
@@ -177,7 +181,7 @@ final class AnchorWatchEngine: ObservableObject {
                        notificationsAllowed: notificationsAllowed,
                        locationAlways: sourceKind == .gps ? locationAlways : nil,
                        accuracy: fix?.accuracy, radius: radius, liveActivity: armed ? liveActivityState : nil,
-                       goodAccuracy: goodAccuracy, usableAccuracy: usableAccuracy)
+                       goodAccuracy: goodAccuracy, usableAccuracy: usableLimit(for: fix))
     }
 
     var watchChecks: [WatchCheck] { Readiness.checks(readinessInput, format: units.format) }
@@ -404,12 +408,49 @@ final class AnchorWatchEngine: ObservableObject {
         }
     }
 
+    private var tideFetching = false
+    private var lastTideAttempt = Date.distantPast
+
+    /// Loads tides for the main screen; called from the 1 s watchdog, so it throttles itself.
+    /// Reloads when there's no next high or low left in the predictions, or they're over six hours old.
+    private func refreshTideIfDue() {
+        guard !tideFetching, fix != nil || anchor != nil, Date().timeIntervalSince(lastTideAttempt) > 300 else { return }
+        let age = Date().timeIntervalSince(tide?.fetched ?? .distantPast)
+        guard nextTide == nil || age > 6 * 3600 else { return }
+        tideFetching = true
+        lastTideAttempt = Date()
+        Task {
+            defer { tideFetching = false }
+            await refreshTide()
+        }
+    }
+
     func applyTideRise() {
         if let rise = tideRiseEstimate { scope.tideRise = rise }
     }
 
     var suggestedRadius: Double { ScopeCalculator.suggestedRadius(scope) }
     var rodeToPayOut: Double { ScopeCalculator.rode(scope) }
+
+    /// Seabed at the anchorage, chosen on the Anchoring page and used for the forecast check on the main screen.
+    @Published var anchorBottom = AnchorConditions.Bottom.mud {
+        didSet { defaults.set(anchorBottom.rawValue, forKey: "anchorwatch.bottom") }
+    }
+
+    /// Rode assumed out: what the scope calls for, or everything on board if that's less.
+    var rodeOutEstimate: Double {
+        let carried = BoatMath.rodeCarried(boat)
+        return carried > 0 ? min(rodeToPayOut, carried) : rodeToPayOut
+    }
+
+    /// Forecast gusts in the next 12 h beyond what this setup can hold.
+    var holdingWarning: HoldingWarning? {
+        guard let samples = windHere?.samples else { return nil }
+        return AnchorMath.forecastWarning(boat, scope: scope, bottom: anchorBottom, rodeOut: rodeOutEstimate, forecast: samples)
+    }
+
+    /// The next predicted high or low.
+    var nextTide: TideEvent? { tide.flatMap { TideMath.upcoming($0.events, after: Date(), limit: 1).first } }
     /// How much more rode the scope calls for than the boat carries. Nil when there is enough, or the rode isn't entered.
     var rodeShortfall: Double? {
         let carried = BoatMath.rodeCarried(boat)
@@ -425,6 +466,19 @@ final class AnchorWatchEngine: ObservableObject {
         didSet { defaults.set(fadeSideButtons, forKey: "anchorwatch.fadeSideButtons"); pokeControls() }
     }
     @Published private(set) var sideButtonsVisible = true
+
+    /// Every position received in the last `gpsLogWindow`, usable or not, stamped with when it arrived: for GPS Quality.
+    @Published private(set) var gpsLog: [(time: Date, fix: Fix)] = []
+    let gpsLogWindow: TimeInterval = 15 * 60
+    func clearGPSLog() { gpsLog = [] }
+
+    /// Latest position from each receiver, before the app picks one: for the Testing page.
+    @Published private(set) var receiverFix: Fix?
+    @Published private(set) var phoneFix: Fix?
+    /// Which receiver wins while both report. Set on the Testing page.
+    @Published var gpsPreference = FixSelector.Preference.auto {
+        didSet { defaults.set(gpsPreference.rawValue, forKey: "anchorwatch.gpsPreference"); gps?.preference = gpsPreference }
+    }
     /// Settable so tests needn't wait the full delay.
     var controlsFadeDelay: TimeInterval = 6
     private var hideTask: Task<Void, Never>?
@@ -535,6 +589,9 @@ final class AnchorWatchEngine: ObservableObject {
         #endif
         simulator.onFix = { [weak self] in self?.ingest($0) }
         gps?.onFix = { [weak self] in self?.ingest($0) }
+        gps?.onReading = { [weak self] fix in
+            if fix.external { self?.receiverFix = fix } else { self?.phoneFix = fix }
+        }
         switchSource()
         // Dev aid: `-autoDrop` drops a fresh anchor shortly after launch (raising any saved one first),
         // for screenshots and demos.
@@ -593,6 +650,7 @@ final class AnchorWatchEngine: ObservableObject {
         if Date().timeIntervalSince(lastEstimate) >= max(2, estimateInterval / simTimeScale) { updateAnchorEstimate() }
         refreshPermissionsIfDue()
         refreshWindHereIfDue()
+        refreshTideIfDue()
         refreshAlertsIfDue()
         refreshObservationsIfDue()
     }
@@ -778,10 +836,12 @@ final class AnchorWatchEngine: ObservableObject {
         arrivals.append(now)
         arrivals.removeAll { now.timeIntervalSince($0) > 10 }
         updateRate = Double(arrivals.count) / 10
+        gpsLog.append((now, new))
+        gpsLog.removeAll { now.timeIntervalSince($0.time) > gpsLogWindow }
 
         // A fix this poor can't tell a boat that has drifted from one that hasn't: leave distance, track
         // and alarm to the last good ones.
-        guard new.accuracy <= usableAccuracy else { return }
+        guard new.accuracy <= usableLimit(for: new) else { return }
         lastUsableFix = now
 
         recent.append(new)
@@ -890,7 +950,11 @@ final class AnchorWatchEngine: ObservableObject {
         if defaults.object(forKey: "anchorwatch.gustLimit") != nil { gustLimit = defaults.double(forKey: "anchorwatch.gustLimit") }
         if let raw = defaults.string(forKey: "anchorwatch.source"), let kind = SourceKind(rawValue: raw) { sourceKind = kind }
         fadeSideButtons = defaults.bool(forKey: "anchorwatch.fadeSideButtons")
+        if let raw = defaults.string(forKey: "anchorwatch.gpsPreference"), let choice = FixSelector.Preference(rawValue: raw) {
+            gpsPreference = choice
+        }
         trackWhenUnanchored = defaults.bool(forKey: "anchorwatch.trackUnanchored")
+        if let raw = defaults.string(forKey: "anchorwatch.bottom"), let bottom = AnchorConditions.Bottom(rawValue: raw) { anchorBottom = bottom }
         // Dev aid: `-layer "NOAA Charts (US)"` overrides the saved map layer at launch.
         let args = ProcessInfo.processInfo.arguments
         let override = args.firstIndex(of: "-layer").flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }

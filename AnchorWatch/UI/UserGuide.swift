@@ -57,7 +57,7 @@ enum UserGuideContent {
             "Allow **Location** when asked, and choose **Always**, so watching continues with the screen off.",
             "Allow **Notifications**, so alarms and weather alerts reach you in the background.",
             "Open **Settings** (the gear) and check **Position source** is **iPhone GPS**.",
-            "Open **Settings → Watch check and test siren** and tap **Test siren now** to hear how loud the alarm is.",
+            "Open **Settings → Testing → Watch check and test siren** and tap **Test siren now** to hear how loud the alarm is.",
         ]),
         .heading("Each time you anchor"),
         .bullets([
@@ -92,14 +92,14 @@ enum UserGuideContent {
             "**Target**: re-centre the chart on the boat and anchor.",
             "**+ and −**: zoom. You can also pinch and drag the chart with your fingers.",
         ]),
-        .text("These stay on screen unless you turn on **Settings → Fade the side buttons**. Then they fade with the bottom panel after \(GuideFacts.controlsFadeSeconds) seconds; **tap the chart** to bring them back."),
+        .text("These stay on screen unless you turn on **Settings → Fade Buttons**. Then they fade with the bottom panel after \(GuideFacts.controlsFadeSeconds) seconds; **tap the chart** to bring them back."),
         .heading("On the chart"),
         .bullets([
             "The blue **boat** is drawn to the real size of Nereus (47 ft) and points toward the anchor, as a boat lying to its rode does.",
             "The **anchor** symbol's red point is exactly where you dropped it.",
             "The dashed line runs from the anchor to the bow.",
             "The small **dotted orange circle** round the anchor shows how far off the drop point may be: the GPS accuracy (±) when you dropped, plus the uncertainty in which way the bow pointed. The true spot is inside it about two times in three. It disappears if you move the anchor by hand.",
-            "The purple line is the **track** of where the boat has been. It starts when you drop the anchor, or as soon as you're moving if **Settings → Record track before anchoring** is on.",
+            "The purple line is the **track** of where the boat has been. It starts when you drop the anchor, or as soon as you're moving if **Settings → Track** is on.",
             "The label under the circle reads **Nereus Circle of Safety**, and turns red when the alarm sounds.",
         ]),
         .heading("The bottom panel"),
@@ -164,7 +164,7 @@ enum UserGuideContent {
     ])
 
     static let watchCheck = GuideTopic(id: "watchcheck", title: "Watch check and test siren", icon: "checklist", blocks: [
-        .text("An orange or red bar on the main screen means the phone isn't ready to keep watch. Tap it, or open **Settings → Watch check and test siren**, for the full list."),
+        .text("An orange or red bar on the main screen means the phone isn't ready to keep watch. Tap it, or open **Settings → Testing → Watch check and test siren**, for the full list."),
         .heading("What it checks"),
         .bullets([
             "**Volume**: warns under 50%, and more strongly under 20%.",

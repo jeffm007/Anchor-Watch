@@ -39,6 +39,32 @@ enum Geo {
     }
 }
 
+/// How steady a run of GPS positions is, for the GPS Quality view. Metres throughout.
+enum GPSQuality {
+    /// Average position.
+    static func center(_ points: [CLLocationCoordinate2D]) -> CLLocationCoordinate2D? {
+        guard !points.isEmpty else { return nil }
+        let n = Double(points.count)
+        return CLLocationCoordinate2D(latitude: points.map(\.latitude).reduce(0, +) / n,
+                                      longitude: points.map(\.longitude).reduce(0, +) / n)
+    }
+
+    /// Metres east and north of `center`. Flat-earth, which is fine over a few hundred metres.
+    static func offset(_ point: CLLocationCoordinate2D, from center: CLLocationCoordinate2D) -> (east: Double, north: Double) {
+        let perDegree = Geo.earthRadius * .pi / 180
+        return ((point.longitude - center.longitude) * perDegree * cos(center.latitude.radians),
+                (point.latitude - center.latitude) * perDegree)
+    }
+
+    /// Radius around the average that holds `share` of the positions: 0.5 for half, 0.95 for nearly all.
+    static func spread(_ points: [CLLocationCoordinate2D], share: Double) -> Double? {
+        guard let c = center(points) else { return nil }
+        let distances = points.map { Geo.distance($0, c) }.sorted()
+        let i = min(distances.count - 1, max(0, Int((Double(distances.count) * share).rounded(.up)) - 1))
+        return distances[i]
+    }
+}
+
 extension Double {
     var radians: Double { self * .pi / 180 }
     var degrees: Double { self * 180 / .pi }
