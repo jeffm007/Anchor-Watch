@@ -327,6 +327,20 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(e.originalAnchor, e.anchor, "a drag always has a spot to measure the move from")
     }
 
+    func testNudgeMovesTheAnchorOneStepAndKeepsTheOriginal() {
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false)
+        e.units = .feet
+        e.ingest(fix(0)); e.dropAnchor()
+        let start = e.anchor!
+        e.nudgeAnchor(toward: 0)
+        XCTAssertEqual(Geo.distance(start, e.anchor!), 1.524, accuracy: 0.001, "5 ft")
+        XCTAssertEqual(Geo.bearing(from: start, to: e.anchor!), 0, accuracy: 0.5)
+        XCTAssertEqual(e.originalAnchor, start)
+        e.units = .meters
+        e.nudgeAnchor(toward: 90)
+        XCTAssertEqual(Geo.distance(start, e.anchor!), (1.524 * 1.524 + 1).squareRoot(), accuracy: 0.01, "1 m in metric")
+    }
+
     func testMoveToSwingEstimateThenItAgrees() {
         let e = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false)
         e.scope = ScopeSettings(depth: 5, bowHeight: 1, boatLength: 14, scopeRatio: 5, margin: 0)

@@ -1070,6 +1070,18 @@ final class AnchorWatchEngine: ObservableObject {
         return Geo.distance(anchor, estimate.center) <= estimate.semiMajor
     }
 
+    /// The arrows on the chart that nudge the anchor a step at a time; shown after a drag or from the Anchor tab.
+    @Published var showNudgePad = false
+    /// One nudge: 5 ft, or 1 m in metric.
+    var nudgeStep: Double { units == .feet ? 1.524 : 1.0 }
+
+    /// Moves the anchor one step toward `bearing` (degrees true), as a hand placement.
+    func nudgeAnchor(toward bearing: Double) {
+        guard let anchor else { return }
+        beginAnchorDrag()
+        moveAnchor(to: Geo.destination(from: anchor, bearing: bearing, meters: nudgeStep))
+    }
+
     /// A drag of the anchor pin is starting: if there's no official spot to measure the move from (an anchor saved
     /// before this existed, or one already promoted), the anchor's current spot becomes it.
     func beginAnchorDrag() {
@@ -1111,6 +1123,7 @@ final class AnchorWatchEngine: ObservableObject {
         distance = nil
         anchorDropped = nil
         originalAnchor = nil
+        showNudgePad = false
         anchorCorrection = nil
         awaitingSwingFix = false
         rodeOutSet = nil

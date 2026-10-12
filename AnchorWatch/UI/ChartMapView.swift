@@ -47,7 +47,7 @@ struct ChartMapView: UIViewRepresentable {
         // Long-press on the swing estimate moves the anchor there. On the map rather than the marker, where
         // MapKit's own selection and pan gestures would take the touch first.
         let press = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pressed(_:)))
-        press.minimumPressDuration = 0.6
+        press.minimumPressDuration = 0.5
         press.delegate = context.coordinator
         map.addGestureRecognizer(press)
         return map
@@ -114,8 +114,9 @@ struct ChartMapView: UIViewRepresentable {
         private var measureVisible: Bool { showBoatLine || showMovedLine }
         /// The anchor's view while it's being dragged: MapKit only updates the pin's coordinate on release, so the
         /// live position is read from where the view is drawn.
-        private weak var draggedView: MKAnnotationView?
-        private var measureTimer: Timer?
+        /// The app's own anchor drag (MapKit's annotation drag gets cancelled whenever anything on the chart changes):
+        /// how far the anchor's tip sits from the finger, so it doesn't jump to it.
+        private var grab = CGPoint.zero
         /// On-screen length of the boat icon, true to scale but never smaller than `minBoatPoints`.
         private var boatPoints: CGFloat = BoatIcon.minPoints
         private var lastHeading = 0.0
@@ -484,12 +485,22 @@ struct ChartMapView: UIViewRepresentable {
 
         /// Long-press within reach of the purple swing marker moves the anchor there.
         @objc func pressed(_ gesture: UILongPressGestureRecognizer) {
-            guard gesture.state == .began, let map = gesture.view as? MKMapView else { return }
-            // A press that starts on the anchor is the start of dragging it, and on a label is for moving the label:
-            // neither should close, delete or move anything else.
+            guard let map = gesture.view as? MKMapView else { return }
             let point = gesture.location(in: map)
-            if dragging || pressedMeasureLabel(map, at: point) != nil
-                || map.view(for: anchorPin)?.frame.insetBy(dx: -10, dy: -10).contains(point) == true { return }
+            if dragging {
+                dragAnchor(map, gesture.state, finger: point)
+                return
+            }
+            guard gesture.state == .began else { return }
+            // A press on or near the anchor starts dragging it.
+            if engine.anchor != nil, let view = map.view(for: anchorPin), view.frame.insetBy(dx: -20, dy: -20).contains(point) {
+                let tip = map.convert(anchorPin.coordinate, toPointTo: map)
+                grab = CGPoint(x: tip.x - point.x, y: tip.y - point.y)
+                dragAnchor(map, .began, finger: point)
+                return
+            }
+            // A press on a label is for moving the label: it shouldn't close, delete or move anything else.
+            if pressedMeasureLabel(map, at: point) != nil { return }
             // Long-pressing the faded original-drop mark deletes it (with the moved line that measures from it) and makes
             // the current anchor spot the official one for the next move.
             if map.annotations.contains(where: { $0 === originalMark }),
@@ -532,30 +543,39 @@ struct ChartMapView: UIViewRepresentable {
             engine.moveAnchor(to: map.convert(gesture.location(in: map), toCoordinateFrom: map))
         }
 
-        func mapView(_ map: MKMapView, annotationView view: MKAnnotationView, didChange newState: MKAnnotationView.DragState, fromOldState: MKAnnotationView.DragState) {
-            switch newState {
-            case .starting, .dragging:
-                if !dragging { engine.beginAnchorDrag() }
+        /// Moves the anchor pin with the finger. The chart holds still meanwhile, and nothing else on it can cancel
+        /// the drag; letting go moves the anchor there.
+        private func dragAnchor(_ map: MKMapView, _ state: UIGestureRecognizer.State, finger: CGPoint) {
+            switch state {
+            case .began:
+                engine.beginAnchorDrag()
                 dragging = true
                 showBoatLine = true
                 showMovedLine = true
-                draggedView = view
-                if measureTimer == nil {
-                    // The pin's coordinate changes as it's dragged; redraw the lines twenty times a second.
-                    measureTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self, weak map] _ in
-                        MainActor.assumeIsolated { if let self, let map { self.updateMeasure(map) } }
-                    }
-                }
-            case .ending, .canceling:
-                dragging = false
-                draggedView = nil
-                view.dragState = .none
-                measureTimer?.invalidate()
-                measureTimer = nil
-                if newState == .ending, let pin = view.annotation { engine.moveAnchor(to: pin.coordinate) }
-                updateMeasure(map)          // stays up, following the boat, until a label is long-pressed
-            default: break
+                map.isScrollEnabled = false
+                map.isZoomEnabled = false
+                engine.showNudgePad = true
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                updateMeasure(map)
+            case .changed:
+                let tip = CGPoint(x: finger.x + grab.x, y: finger.y + grab.y)
+                UIView.performWithoutAnimation { anchorPin.coordinate = map.convert(tip, toCoordinateFrom: map) }
+                updateMeasure(map)
+            case .ended:
+                finishDrag(map)
+                engine.moveAnchor(to: anchorPin.coordinate)
+                updateMeasure(map)          // stays up, following the boat, until its ✕ is tapped
+            default:
+                finishDrag(map)
+                if let anchor = engine.anchor { anchorPin.coordinate = anchor }
+                updateMeasure(map)
             }
+        }
+
+        private func finishDrag(_ map: MKMapView) {
+            dragging = false
+            map.isScrollEnabled = true
+            map.isZoomEnabled = true
         }
 
         /// The faded mark at the original drop spot, shown once the anchor has moved from it.
@@ -570,7 +590,7 @@ struct ChartMapView: UIViewRepresentable {
         }
 
         private func updateMeasure(_ map: MKMapView) {
-            let anchor = dragging ? liveDragCoordinate(map) : (engine.anchor ?? anchorPin.coordinate)
+            let anchor = dragging ? anchorPin.coordinate : (engine.anchor ?? anchorPin.coordinate)
             if showBoatLine, let boat = engine.fix?.coordinate {
                 measureLine = replaceLine(map, measureLine, from: boat, to: anchor, title: "measure")
                 place(map, measurePin, at: midpoint(boat, anchor), text: "New " + fromBoat(boat, to: anchor))
@@ -585,13 +605,6 @@ struct ChartMapView: UIViewRepresentable {
                 movedLine = nil
                 map.removeAnnotation(originalPin)
             }
-        }
-
-        /// Where the dragged anchor is right now: the point its view stands on (the icon's tip), on the map.
-        private func liveDragCoordinate(_ map: MKMapView) -> CLLocationCoordinate2D {
-            guard let view = draggedView, view.superview != nil else { return anchorPin.coordinate }
-            let tip = CGPoint(x: view.center.x - view.centerOffset.x, y: view.center.y - view.centerOffset.y)
-            return map.convert(view.superview!.convert(tip, to: map), toCoordinateFrom: map)
         }
 
         /// "228 ft · NE 053°": distance and true bearing from the boat.
@@ -688,7 +701,6 @@ struct ChartMapView: UIViewRepresentable {
                 view.image = AnchorIcon.image
                 // The tip at the bottom of the icon sits exactly on the anchor's coordinate.
                 view.centerOffset = CGPoint(x: 0, y: -AnchorIcon.size.height / 2)
-                view.isDraggable = true
                 view.canShowCallout = true
                 view.zPriority = .max
                 view.displayPriority = .required

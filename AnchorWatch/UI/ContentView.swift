@@ -26,7 +26,43 @@ struct RootView: View {
             if args.contains("-showAnchoring") { engine.tab = .anchor }
             if args.contains("-showDepth") { engine.tab = .water }
             if args.contains("-showConditions") { engine.tab = .weather }
+            if args.contains("-showNudge") { engine.showNudgePad = true }
         }
+    }
+}
+
+/// Arrows that move the anchor a step north, south, east or west, for fine-tuning without dragging.
+struct NudgePad: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+
+    var body: some View {
+        VStack(spacing: 2) {
+            arrow("arrowtriangle.up.fill", 0, "North")
+            HStack(spacing: 2) {
+                arrow("arrowtriangle.left.fill", 270, "West")
+                Button { engine.showNudgePad = false } label: {
+                    Image(systemName: "xmark").font(.caption.bold()).frame(width: 40, height: 40)
+                }
+                .accessibilityLabel("Close fine-tune")
+                arrow("arrowtriangle.right.fill", 90, "East")
+            }
+            arrow("arrowtriangle.down.fill", 180, "South")
+            Text("\(engine.units.format(engine.nudgeStep)) a tap").font(.caption2).foregroundStyle(.secondary)
+        }
+        .padding(6)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .foregroundStyle(.primary)
+    }
+
+    private func arrow(_ icon: String, _ bearing: Double, _ name: String) -> some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            engine.nudgeAnchor(toward: bearing)
+        } label: {
+            Image(systemName: icon).font(.title3).frame(width: 40, height: 40)
+                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        }
+        .accessibilityLabel("Move anchor \(name)")
     }
 }
 
@@ -144,6 +180,9 @@ struct ContentView: View {
             .padding(8)
         }
         .overlay(alignment: .topLeading) { SimClockBadge().padding(8) }
+        .overlay(alignment: .bottomTrailing) {
+            if engine.showNudgePad && engine.anchor != nil { NudgePad().padding(10) }
+        }
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.1), lineWidth: 1))
     }
@@ -278,15 +317,22 @@ struct AnchorRadiusControls: View {
                 }.font(.footnote)
                 swingFit
             }
-            HStack {
-                Button { engine.placingAnchor = true; onMove() } label: {
-                    Label("Move Anchor", systemImage: "hand.tap")
+            Grid(horizontalSpacing: 8, verticalSpacing: 8) {
+                GridRow {
+                    Button { engine.placingAnchor = true; onMove() } label: {
+                        Label("Move Anchor", systemImage: "hand.tap").frame(maxWidth: .infinity)
+                    }
+                    Button { engine.moveAnchorToBoat() } label: {
+                        Label("Anchor → Boat", systemImage: "location").frame(maxWidth: .infinity)
+                    }
                 }
-                Button { engine.moveAnchorToBoat() } label: {
-                    Label("Anchor → Boat", systemImage: "location")
-                }
-                Button(role: .destructive) { engine.raiseAnchor() } label: {
-                    Label("Raise", systemImage: "arrow.up.to.line")
+                GridRow {
+                    Button { engine.showNudgePad = true; onMove() } label: {
+                        Label("Fine-tune", systemImage: "arrow.up.and.down.and.arrow.left.and.right").frame(maxWidth: .infinity)
+                    }
+                    Button(role: .destructive) { engine.raiseAnchor() } label: {
+                        Label("Raise", systemImage: "arrow.up.to.line").frame(maxWidth: .infinity)
+                    }
                 }
             }
             .buttonStyle(.bordered).font(.footnote).labelStyle(.titleOnly).lineLimit(1)
