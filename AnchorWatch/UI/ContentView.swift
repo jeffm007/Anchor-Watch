@@ -68,6 +68,7 @@ struct ContentView: View {
                 if let drift = engine.anchorDrift { DriftBanner(drift: drift) }
                 DashboardTiles(openConditions: { engine.tab = .weather }, openDepth: { engine.tab = .water },
                                openAnchoring: { engine.tab = .anchor })
+                OutlookBanner()
                 chartPanel
                 NoticesCard(openAnchoring: { engine.tab = .anchor }, openConditions: { engine.tab = .weather },
                             openAlerts: { showAlerts = true }, openWatchCheck: { showWatchCheck = true })
@@ -663,6 +664,7 @@ struct ConditionsView: View {
                         Text("\(Compass.name(now.direction)) \(Int(now.speed.rounded())) kt, gusts \(Int(now.gust.rounded())) kt")
                     }
                 }
+                WindOutlookSections()
                 if !engine.observations.isEmpty {
                     Section {
                         Button { engine.fitStations(); engine.tab = .watch } label: {
@@ -688,7 +690,7 @@ struct ConditionsView: View {
                 }
                 .font(.caption).foregroundStyle(.secondary)
             }
-            .navigationTitle("Conditions")
+            .navigationTitle("Weather")
             .navigationBarTitleDisplayMode(.inline)
             
         }

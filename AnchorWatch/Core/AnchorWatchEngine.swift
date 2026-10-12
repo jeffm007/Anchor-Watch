@@ -508,6 +508,27 @@ final class AnchorWatchEngine: ObservableObject {
         return AnchorMath.forecastWarning(boat, scope: scope, bottom: anchorBottom, rodeOut: rodeOutEstimate, forecast: samples)
     }
 
+    /// The next 24 hours: forecast hours with the safe gust at each hour's depth, and what's coming up.
+    /// Recomputed at most once a minute (and as soon as tide or wind data first arrives).
+    @Published private(set) var hourlyHolding: [HourlyHolding] = []
+    @Published private(set) var outlook: [OutlookItem] = []
+    private var lastOutlook = Date.distantPast
+
+    /// The first thing in the outlook worth worrying about.
+    var nextRisk: OutlookItem? { Outlook.nextRisk(outlook) }
+
+    private func refreshOutlookIfDue() {
+        let hasData = tide != nil || windHere != nil
+        guard hasData, Date().timeIntervalSince(lastOutlook) >= 60 || (outlook.isEmpty && hourlyHolding.isEmpty) else { return }
+        lastOutlook = Date()
+        let depths = waterForecast
+        let hourly = Outlook.hourly(boat, scope: scope, bottom: anchorBottom, rodeOut: rodeOutEstimate,
+                                    depths: depths, forecast: windHere?.samples ?? [])
+        hourlyHolding = hourly
+        outlook = Outlook.items(boat, scope: scope, rodeOut: rodeOutEstimate, depths: depths, hourly: hourly,
+                                tideTurns: tide?.events ?? [], units: units)
+    }
+
     /// The next predicted high or low.
     var nextTide: TideEvent? { tide.flatMap { TideMath.upcoming($0.events, after: Date(), limit: 1).first } }
     /// How much more rode the scope calls for than the boat carries. Nil when there is enough, or the rode isn't entered.
@@ -706,6 +727,7 @@ final class AnchorWatchEngine: ObservableObject {
         refreshPermissionsIfDue()
         refreshWindHereIfDue()
         refreshTideIfDue()
+        refreshOutlookIfDue()
         refreshAlertsIfDue()
         refreshObservationsIfDue()
     }

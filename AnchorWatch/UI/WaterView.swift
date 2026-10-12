@@ -153,3 +153,70 @@ struct WaterView: View {
         return underKeel <= 0 ? .red : underKeel < AnchorMath.keelClearance ? .orange : .secondary
     }
 }
+
+/// Top of the Weather tab: wind and gusts for the next 24 hours against the gust this setup can hold at each
+/// hour's depth, with the direction, then what the outlook says about the wind.
+struct WindOutlookSections: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+
+    var body: some View {
+        let hours = engine.hourlyHolding
+        if !hours.isEmpty {
+            Section {
+                Chart {
+                    ForEach(hours, id: \.time) { h in
+                        AreaMark(x: .value("Time", h.time), yStart: .value("Wind", h.speed), yEnd: .value("Gust", h.gust))
+                            .foregroundStyle(.orange.opacity(0.25))
+                        LineMark(x: .value("Time", h.time), y: .value("Knots", h.gust), series: .value("Series", "Gusts"))
+                            .foregroundStyle(.orange)
+                        LineMark(x: .value("Time", h.time), y: .value("Knots", h.speed), series: .value("Series", "Wind"))
+                            .foregroundStyle(.blue)
+                        if let safe = h.safeGust {
+                            LineMark(x: .value("Time", h.time), y: .value("Knots", safe), series: .value("Series", "Limit"))
+                                .foregroundStyle(.red)
+                                .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                        }
+                    }
+                    // Direction every three hours, pointing the way the wind blows.
+                    ForEach(Array(hours.enumerated()).filter { $0.offset % 3 == 0 }.map(\.element), id: \.time) { h in
+                        PointMark(x: .value("Time", h.time), y: .value("Knots", 0))
+                            .opacity(0)
+                            .annotation(position: .top) {
+                                Image(systemName: "location.north.fill").font(.caption2)
+                                    .rotationEffect(.degrees(h.direction + 180)).foregroundStyle(.secondary)
+                            }
+                    }
+                }
+                .chartYAxisLabel("knots")
+                .chartXAxis {
+                    AxisMarks(values: .stride(by: .hour, count: 6)) { _ in
+                        AxisGridLine()
+                        AxisValueLabel(format: .dateTime.hour())
+                    }
+                }
+                .frame(height: 200)
+                .padding(.vertical, 6)
+            } header: { Text("Wind, next 24 hours") } footer: {
+                Text("Blue is the wind, orange the gusts, red dashed the gust your setup holds at each hour's depth (\(engine.units.format(engine.rodeOutEstimate)) of rode in \(engine.anchorBottom.rawValue.lowercased())). Arrows show which way it blows.")
+            }
+        }
+        let wind = engine.outlook.filter { $0.kind == .gusts || $0.kind == .windShift }
+        Section("Wind outlook") {
+            if wind.isEmpty {
+                Label(hours.isEmpty ? "Waiting for the wind forecast…" : "No gusts beyond your setup and no big wind shifts in the next 24 hours.",
+                      systemImage: hours.isEmpty ? "clock" : "checkmark.circle")
+                    .font(.subheadline).foregroundStyle(hours.isEmpty ? Color.secondary : Color.green)
+            }
+            ForEach(wind) { item in
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: OutlookList.icon(item.kind)).foregroundStyle(OutlookList.color(item.severity)).frame(width: 24)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(OutlookList.span(item)).font(.caption.bold()).foregroundStyle(.secondary)
+                        Text(item.title).font(.subheadline.bold())
+                        Text(item.detail).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+}

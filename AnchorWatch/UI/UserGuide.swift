@@ -85,14 +85,16 @@ enum UserGuideContent {
             "**Tide**: how much it will rise or fall to the next high or low, and when. Tap for the Water tab.",
             "**Distance**: from the anchor now, the furthest so far (Max), and the alarm radius. Orange near the circle, red outside it.",
         ]),
+        .heading("Next 24 hours"),
+        .text("Under the tiles, the app looks ahead through the tide predictions and the wind forecast and shows the **first thing that will go wrong**, with a countdown: thin water under the keel at low tide, short scope at high water, or forecast gusts beyond what your setup holds (worked out again for each hour, since high water's shorter scope holds less). Green means nothing in the next 24 hours. **Tap it** for the full list in time order, including wind shifts and the highs and lows."),
         .heading("Notices"),
-        .text("Under the chart: anything to look at that isn't an alarm, such as forecast gusts beyond your setup, weather alerts, observed gusts, wind shifts and watch problems. Tap a notice to hide it for an hour (sooner if it gets worse), or its **›** to open the screen it's about. **Show hidden** brings them all back."),
+        .text("Under the chart: anything to look at now that isn't an alarm: weather alerts, gusts measured nearby and watch problems. Forecast trouble is in Next 24 hours above. Tap a notice to hide it for an hour (sooner if it gets worse), or its **›** to open the screen it's about. **Show hidden** brings them all back."),
         .heading("Tabs along the bottom"),
         .bullets([
             "**Watch**: this screen: status, position and the chart.",
             "**Anchor**: the verdict first (holding well, marginal or at risk, the safe gust limit, and whether the next 12 hours of forecast stay under it), the rode drawn from the side at low, now or high tide, your setup, the alarm radius and anchor controls, then **Conditions**, **Load analysis** and **Your boat**, which open with a tap.",
             "**Water**: depth at the anchorage over the next 24 hours with your keel line, the lowest and highest water, how your scope changes, warnings if the water gets thin, and the depth, tide and scope settings.",
-            "**Weather**: the forecast and nearby station readings.",
+            "**Weather**: the wind and gusts for the next 24 hours against the gust your setup holds at each hour, with the direction, then the wind outlook and nearby station readings.",
         ]),
         .heading("Buttons under the chart"),
         .bullets([

@@ -249,14 +249,6 @@ struct NoticesCard: View {
                                    title: problem.title, detail: "The watch check has the details", action: openWatchCheck))
             }
         }
-        if let w = engine.holdingWarning {
-            // Strength in the id: a stronger forecast is a new notice, even if the last one was hidden.
-            list.append(Notice(id: "holding-\(Int(w.gust / 5))", icon: "exclamationmark.triangle", color: .orange,
-                               title: "Forecast gusts beyond your setup",
-                               detail: "\(Int(w.gust.rounded())) kt around \(w.time.formatted(date: .omitted, time: .shortened)); "
-                                   + "with \(units.format(w.rodeOut)) out you're good to about \(Int(w.safeGust)) kt.",
-                               action: openAnchoring))
-        }
         for alert in engine.nwsAlerts {
             list.append(Notice(id: "nws-\(alert.id)", icon: "exclamationmark.triangle", color: alert.severity.color,
                                title: alert.event,
@@ -267,13 +259,6 @@ struct NoticesCard: View {
             list.append(Notice(id: "observed-\(Int(hit.gust / 5))", icon: "wind", color: .orange,
                                title: "Observed gusts \(Int(hit.gust.rounded())) kt",
                                detail: "At \(StationName.short(hit.station.name))", action: openConditions))
-        }
-        for alert in engine.windAlerts {
-            list.append(Notice(id: "wind-\(alert.title)", icon: "info.circle", color: .blue,
-                               title: "Upcoming change: \(alert.title)",
-                               detail: alert.time.formatted(.dateTime.weekday(.abbreviated).hour().minute())
-                                   + (alert.title.contains("shift") ? ". Check the swing still clears." : ""),
-                               action: openConditions))
         }
         return list
     }
@@ -327,3 +312,119 @@ struct NoticesCard: View {
         }
     }
 }
+
+/// The most important line on the dashboard after the status: what's the next thing to go wrong in the next 24 hours,
+/// and how long until it does. Tap for the whole outlook.
+struct OutlookBanner: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+    @State private var showAll = false
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            Button { showAll = true } label: { content(now: context.date) }
+                .buttonStyle(.plain)
+        }
+        .sheet(isPresented: $showAll) { OutlookList() }
+    }
+
+    private func content(now: Date) -> some View {
+        let (icon, color, title, detail): (String, Color, String, String) = {
+            if engine.outlook.isEmpty && engine.tide == nil && engine.windHere == nil {
+                return ("clock", .secondary, "Next 24 hours", "Waiting for the tide and wind forecasts…")
+            }
+            guard let risk = engine.nextRisk else {
+                let next = engine.outlook.first { $0.start > now }
+                return ("checkmark.circle.fill", .green, "Clear for the next 24 hours",
+                        next.map { "Next: \($0.title.lowercased()) at \($0.start.formatted(date: .omitted, time: .shortened))" }
+                            ?? "Nothing in the tide or wind forecast to worry about.")
+            }
+            return (risk.severity == .danger ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill",
+                    risk.severity == .danger ? .red : .orange,
+                    "\(countdown(to: risk.start, now: now)) · \(risk.title)", OutlookList.span(risk))
+        }()
+        return HStack(spacing: 10) {
+            Image(systemName: icon).font(.title3).foregroundStyle(color)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.subheadline.bold()).foregroundStyle(.primary).lineLimit(2)
+                Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .background(color.opacity(color == .secondary ? 0.07 : 0.15), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(color.opacity(color == .secondary ? 0 : 0.5), lineWidth: 1))
+    }
+
+    /// "Now", "In 45m", "In 3h 20m".
+    private func countdown(to date: Date, now: Date) -> String {
+        let minutes = Int(date.timeIntervalSince(now) / 60)
+        if minutes <= 0 { return "Now" }
+        return minutes >= 60 ? "In \(minutes / 60)h \(minutes % 60)m" : "In \(minutes)m"
+    }
+}
+
+/// Everything coming up in the next 24 hours, in time order.
+struct OutlookList: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if engine.outlook.isEmpty {
+                    Text("Nothing yet: the outlook needs the tide or wind forecast.").foregroundStyle(.secondary)
+                }
+                ForEach(engine.outlook) { item in
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: Self.icon(item.kind)).foregroundStyle(Self.color(item.severity)).frame(width: 24)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(Self.span(item)).font(.caption.bold()).foregroundStyle(.secondary)
+                            Text(item.title).font(.subheadline.bold())
+                            Text(item.detail).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                Section {
+                    Text("Worked out from the tide predictions, the wind forecast and your boat, rode (\(engine.units.format(engine.rodeOutEstimate)) assumed out) and bottom. The safe gust limit is recalculated for each hour's depth. Forecasts can be wrong; keep a lookout.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Next 24 hours")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button("Done") { dismiss() } }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    /// "2:10 AM – 4:30 AM", or one time.
+    static func span(_ item: OutlookItem) -> String {
+        let start = time(item.start)
+        guard let end = item.end, end > item.start else { return start }
+        return "\(start) – \(time(end))"
+    }
+
+    private static func time(_ d: Date) -> String {
+        Calendar.current.isDateInToday(d) ? d.formatted(date: .omitted, time: .shortened)
+                                          : d.formatted(.dateTime.weekday(.abbreviated).hour().minute())
+    }
+
+    static func icon(_ kind: OutlookItem.Kind) -> String {
+        switch kind {
+        case .shallow: "arrow.down.to.line"
+        case .scope: "ruler"
+        case .gusts: "wind"
+        case .windShift: "arrow.triangle.turn.up.right.circle"
+        case .tideTurn: "water.waves"
+        }
+    }
+
+    static func color(_ severity: OutlookItem.Severity) -> Color {
+        switch severity {
+        case .info: .blue
+        case .caution: .orange
+        case .danger: .red
+        }
+    }
+}
+

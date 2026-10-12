@@ -1407,3 +1407,57 @@ final class DistanceTrendTests: XCTestCase {
         XCTAssertEqual(e.watchState, .outside(distance: e.distance!))
     }
 }
+
+final class OutlookTests: XCTestCase {
+    private let now = Date(timeIntervalSince1970: 1_800_000_000)
+    private let scope = ScopeSettings(depth: 6, bowHeight: 1.2, boatLength: 14.3, scopeRatio: 5, margin: 5)
+
+    private func depths(_ f: (Double) -> Double) -> [(time: Date, depth: Double)] {
+        stride(from: 0.0, through: 24, by: 1.0 / 6).map { (now.addingTimeInterval($0 * 3600), f($0)) }
+    }
+
+    private func forecast(gust: (Int) -> Double, direction: (Int) -> Double = { _ in 200 }) -> [WindSample] {
+        (0...24).map { WindSample(time: now.addingTimeInterval(Double($0) * 3600), speed: min(10, gust($0)), direction: direction($0), gust: gust($0)) }
+    }
+
+    private func items(depths d: [(time: Date, depth: Double)], forecast f: [WindSample], rodeOut: Double = 40) -> [OutlookItem] {
+        let b = BoatProfile()
+        let hourly = Outlook.hourly(b, scope: scope, bottom: .mud, rodeOut: rodeOut, depths: d, forecast: f, now: now)
+        return Outlook.items(b, scope: scope, rodeOut: rodeOut, depths: d, hourly: hourly, tideTurns: [], units: .feet, now: now)
+    }
+
+    func testCalmDeepWaterIsClear() {
+        let list = items(depths: depths { _ in 6 }, forecast: forecast { _ in 8 })
+        XCTAssertNil(Outlook.nextRisk(list))
+    }
+
+    func testThinWaterAtLowIsFlaggedWithItsTimes() {
+        // Draft is about 1.55 m; the depth dips to 1.8 m around hour 6.
+        let list = items(depths: depths { h in 6 - 4.2 * max(0, 1 - abs(h - 6) / 3) }, forecast: forecast { _ in 8 })
+        let shallow = list.first { $0.kind == .shallow }
+        XCTAssertNotNil(shallow)
+        XCTAssertEqual(shallow!.severity, .caution)
+        XCTAssertEqual(shallow!.start.timeIntervalSince(now) / 3600, 6, accuracy: 1)
+    }
+
+    func testStrongGustLaterIsTheNextRisk() {
+        let list = items(depths: depths { _ in 6 }, forecast: forecast { $0 == 5 ? 60 : 8 })
+        let risk = Outlook.nextRisk(list)
+        XCTAssertEqual(risk?.kind, .gusts)
+        XCTAssertEqual(risk?.start, now.addingTimeInterval(5 * 3600))
+    }
+
+    func testShortScopeAtHighWater() {
+        // 40 m out in 9 m of water plus 1.2 m bow: under 4:1.
+        let list = items(depths: depths { h in h > 10 && h < 14 ? 9 : 6 }, forecast: forecast { _ in 8 })
+        XCTAssertTrue(list.contains { $0.kind == .scope })
+    }
+
+    func testWindShiftIsInformation() {
+        let list = items(depths: depths { _ in 6 }, forecast: forecast(gust: { _ in 12 }, direction: { $0 < 8 ? 200 : 290 }))
+        let shift = list.first { $0.kind == .windShift }
+        XCTAssertEqual(shift?.severity, .info)
+        XCTAssertNil(Outlook.nextRisk(list.filter { $0.kind == .windShift }))
+    }
+}
+
