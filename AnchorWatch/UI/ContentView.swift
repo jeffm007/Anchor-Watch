@@ -30,6 +30,26 @@ struct RootView: View {
     }
 }
 
+/// Simulated time of day, how long the simulation has run and how fast, so the speed-up is visible.
+struct SimClockBadge: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+            if let clock = engine.simulatedClock {
+                let h = Int(clock.elapsed / 3600), m = Int(clock.elapsed / 60) % 60
+                Label("\(clock.time.formatted(date: .omitted, time: .shortened)) · +\(h)h \(String(format: "%02d", m))m · \(Int(engine.simSpeed))×",
+                      systemImage: "timer")
+                    .font(.caption.bold().monospacedDigit())
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(.yellow, in: Capsule())
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 /// SF Symbols has no anchor, so the tab icon is the anchor glyph drawn as a template image.
 enum AnchorTabIcon {
     static let image: UIImage = {
@@ -123,6 +143,7 @@ struct ContentView: View {
             }
             .padding(8)
         }
+        .overlay(alignment: .topLeading) { SimClockBadge().padding(8) }
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.1), lineWidth: 1))
     }
@@ -413,10 +434,20 @@ struct TestingView: View {
                         ForEach(SimulatedLocationSource.Scenario.allCases) { Text($0.rawValue).tag($0) }
                     }
                     Picker("Speed", selection: $engine.simSpeed) {
-                        Text("1×").tag(1.0); Text("5×").tag(5.0); Text("10×").tag(10.0); Text("30×").tag(30.0); Text("60×").tag(60.0)
-                    }.pickerStyle(.segmented)
-                    Text("At 30× or 60×, swing-fit waits and the track speed up too: at 60× the anchor estimate appears about 22 seconds after you drop. Try the Wide swing scenario.")
-                        .font(.footnote).foregroundStyle(.secondary)
+                        ForEach([1.0, 5, 10, 30, 60, 120, 300], id: \.self) { Text("\(Int($0))×").tag($0) }
+                    }
+                    if engine.scenario.weather != nil {
+                        TimelineView(.periodic(from: .now, by: 1)) { _ in
+                            if let status = engine.simulatorStatus {
+                                Text(status).font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
+                            }
+                        }
+                        Text("A day of wind, tidal current and tide moving the boat on its rode: it wanders in the slack in light air and swings when wind or tide takes hold. Uses your boat, rode out and depth. At 300× a day takes under 5 minutes.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    } else {
+                        Text("At 30× or 60×, swing-fit waits and the track speed up too: at 60× the anchor estimate appears about 22 seconds after you drop. Try the Wide swing scenario.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                 }
             }
             Section {

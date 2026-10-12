@@ -1727,3 +1727,76 @@ final class SwingTests: XCTestCase {
     }
 }
 
+final class AnchorPhysicsTests: XCTestCase {
+    /// Roughly Nereus on 60 m (200 ft) of 3/8" chain in 11 m (36 ft) of water.
+    private let boat = AnchorPhysics.Boat(rode: 60, depth: 11, bowHeight: 1.2, chainWeight: AnchorMath.chainWeight(sizeMM: 9.525),
+                                          frontWindage: 17, sideWindage: 50, underwater: 4.4, mass: 31_000,
+                                          bowToPhone: 7, holding: 10_000)
+
+    private func distance(_ p: AnchorPhysics) -> Double {
+        ((p.bow.x - p.anchor.x) * (p.bow.x - p.anchor.x) + (p.bow.y - p.anchor.y) * (p.bow.y - p.anchor.y)).squareRoot()
+    }
+
+    func testChainPullsNothingInTheSlackAndMoreTowardTaut() {
+        var p = AnchorPhysics(boat: boat, weather: SimDays.calm)
+        let slack = p.slack(depth: 11)                                     // 60 − 12.2 = 47.8 m
+        XCTAssertEqual(p.pull(at: slack - 2, depth: 11), 0)
+        let near = p.pull(at: slack + 5, depth: 11), far = p.pull(at: slack + 10, depth: 11)
+        XCTAssertGreaterThan(near, 0)
+        XCTAssertGreaterThan(far, near * 2, "the pull rises steeply as the chain lifts")
+    }
+
+    func testCalmNightWandersRoundAWideArcNotOnOneHeading() {
+        // Like a real calm night: the boat lies out near the end of the slack, but in whatever direction the light
+        // air and weak tide take it, wobbling in and out, and never past taut.
+        var p = AnchorPhysics(boat: boat, weather: SimDays.calm)
+        let taut = (60.0 * 60 - 12.2 * 12.2).squareRoot()
+        var distances: [Double] = [], bearings: [Double] = []
+        for i in 0..<(8 * 3600) {
+            p.step()
+            if i % 60 == 0 {
+                distances.append(distance(p))
+                bearings.append((atan2(p.bow.x - p.anchor.x, p.bow.y - p.anchor.y).degrees + 360).truncatingRemainder(dividingBy: 360))
+            }
+        }
+        XCTAssertLessThanOrEqual(distances.max()!, taut + 0.01, "never past taut")
+        XCTAssertLessThan(distances.min()!, p.slack(depth: 11), "comes well in at times")
+        let mean = distances.reduce(0, +) / Double(distances.count)
+        let spread = (distances.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(distances.count)).squareRoot()
+        XCTAssertGreaterThan(spread, 1.5, "wobbles in and out rather than sitting on one radius")
+        XCTAssertGreaterThan(Outlook.arc(bearings)!.width, 120, "lies round a wide arc, not to one heading")
+    }
+
+    func testSteadyBreezeLiesDownwindNearTheEndOfTheRode() {
+        let breeze = SimWeather(wind: { _ in (15, 0) }, gustiness: 0, currentMax: 0, floodToward: 0, tideRange: 0)
+        var p = AnchorPhysics(boat: boat, weather: breeze)
+        for _ in 0..<3600 { p.step() }
+        let bearing = (atan2(p.bow.x - p.anchor.x, p.bow.y - p.anchor.y).degrees + 360).truncatingRemainder(dividingBy: 360)
+        XCTAssertEqual(bearing, 180, accuracy: 35, "a northerly blows the boat south of its anchor")
+        XCTAssertGreaterThan(distance(p), p.slack(depth: 11), "out on the chain, not wandering")
+    }
+
+    @MainActor func testSimulatedTideIsSqueezedOntoTheRealClock() {
+        let sim = SimulatedLocationSource()
+        sim.physicsBoat = boat
+        sim.scenario = .calmNight
+        sim.speed = 300
+        sim.restart()
+        sim.stop()
+        let now = Date()
+        let events = try! XCTUnwrap(sim.tideSnapshot(now: now)).events
+        XCTAssertEqual(zip(events, events.dropFirst()).filter { $0.isHigh == $1.isHigh }.count, 0, "highs and lows alternate")
+        let next = events.first { $0.time > now }!
+        // Six hours of simulated tide at 300× is about 75 real seconds.
+        XCTAssertLessThan(next.time.timeIntervalSince(now), SimWeather.tidePeriod / 2 / 300 + 1)
+        XCTAssertEqual(events.filter(\.isHigh).first!.height - events.filter { !$0.isHigh }.first!.height, SimDays.calm.tideRange, accuracy: 0.001)
+    }
+
+    func testGaleDragsTheAnchor() {
+        var p = AnchorPhysics(boat: boat, weather: SimDays.gale)
+        for _ in 0..<(12 * 3600) { p.step() }
+        let moved = (p.anchor.x * p.anchor.x + p.anchor.y * p.anchor.y).squareRoot()
+        XCTAssertGreaterThan(moved, 10)
+    }
+}
+

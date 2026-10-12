@@ -36,6 +36,7 @@
 		B2B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfileView.swift */; };
 		B3B2C3D4E5F6A7B8C9D0E1F2 /* AnchoringModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3B2C3D4E5F6A7B8C9D0E1F2 /* AnchoringModel.swift */; };
 		B4B2C3D4E5F6A7B8C9D0E1F2 /* AnchoringView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4B2C3D4E5F6A7B8C9D0E1F2 /* AnchoringView.swift */; };
+		B55D2171829304152637D849 /* AnchorPhysics.swift in Sources */ = {isa = PBXBuildFile; fileRef = B45D2171829304152637D849 /* AnchorPhysics.swift */; };
 		B5B2C3D4E5F6A7B8C9D0E1F2 /* AnchorMathGuide.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5B2C3D4E5F6A7B8C9D0E1F2 /* AnchorMathGuide.swift */; };
 		B6B2C3D4E5F6A7B8C9D0E1F2 /* AnchorEstimate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6B2C3D4E5F6A7B8C9D0E1F2 /* AnchorEstimate.swift */; };
 		B7B2C3D4E5F6A7B8C9D0E1F2 /* AnchorDrift.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7B2C3D4E5F6A7B8C9D0E1F2 /* AnchorDrift.swift */; };
@@ -114,6 +115,7 @@
 		A6B2C3D4E5F6A7B8C9D0E1F2 /* AnchorEstimate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorEstimate.swift; sourceTree = "<group>"; };
 		A7B2C3D4E5F6A7B8C9D0E1F2 /* AnchorDrift.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorDrift.swift; sourceTree = "<group>"; };
 		AD5BCEE030753079CB5A646E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		B45D2171829304152637D849 /* AnchorPhysics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorPhysics.swift; sourceTree = "<group>"; };
 		B554637FC10A7BDCFB171EA2 /* ScopeCalculator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScopeCalculator.swift; sourceTree = "<group>"; };
 		C33A4095E0E5048A68AF7BF9 /* ChartLayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartLayer.swift; sourceTree = "<group>"; };
 		E02E019B7B9B68186FBD5B25 /* Readiness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Readiness.swift; sourceTree = "<group>"; };
@@ -179,6 +181,7 @@
 				16802792B90A9D0C484ED686 /* TideService.swift */,
 				A03B0F5D607182930415B627 /* Outlook.swift */,
 				A24C1060718293041526C738 /* CurrentService.swift */,
+				B45D2171829304152637D849 /* AnchorPhysics.swift */,
 				E367FC84FFFD453E35855706 /* WindService.swift */,
 			);
 			path = Core;
@@ -381,6 +384,7 @@
 				529E73F56F3E646C6E99590C /* TideService.swift in Sources */,
 				A13B0F5D607182930415B627 /* Outlook.swift in Sources */,
 				A34C1060718293041526C738 /* CurrentService.swift in Sources */,
+				B55D2171829304152637D849 /* AnchorPhysics.swift in Sources */,
 				669049C9F0800FFBE30B1190 /* UserGuide.swift in Sources */,
 				35D281D5FE0591A4C7871324 /* WindService.swift in Sources */,
 			);

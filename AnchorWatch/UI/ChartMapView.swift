@@ -11,10 +11,13 @@ final class OriginalAnchorAnnotation: MKPointAnnotation {}
 /// Labels on the lines from the boat to the new anchor spot and to the original one.
 final class MeasureAnnotation: MKPointAnnotation {
     var color = UIColor.systemYellow
-    /// Where the label normally sits relative to its point, and how far it has been dragged from there.
+    /// Where the label normally sits relative to its point on the line (screen points).
     var baseOffset = CGPoint.zero
-    var dragOffset = CGPoint.zero
-    var offset: CGPoint { CGPoint(x: baseOffset.x + dragOffset.x, y: baseOffset.y + dragOffset.y) }
+    /// How far it has been dragged from that point, metres east and north, so it stays put relative to its line.
+    var shift = AnchorEstimate.Point(x: 0, y: 0)
+    /// The point on the line it's measured from, and whether the finger has it now.
+    var linePoint = CLLocationCoordinate2D()
+    var isBeingDragged = false
 }
 final class StationAnnotation: MKPointAnnotation {}
 final class WindAnnotation: MKPointAnnotation {
@@ -482,12 +485,11 @@ struct ChartMapView: UIViewRepresentable {
         /// Long-press within reach of the purple swing marker moves the anchor there.
         @objc func pressed(_ gesture: UILongPressGestureRecognizer) {
             guard gesture.state == .began, let map = gesture.view as? MKMapView else { return }
-            // Long-pressing a measuring label puts the lines away.
-            if let pin = pressedMeasureLabel(map, at: gesture.location(in: map)) {
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                if pin === measurePin { clearBoatLine(map) } else { clearMovedLine(map) }
-                return
-            }
+            // A press that starts on the anchor is the start of dragging it, and on a label is for moving the label:
+            // neither should close, delete or move anything else.
+            let point = gesture.location(in: map)
+            if dragging || pressedMeasureLabel(map, at: point) != nil
+                || map.view(for: anchorPin)?.frame.insetBy(dx: -10, dy: -10).contains(point) == true { return }
             // Long-pressing the faded original-drop mark deletes it (with the moved line that measures from it) and makes
             // the current anchor spot the official one for the next move.
             if map.annotations.contains(where: { $0 === originalMark }),
@@ -518,7 +520,15 @@ struct ChartMapView: UIViewRepresentable {
 
         @objc func tapped(_ gesture: UITapGestureRecognizer) {
             engine.pokeControls()
-            guard engine.placingAnchor, let map = gesture.view as? MKMapView else { return }
+            if let map = gesture.view as? MKMapView, let pin = pressedMeasureLabel(map, at: gesture.location(in: map)),
+               let view = map.view(for: pin), gesture.location(in: view).x >= view.bounds.width - MeasureLabel.closeWidth - 8 {
+                // The ✕ at the end of a label closes that label and its line.
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                if pin === measurePin { clearBoatLine(map) } else { clearMovedLine(map) }
+                return
+            }
+            guard engine.placingAnchor, let map = gesture.view as? MKMapView,
+                  pressedMeasureLabel(map, at: gesture.location(in: map)) == nil else { return }   // a tap on a label is the label's
             engine.moveAnchor(to: map.convert(gesture.location(in: map), toCoordinateFrom: map))
         }
 
@@ -605,11 +615,12 @@ struct ChartMapView: UIViewRepresentable {
         }
 
         private func place(_ map: MKMapView, _ pin: MeasureAnnotation, at point: CLLocationCoordinate2D, text: String) {
-            pin.coordinate = point
+            pin.linePoint = point
+            if !pin.isBeingDragged { pin.coordinate = AnchorEstimate.coordinate(pin.shift, from: point) }
             if !map.annotations.contains(where: { $0 === pin }) { map.addAnnotation(pin) }
             if pin.title != text {
                 pin.title = text
-                map.view(for: pin)?.image = MeasureLabel.image(text, color: pin.color)
+                (map.view(for: pin) as? MeasureLabelView)?.show(MeasureLabel.image(text, color: pin.color))
             }
         }
 
@@ -618,24 +629,27 @@ struct ChartMapView: UIViewRepresentable {
             clearMovedLine(map)
         }
 
-        /// Moves a measuring label with the finger; it keeps that place relative to its line.
-        @objc func labelDragged(_ gesture: UIPanGestureRecognizer) {
+        /// Slides a measuring label with the finger, holding the chart still; where it's left is kept relative to its line.
+        @objc func labelSlid(_ gesture: UIPanGestureRecognizer) {
             guard let view = gesture.view as? MKAnnotationView, let pin = view.annotation as? MeasureAnnotation else { return }
-            // Hold the chart still while a label is being moved.
             var ancestor = view.superview
             while let v = ancestor, !(v is MKMapView) { ancestor = v.superview }
-            if let map = ancestor as? MKMapView {
-                switch gesture.state {
-                case .began: map.isScrollEnabled = false
-                case .ended, .cancelled, .failed: map.isScrollEnabled = true
-                default: break
-                }
+            guard let map = ancestor as? MKMapView else { return }
+            switch gesture.state {
+            case .began:
+                pin.isBeingDragged = true
+                map.isScrollEnabled = false
+            case .changed:
+                let t = gesture.translation(in: map)
+                let p = map.convert(pin.coordinate, toPointTo: map)
+                pin.coordinate = map.convert(CGPoint(x: p.x + t.x, y: p.y + t.y), toCoordinateFrom: map)
+                gesture.setTranslation(.zero, in: map)
+            default:
+                pin.isBeingDragged = false
+                map.isScrollEnabled = true
+                let o = GPSQuality.offset(pin.coordinate, from: pin.linePoint)
+                pin.shift = AnchorEstimate.Point(x: o.east, y: o.north)
             }
-            let t = gesture.translation(in: view.superview)
-            pin.dragOffset.x += t.x
-            pin.dragOffset.y += t.y
-            view.centerOffset = pin.offset
-            gesture.setTranslation(.zero, in: view.superview)
         }
 
         /// The yellow boat-to-anchor line and its label.
@@ -645,7 +659,7 @@ struct ChartMapView: UIViewRepresentable {
             measureLine = nil
             map.removeAnnotation(measurePin)
             measurePin.title = nil
-            measurePin.dragOffset = .zero
+            measurePin.shift = AnchorEstimate.Point(x: 0, y: 0)
         }
 
         /// The white original-to-new line and its distance.
@@ -655,7 +669,7 @@ struct ChartMapView: UIViewRepresentable {
             movedLine = nil
             map.removeAnnotation(originalPin)
             originalPin.title = nil
-            originalPin.dragOffset = .zero
+            originalPin.shift = AnchorEstimate.Point(x: 0, y: 0)
         }
 
         /// The measuring label a long-press landed on, if any.
@@ -690,13 +704,12 @@ struct ChartMapView: UIViewRepresentable {
                 view.collisionMode = .none
                 return view
             case let pin as MeasureAnnotation:
-                let view = MKAnnotationView(annotation: annotation, reuseIdentifier: "measure")
-                view.image = MeasureLabel.image(pin.title ?? "", color: pin.color)
-                view.centerOffset = pin.offset
-                // Labels can be dragged out of the way; a long-press (handled on the map) closes one.
+                let view = MeasureLabelView(annotation: annotation, reuseIdentifier: "measure")
+                view.show(MeasureLabel.image(pin.title ?? "", color: pin.color))
+                view.centerOffset = pin.baseOffset
+                // Slide the label to move it; the ✕ is handled by the map's tap.
                 view.isUserInteractionEnabled = true
-                let pan = UIPanGestureRecognizer(target: self, action: #selector(labelDragged(_:)))
-                view.addGestureRecognizer(pan)
+                view.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(labelSlid(_:))))
                 view.zPriority = .max
                 view.displayPriority = .required
                 view.collisionMode = .none
@@ -946,17 +959,56 @@ enum AnchorIcon {
 }
 
 /// Distance and direction pill on the measuring line.
+/// Shows a measuring label's picture in its own image view. Setting MKAnnotationView.image cross-fades, which
+/// left the previous figures ghosting under the new ones as they updated every second.
+final class MeasureLabelView: MKAnnotationView {
+    private let picture = UIImageView()
+
+    override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
+        super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
+        addSubview(picture)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    func show(_ image: UIImage) {
+        UIView.performWithoutAnimation {
+            picture.image = image
+            picture.frame = CGRect(origin: .zero, size: image.size)
+            frame.size = image.size
+        }
+    }
+}
+
+/// Distance and bearing pill on a measuring line, with an ✕ at the right end that closes it.
 enum MeasureLabel {
+    /// Width of the ✕ end of the pill; a tap there closes the label, anywhere else drags it.
+    static let closeWidth: CGFloat = 30
+
     static func image(_ text: String, color: UIColor = .systemYellow) -> UIImage {
         let attrs: [NSAttributedString.Key: Any] = [.font: UIFont.monospacedDigitSystemFont(ofSize: 14, weight: .bold),
                                                     .foregroundColor: UIColor.black]
         let textSize = (text as NSString).size(withAttributes: attrs)
-        let size = CGSize(width: ceil(textSize.width) + 18, height: ceil(textSize.height) + 8)
-        return UIGraphicsImageRenderer(size: size).image { _ in
+        let height = max(ceil(textSize.height) + 10, 28)
+        let size = CGSize(width: ceil(textSize.width) + 12 + closeWidth, height: height)
+        return UIGraphicsImageRenderer(size: size).image { context in
             let pill = UIBezierPath(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: size.height / 2)
             color.setFill()
             pill.fill()
-            (text as NSString).draw(at: CGPoint(x: 9, y: 4), withAttributes: attrs)
+            (text as NSString).draw(at: CGPoint(x: 10, y: (height - textSize.height) / 2), withAttributes: attrs)
+            // Divider, then the ✕.
+            let x = size.width - closeWidth
+            let cg = context.cgContext
+            cg.setStrokeColor(UIColor.black.withAlphaComponent(0.25).cgColor)
+            cg.setLineWidth(1)
+            cg.move(to: CGPoint(x: x, y: 6)); cg.addLine(to: CGPoint(x: x, y: height - 6)); cg.strokePath()
+            let c = CGPoint(x: x + closeWidth / 2 - 1, y: height / 2), r: CGFloat = 4.5
+            cg.setStrokeColor(UIColor.black.withAlphaComponent(0.7).cgColor)
+            cg.setLineWidth(2)
+            cg.setLineCap(.round)
+            cg.move(to: CGPoint(x: c.x - r, y: c.y - r)); cg.addLine(to: CGPoint(x: c.x + r, y: c.y + r))
+            cg.move(to: CGPoint(x: c.x + r, y: c.y - r)); cg.addLine(to: CGPoint(x: c.x - r, y: c.y + r))
+            cg.strokePath()
         }
     }
 }

@@ -395,7 +395,12 @@ final class AnchorWatchEngine: ObservableObject {
     private var lastWindAttempt = Date.distantPast
     private var gridTask: Task<Void, Never>?
 
-    var windNow: WindSample? { windHere?.sample(atHour: 0) }
+    /// The wind now: the simulator's own in a physics scenario (so placement and the swing fit see the wind the
+    /// simulated boat feels), otherwise the forecast.
+    var windNow: WindSample? {
+        if sourceKind == .simulator, let simulated = simulator.windNow { return simulated }
+        return windHere?.sample(atHour: 0)
+    }
 
     var windAlerts: [WindAlert] {
         guard let windHere else { return [] }
@@ -469,8 +474,28 @@ final class AnchorWatchEngine: ObservableObject {
 
     /// Loads tides for the main screen; called from the 1 s watchdog, so it throttles itself.
     /// Reloads when there's no next high or low left in the predictions, or they're over six hours old.
+    /// In a physics simulation the tide comes from the model, so the tiles, depth and outlook follow it.
+    private var usingSimulatedTide = false
+
+    private func syncSimulatedTide() {
+        if sourceKind == .simulator, let simulated = simulator.tideSnapshot(now: Date()) {
+            if !usingSimulatedTide {
+                usingSimulatedTide = true
+                // The depth as set is the depth at the start of the simulated tide.
+                depthTideRef = TideMath.height(at: Date(), events: simulated.events)
+            }
+            tide = simulated
+        } else if usingSimulatedTide || tide?.station.id == "simulated" {
+            // Back to the real predictions.
+            usingSimulatedTide = false
+            tide = nil
+            depthTideRef = nil
+            lastTideAttempt = .distantPast
+        }
+    }
+
     private func refreshTideIfDue() {
-        guard !tideFetching, fix != nil || anchor != nil, Date().timeIntervalSince(lastTideAttempt) > 300 else { return }
+        guard !usingSimulatedTide, !tideFetching, fix != nil || anchor != nil, Date().timeIntervalSince(lastTideAttempt) > 300 else { return }
         let age = Date().timeIntervalSince(tide?.fetched ?? .distantPast)
         guard nextTide == nil || age > 6 * 3600 else { return }
         tideFetching = true
@@ -517,6 +542,21 @@ final class AnchorWatchEngine: ObservableObject {
     private func syncSimulatorRode() {
         let reach = swingRadius
         if reach > 0 { simulator.rode = reach }
+        simulator.physicsBoat = physicsBoat
+    }
+
+    /// The boat, rode and anchor from the settings, for the physics simulation.
+    private var physicsBoat: AnchorPhysics.Boat {
+        let chain = boat.rodeType.hasChain && boat.chainSize > 0 ? AnchorMath.chainWeight(sizeMM: boat.chainSize) : 3
+        let underwater = boat.beam > 0 && boat.draft > 0 ? boat.beam * boat.draft * AnchorMath.underwaterFill : 5
+        let holding = boat.anchorWeight > 0
+            ? boat.anchorWeight * AnchorMath.gravity * AnchorMath.holdingRatio(boat.anchorType, anchorBottom) : 8_000
+        return AnchorPhysics.Boat(
+            rode: rodeOut, depth: liveDepth, bowHeight: scope.bowHeight, chainWeight: chain,
+            frontWindage: BoatMath.windage(boat) ?? 15,
+            sideWindage: BoatMath.sideWindage(boat, length: scope.boatLength) ?? 45,
+            underwater: underwater, mass: max(boat.displacement, 5_000) * 1.1,
+            bowToPhone: ScopeCalculator.gpsFromBow(scope), holding: holding)
     }
     var rodeToPayOut: Double { ScopeCalculator.rode(scope) }
 
@@ -630,6 +670,15 @@ final class AnchorWatchEngine: ObservableObject {
         }
     }
 
+    /// Depth at the next high water: today's depth plus how much the tide rises to it, and when. Without tide
+    /// predictions, the rise entered on the Water tab.
+    var depthAtNextHigh: (depth: Double, time: Date?) {
+        if let now = tideNow, let high = tide.flatMap({ TideMath.upcoming($0.events, after: Date(), limit: 4).first(where: \.isHigh) }) {
+            return (max(0, liveDepth + high.height - now), high.time)
+        }
+        return (scope.depth + scope.tideRise, nil)
+    }
+
     /// The next predicted high or low.
     var nextTide: TideEvent? { tide.flatMap { TideMath.upcoming($0.events, after: Date(), limit: 1).first } }
     /// How much more rode the scope calls for than the boat carries. Nil when there is enough, or the rode isn't entered.
@@ -676,7 +725,13 @@ final class AnchorWatchEngine: ObservableObject {
     #else
     @Published var sourceKind: SourceKind = .gps { didSet { sourceChanged(oldValue) } }
     #endif
-    @Published var scenario: SimulatedLocationSource.Scenario = .swinging { didSet { simulator.scenario = scenario; simulator.restart() } }
+    @Published var scenario: SimulatedLocationSource.Scenario = .swinging {
+        didSet {
+            simulator.scenario = scenario
+            simulator.restart()
+            usingSimulatedTide = false      // a new simulated day: take the depth's tide reference afresh
+        }
+    }
     @Published var simSpeed = 1.0 { didSet { simulator.speed = simSpeed } }
 
     /// Where the simulated boat starts. Changing it moves the boat, so any anchor set at the old spot is raised
@@ -832,6 +887,7 @@ final class AnchorWatchEngine: ObservableObject {
         if Date().timeIntervalSince(lastEstimate) >= max(2, estimateInterval / simTimeScale) { updateAnchorEstimate() }
         refreshPermissionsIfDue()
         refreshWindHereIfDue()
+        syncSimulatedTide()
         refreshTideIfDue()
         refreshCurrentsIfDue()
         refreshOutlookIfDue()
@@ -927,6 +983,11 @@ final class AnchorWatchEngine: ObservableObject {
 
     /// Simulated seconds per real second: the sim speed when the simulator is the position source.
     var simTimeScale: Double { sourceKind == .simulator ? simSpeed : 1 }
+    /// The simulated clock in a physics scenario, for the overlay on the chart.
+    var simulatedClock: (time: Date, elapsed: Double)? { sourceKind == .simulator ? simulator.clock : nil }
+
+    /// What a physics simulation is doing, for the Testing page.
+    var simulatorStatus: String? { sourceKind == .simulator ? simulator.status : nil }
 
     /// Refits the anchor position from the swing. Called once a minute; tests call it directly.
     func updateAnchorEstimate() {

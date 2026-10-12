@@ -79,7 +79,7 @@ enum UserGuideContent {
         .heading("The six tiles"),
         .bullets([
             "**Wind**: forecast speed with an arrow showing which way it blows, where it comes from and the gusts. Tap for the Weather tab.",
-            "**Depth**: the depth you entered, moved up or down as the tide has changed since, and whether it's rising or falling. Tap for the Water tab.",
+            "**Depth at High Tide**: the depth at the next high water (today's depth plus how much the tide will rise), with the depth now and the time of the high underneath. Tap for the Water tab.",
             "**Scope**: rode out against today's depth plus bow height. It drops as the tide rises. It says **out** once you've set **Rode out** (under the drawing on the Anchor tab), and **suggested** (the scope calculator's figure) until then; Raise clears it. Tap for the Anchor tab.",
             "**Anchor**: Secure and which way the anchor lies, or a warning: Moving away (the boat steadily getting further off, past its earlier swing), Dragging (the swing itself has moved), Outside or ALARM. Tap for Anchoring.",
             "**Tide**: how much it will rise or fall to the next high or low, and when. Tap for the Water tab.",
@@ -133,7 +133,7 @@ enum UserGuideContent {
         ]),
         .heading("Correcting it later"),
         .bullets([
-            "**Long-press the anchor symbol and drag** it to fine-tune the position. While you drag, a yellow line runs from the boat to it, labelled with the distance and bearing from the boat (for example New 225 ft · NE 054°), and a white dashed line from the original drop spot, labelled with how far it has moved. The lines stay up and follow the boat; **long-press a label** to put that line away, so you can keep the boat's distance and bearing showing after the moved distance has gone. **Drag a label** to move it out of the way; it keeps its place beside its line. The original drop spot keeps a faded anchor mark until you raise the anchor. **Long-press it** to remove it and make the current spot the official one: the next move measures from there and leaves its own faded mark.",
+            "**Long-press the anchor symbol and drag** it to fine-tune the position. While you drag, a yellow line runs from the boat to it, labelled with the distance and bearing from the boat (for example New 225 ft · NE 054°), and a white dashed line from the original drop spot, labelled with how far it has moved. The lines stay up and follow the boat. Tap the **✕** on a label to close that line, so you can keep the boat's distance and bearing showing after the moved distance has gone. **Slide a label** with your finger to move it somewhere readable; it keeps its place beside its line. The original drop spot keeps a faded anchor mark until you raise the anchor. **Long-press it** to remove it and make the current spot the official one: the next move measures from there and leaves its own faded mark.",
             "**Move Anchor** on the Anchor tab: the app switches to Watch, then tap the chart where the anchor should be (or **Cancel**).",
             "**Anchor → Boat** (also on the Anchor tab) moves the anchor to the boat's bow (averaged position, moved forward along the rode).",
         ]),

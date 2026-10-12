@@ -16,7 +16,25 @@ final class SimulatedLocationSource: LocationSource {
         case wideSwing = "Wide swing (anchor finding)"
         /// Wide swing, then from 25 simulated minutes the anchor creeps downwind: tests the drag warning.
         case slowDrag = "Slow drag (drag warning)"
+        // Physics: 24 hours of wind, tidal current and tide acting on the boat and its rode (`AnchorPhysics`).
+        case calmNight = "Calm night (light & variable)"
+        case seaBreeze = "Sea breeze day"
+        case frontPasses = "Front passes (wind shift)"
+        case windAgainstTide = "Wind against tide"
+        case gale = "Gale (anchor drags)"
         var id: String { rawValue }
+
+        /// The day's weather for the physics scenarios; nil for the scripted ones.
+        var weather: SimWeather? {
+            switch self {
+            case .calmNight: SimDays.calm
+            case .seaBreeze: SimDays.seaBreeze
+            case .frontPasses: SimDays.front
+            case .windAgainstTide: SimDays.windAgainstTide
+            case .gale: SimDays.gale
+            default: nil
+            }
+        }
     }
 
     /// Where the simulated boat lies. Nereus is moored at Roche Harbor; Sidney, BC is a few miles over the border.
@@ -43,6 +61,56 @@ final class SimulatedLocationSource: LocationSource {
     /// Defaults to Roche Harbor, San Juan Island, WA.
     var origin = Place.rocheHarbor.coordinate
     var rode = 25.0
+    /// The boat and rode for the physics scenarios, from the app's settings. Changing it keeps the boat where it is.
+    var physicsBoat: AnchorPhysics.Boat? {
+        didSet { if let physicsBoat { physics?.boat = physicsBoat } }
+    }
+    private var physics: AnchorPhysics?
+    /// When the current physics scenario started, on the real clock: the simulated clock runs on from here.
+    private var startedAt = Date()
+
+    /// Simulated time of day and how long the physics scenario has run (simulated seconds); nil when not running one.
+    var clock: (time: Date, elapsed: Double)? {
+        physics.map { (startedAt.addingTimeInterval($0.time), $0.time) }
+    }
+
+    /// One line on what a physics scenario is doing: simulated time, wind, current and tide.
+    var status: String? {
+        guard let physics else { return nil }
+        let t = physics.time
+        let w = physics.windNow()
+        let c = physics.weather.current(t)
+        let tide = physics.weather.tide(t)
+        let slipped = Geo.distance(origin, AnchorEstimate.coordinate(physics.anchor, from: origin))
+        return String(format: "%dh %02dm · wind %.0f kt from %@ · current %.1f kt to %@ · tide %+.1f m",
+                      Int(t / 3600), Int(t / 60) % 60, w.speed, Compass.name(w.from), c.speed, Compass.name(c.toward), tide)
+            + (slipped > 1 ? String(format: " · anchor dragged %.0f m", slipped) : "")
+    }
+
+    /// The simulated tide as highs and lows on the real clock (squeezed by the speed), so the app's tide displays,
+    /// depth and outlook follow the model. Heights are metres above a datum 1 m below the starting low.
+    func tideSnapshot(now: Date) -> TideSnapshot? {
+        guard let physics else { return nil }
+        let half = SimWeather.tidePeriod / 2
+        let t = physics.time
+        let first = Int((t / half).rounded(.down)) - 2
+        let events = (first...first + 10).map { k -> TideEvent in
+            let at = Double(k) * half
+            let high = k % 2 != 0
+            return TideEvent(time: now.addingTimeInterval((at - t) / max(speed, 1)),
+                             height: 1 + (high ? physics.weather.tideRange : 0), isHigh: high)
+        }
+        return TideSnapshot(station: TideStation(id: "simulated", name: "Simulated tide", lat: origin.latitude, lng: origin.longitude),
+                            events: events, fetched: now)
+    }
+
+    /// The simulated wind right now, in a physics scenario, so the app sees the same wind as the boat.
+    var windNow: WindSample? {
+        guard let physics else { return nil }
+        let w = physics.windNow()
+        let mean = physics.weather.wind(physics.time)
+        return WindSample(time: Date(), speed: mean.speed, direction: w.from, gust: mean.speed * (1 + physics.weather.gustiness))
+    }
 
     private var timer: Timer?
     private var simTime = 0.0
@@ -65,10 +133,22 @@ final class SimulatedLocationSource: LocationSource {
     func restart() {
         simTime = 0
         last = nil
+        physics = scenario.weather.flatMap { weather in physicsBoat.map { AnchorPhysics(boat: $0, weather: weather) } }
+        startedAt = Date()
         start()
     }
 
     private func tick() {
+        if var physics {
+            // Integrate a simulated second at a time, however fast the simulation is running.
+            let span = speed / Double(stepsPerSecond)
+            let steps = max(1, Int(span.rounded()))
+            for _ in 0..<steps { physics.step(span / Double(steps)) }
+            self.physics = physics
+            simTime = physics.time
+            send(AnchorEstimate.coordinate(physics.phone, from: origin))
+            return
+        }
         simTime += speed / Double(stepsPerSecond)
         let t = simTime
 
@@ -95,7 +175,11 @@ final class SimulatedLocationSource: LocationSource {
 
         if scenario == .gpsDropout, (60..<120).contains(t) { return }
 
-        let truth = Geo.destination(from: pivot, bearing: heading, meters: reach)
+        send(Geo.destination(from: pivot, bearing: heading, meters: reach))
+    }
+
+    /// Passes on a position with GPS noise, as a fix.
+    private func send(_ truth: CLLocationCoordinate2D) {
         let noisy = Geo.destination(from: truth, bearing: .random(in: 0..<360), meters: noise())
 
         let now = Date()

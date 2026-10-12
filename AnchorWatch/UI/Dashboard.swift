@@ -108,8 +108,10 @@ struct DashboardTiles: View {
     }
 
     private var depth: some View {
-        let trend = engine.nextTide.map { $0.isHigh ? "Rising" : "Falling" } ?? "As entered"
-        return DashboardTile(title: "Depth", value: units.formatTenths(engine.liveDepth), detail: trend)
+        let high = engine.depthAtNextHigh
+        let when = high.time.map { " · High \($0.formatted(date: .omitted, time: .shortened))" } ?? " + tide rise"
+        return DashboardTile(title: "Depth at High Tide", value: units.formatTenths(high.depth),
+                             detail: "Now \(units.formatTenths(engine.liveDepth))" + when)
     }
 
     private var scope: some View {
