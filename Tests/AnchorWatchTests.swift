@@ -299,6 +299,34 @@ final class EngineTests: XCTestCase {
         XCTAssertFalse(e.awaitingSwingFix, "placing it by hand arms the alarm")
     }
 
+    func testOriginalDropIsKeptThroughMovesUntilClearedOrRaised() {
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false)
+        e.ingest(fix(0)); e.dropAnchor()
+        let original = e.anchor!
+        e.moveAnchor(to: Geo.destination(from: original, bearing: 90, meters: 20))
+        XCTAssertEqual(e.originalAnchor, original)
+        e.clearOriginalAnchor()
+        XCTAssertEqual(e.originalAnchor, e.anchor, "the moved anchor becomes the official spot")
+        let official = e.anchor!
+        e.moveAnchor(to: Geo.destination(from: official, bearing: 0, meters: 15))
+        XCTAssertEqual(e.originalAnchor, official, "and the next move measures from it")
+        e.ingest(fix(0)); e.raiseAnchor(); e.dropAnchor()
+        XCTAssertNotNil(e.originalAnchor)
+        e.raiseAnchor()
+        XCTAssertNil(e.originalAnchor)
+    }
+
+    func testDragWithoutAnOriginalMeasuresFromWhereTheAnchorIs() {
+        // An anchor saved before the original spot was kept: it loads with none.
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        defaults.set(#"{"latitude":48.6,"longitude":-123.15,"radius":30}"#.data(using: .utf8), forKey: "anchorwatch.saved")
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false)
+        XCTAssertNotNil(e.anchor)
+        XCTAssertNil(e.originalAnchor)
+        e.beginAnchorDrag()
+        XCTAssertEqual(e.originalAnchor, e.anchor, "a drag always has a spot to measure the move from")
+    }
+
     func testMoveToSwingEstimateThenItAgrees() {
         let e = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false)
         e.scope = ScopeSettings(depth: 5, bowHeight: 1, boatLength: 14, scopeRatio: 5, margin: 0)

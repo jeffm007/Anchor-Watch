@@ -133,7 +133,7 @@ enum UserGuideContent {
         ]),
         .heading("Correcting it later"),
         .bullets([
-            "**Long-press the anchor symbol and drag** it to fine-tune the position.",
+            "**Long-press the anchor symbol and drag** it to fine-tune the position. While you drag, a yellow line runs from the boat to it, labelled with the distance and bearing from the boat (for example New 225 ft · NE 054°), and a white dashed line from the original drop spot, labelled with how far it has moved. The lines stay up and follow the boat; **long-press a label** to put that line away, so you can keep the boat's distance and bearing showing after the moved distance has gone. **Drag a label** to move it out of the way; it keeps its place beside its line. The original drop spot keeps a faded anchor mark until you raise the anchor. **Long-press it** to remove it and make the current spot the official one: the next move measures from there and leaves its own faded mark.",
             "**Move Anchor** on the Anchor tab: the app switches to Watch, then tap the chart where the anchor should be (or **Cancel**).",
             "**Anchor → Boat** (also on the Anchor tab) moves the anchor to the boat's bow (averaged position, moved forward along the rode).",
         ]),

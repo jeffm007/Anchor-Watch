@@ -184,6 +184,9 @@ final class AnchorWatchEngine: ObservableObject {
     }
     @Published private(set) var alarm: AlarmReason?
     @Published private(set) var anchorDropped: Date?
+    /// Where the anchor was first marked when dropped. Kept as a faded mark once the anchor is moved from it,
+    /// until it's raised.
+    @Published private(set) var originalAnchor: CLLocationCoordinate2D?
     @Published var radius = 30.0 { didSet { save() } }
 
     @Published var scope = ScopeSettings() {
@@ -888,6 +891,7 @@ final class AnchorWatchEngine: ObservableObject {
         resetDrift()
         pokeControls()
         anchorDropped = Date()
+        originalAnchor = anchor
         // A new anchorage gets the default radius from its rode and depth, and the chart frames it.
         applySuggestedRadius()
         recenter()
@@ -1005,6 +1009,19 @@ final class AnchorWatchEngine: ObservableObject {
         return Geo.distance(anchor, estimate.center) <= estimate.semiMajor
     }
 
+    /// A drag of the anchor pin is starting: if there's no official spot to measure the move from (an anchor saved
+    /// before this existed, or one already promoted), the anchor's current spot becomes it.
+    func beginAnchorDrag() {
+        if originalAnchor == nil, let anchor { originalAnchor = anchor; save() }
+    }
+
+    /// Long-pressing the faded original-drop mark removes it and makes the current anchor spot the official one:
+    /// the next move measures from here and leaves its faded mark here.
+    func clearOriginalAnchor() {
+        originalAnchor = anchor
+        save()
+    }
+
     func undoAnchorCorrection() {
         guard let previous = anchorCorrection?.previous else { return }
         moveAnchor(to: previous)
@@ -1032,6 +1049,7 @@ final class AnchorWatchEngine: ObservableObject {
         resetDrift()
         distance = nil
         anchorDropped = nil
+        originalAnchor = nil
         anchorCorrection = nil
         awaitingSwingFix = false
         rodeOutSet = nil
@@ -1192,6 +1210,7 @@ final class AnchorWatchEngine: ObservableObject {
     private struct Saved: Codable {
         var latitude: Double, longitude: Double, radius: Double, dropped: Date?
         var uncertainty: Double?
+        var originalLatitude: Double?, originalLongitude: Double?
     }
     private let key = "anchorwatch.saved"
     private let scopeKey = "anchorwatch.scope.v3"
@@ -1208,7 +1227,8 @@ final class AnchorWatchEngine: ObservableObject {
     private func save() {
         guard let anchor else { defaults.removeObject(forKey: key); return }
         let saved = Saved(latitude: anchor.latitude, longitude: anchor.longitude, radius: radius, dropped: anchorDropped,
-                          uncertainty: anchorUncertainty)
+                          uncertainty: anchorUncertainty,
+                          originalLatitude: originalAnchor?.latitude, originalLongitude: originalAnchor?.longitude)
         defaults.set(try? JSONEncoder().encode(saved), forKey: key)
     }
 
@@ -1236,5 +1256,6 @@ final class AnchorWatchEngine: ObservableObject {
         radius = s.radius
         anchorDropped = s.dropped
         anchorUncertainty = s.uncertainty
+        if let lat = s.originalLatitude, let lon = s.originalLongitude { originalAnchor = CLLocationCoordinate2D(latitude: lat, longitude: lon) }
     }
 }

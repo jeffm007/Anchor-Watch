@@ -6,6 +6,16 @@ final class BoatAnnotation: MKPointAnnotation {}
 final class CircleLabelAnnotation: MKPointAnnotation {}
 /// Where the swing fit puts the anchor.
 final class EstimateAnnotation: MKPointAnnotation {}
+/// Faded anchor at the original drop spot once the anchor has been moved from it.
+final class OriginalAnchorAnnotation: MKPointAnnotation {}
+/// Labels on the lines from the boat to the new anchor spot and to the original one.
+final class MeasureAnnotation: MKPointAnnotation {
+    var color = UIColor.systemYellow
+    /// Where the label normally sits relative to its point, and how far it has been dragged from there.
+    var baseOffset = CGPoint.zero
+    var dragOffset = CGPoint.zero
+    var offset: CGPoint { CGPoint(x: baseOffset.x + dragOffset.x, y: baseOffset.y + dragOffset.y) }
+}
 final class StationAnnotation: MKPointAnnotation {}
 final class WindAnnotation: MKPointAnnotation {
     var speed = 0.0
@@ -82,6 +92,27 @@ struct ChartMapView: UIViewRepresentable {
         private var lastZoomTick = 0
         private var framedOnce = false
         private var dragging = false
+        /// From dragging the anchor pin: a yellow line from the boat to the new anchor spot (distance and bearing from
+        /// the boat), and a white line from the original drop mark to it (how far it moved). They stay up, following
+        /// the boat, until one of the labels is long-pressed.
+        private let measurePin = MeasureAnnotation()
+        private let originalPin: MeasureAnnotation = {
+            let pin = MeasureAnnotation()
+            pin.color = .white
+            pin.baseOffset = CGPoint(x: 0, y: -18)      // just above its white line
+            return pin
+        }()
+        private let originalMark = OriginalAnchorAnnotation()
+        private var measureLine: MKPolyline?
+        private var movedLine: MKPolyline?
+        /// Each line and its label can be put away on its own (long-press its label); the next drag shows both again.
+        private var showBoatLine = false
+        private var showMovedLine = false
+        private var measureVisible: Bool { showBoatLine || showMovedLine }
+        /// The anchor's view while it's being dragged: MapKit only updates the pin's coordinate on release, so the
+        /// live position is read from where the view is drawn.
+        private weak var draggedView: MKAnnotationView?
+        private var measureTimer: Timer?
         /// On-screen length of the boat icon, true to scale but never smaller than `minBoatPoints`.
         private var boatPoints: CGFloat = BoatIcon.minPoints
         private var lastHeading = 0.0
@@ -115,9 +146,15 @@ struct ChartMapView: UIViewRepresentable {
                 syncTether(map, anchor: anchor)
                 syncSwing(map, anchor: anchor)
                 syncCircleLabel(map, anchor: anchor)
+                syncOriginalMark(map, anchor: anchor)
+                // Dev aid: `-showMeasure` shows the measuring lines, for screenshots.
+                if ProcessInfo.processInfo.arguments.contains("-showMeasure") && !measureVisible { showBoatLine = true; showMovedLine = true }
+                if measureVisible && !dragging { updateMeasure(map) }
             } else {
                 map.removeAnnotation(anchorPin)
                 map.removeAnnotation(labelPin)
+                map.removeAnnotation(originalMark)
+                if measureVisible { clearMeasure(map) }
                 // The track may still be recording under way; syncTrack removes it once it's empty.
                 syncEstimate(map)
                 syncDrift(map)
@@ -444,8 +481,24 @@ struct ChartMapView: UIViewRepresentable {
 
         /// Long-press within reach of the purple swing marker moves the anchor there.
         @objc func pressed(_ gesture: UILongPressGestureRecognizer) {
-            guard gesture.state == .began, let map = gesture.view as? MKMapView,
-                  engine.anchor != nil, let estimate = engine.anchorEstimate else { return }
+            guard gesture.state == .began, let map = gesture.view as? MKMapView else { return }
+            // Long-pressing a measuring label puts the lines away.
+            if let pin = pressedMeasureLabel(map, at: gesture.location(in: map)) {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                if pin === measurePin { clearBoatLine(map) } else { clearMovedLine(map) }
+                return
+            }
+            // Long-pressing the faded original-drop mark deletes it (with the moved line that measures from it) and makes
+            // the current anchor spot the official one for the next move.
+            if map.annotations.contains(where: { $0 === originalMark }),
+               map.view(for: originalMark)?.frame.insetBy(dx: -8, dy: -8).contains(gesture.location(in: map)) == true {
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                engine.clearOriginalAnchor()
+                clearMovedLine(map)
+                map.removeAnnotation(originalMark)
+                return
+            }
+            guard engine.anchor != nil, let estimate = engine.anchorEstimate else { return }
             let marker = map.convert(estimate.center, toPointTo: map)
             let touch = gesture.location(in: map)
             guard hypot(marker.x - touch.x, marker.y - touch.y) <= 36 else { return }
@@ -472,12 +525,143 @@ struct ChartMapView: UIViewRepresentable {
         func mapView(_ map: MKMapView, annotationView view: MKAnnotationView, didChange newState: MKAnnotationView.DragState, fromOldState: MKAnnotationView.DragState) {
             switch newState {
             case .starting, .dragging:
+                if !dragging { engine.beginAnchorDrag() }
                 dragging = true
+                showBoatLine = true
+                showMovedLine = true
+                draggedView = view
+                if measureTimer == nil {
+                    // The pin's coordinate changes as it's dragged; redraw the lines twenty times a second.
+                    measureTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self, weak map] _ in
+                        MainActor.assumeIsolated { if let self, let map { self.updateMeasure(map) } }
+                    }
+                }
             case .ending, .canceling:
                 dragging = false
+                draggedView = nil
                 view.dragState = .none
+                measureTimer?.invalidate()
+                measureTimer = nil
                 if newState == .ending, let pin = view.annotation { engine.moveAnchor(to: pin.coordinate) }
+                updateMeasure(map)          // stays up, following the boat, until a label is long-pressed
             default: break
+            }
+        }
+
+        /// The faded mark at the original drop spot, shown once the anchor has moved from it.
+        private func syncOriginalMark(_ map: MKMapView, anchor: CLLocationCoordinate2D) {
+            if let original = engine.originalAnchor, Geo.distance(original, anchor) > 1 {
+                originalMark.coordinate = original
+                originalMark.title = "Original drop (long-press to remove)"
+                if !map.annotations.contains(where: { $0 === originalMark }) { map.addAnnotation(originalMark) }
+            } else {
+                map.removeAnnotation(originalMark)
+            }
+        }
+
+        private func updateMeasure(_ map: MKMapView) {
+            let anchor = dragging ? liveDragCoordinate(map) : (engine.anchor ?? anchorPin.coordinate)
+            if showBoatLine, let boat = engine.fix?.coordinate {
+                measureLine = replaceLine(map, measureLine, from: boat, to: anchor, title: "measure")
+                place(map, measurePin, at: midpoint(boat, anchor), text: "New " + fromBoat(boat, to: anchor))
+            }
+            guard showMovedLine else { return }
+            if let original = engine.originalAnchor, Geo.distance(original, anchor) >= 0.5 {
+                // White line from the original drop mark to the new spot, labelled just above with how far it moved.
+                movedLine = replaceLine(map, movedLine, from: original, to: anchor, title: "moved")
+                place(map, originalPin, at: midpoint(original, anchor), text: engine.units.format(Geo.distance(original, anchor)))
+            } else {
+                if let movedLine { map.removeOverlay(movedLine) }
+                movedLine = nil
+                map.removeAnnotation(originalPin)
+            }
+        }
+
+        /// Where the dragged anchor is right now: the point its view stands on (the icon's tip), on the map.
+        private func liveDragCoordinate(_ map: MKMapView) -> CLLocationCoordinate2D {
+            guard let view = draggedView, view.superview != nil else { return anchorPin.coordinate }
+            let tip = CGPoint(x: view.center.x - view.centerOffset.x, y: view.center.y - view.centerOffset.y)
+            return map.convert(view.superview!.convert(tip, to: map), toCoordinateFrom: map)
+        }
+
+        /// "228 ft · NE 053°": distance and true bearing from the boat.
+        private func fromBoat(_ boat: CLLocationCoordinate2D, to point: CLLocationCoordinate2D) -> String {
+            let bearing = Geo.bearing(from: boat, to: point)
+            return "\(engine.units.format(Geo.distance(boat, point))) · \(Compass.name(bearing)) \(String(format: "%03.0f°", bearing))"
+        }
+
+        private func midpoint(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> CLLocationCoordinate2D {
+            Geo.destination(from: a, bearing: Geo.bearing(from: a, to: b), meters: Geo.distance(a, b) / 2)
+        }
+
+        private func replaceLine(_ map: MKMapView, _ old: MKPolyline?, from a: CLLocationCoordinate2D, to b: CLLocationCoordinate2D,
+                                 title: String) -> MKPolyline {
+            if let old { map.removeOverlay(old) }
+            var coords = [a, b]
+            let line = MKPolyline(coordinates: &coords, count: 2)
+            line.title = title
+            map.addOverlay(line, level: .aboveLabels)
+            return line
+        }
+
+        private func place(_ map: MKMapView, _ pin: MeasureAnnotation, at point: CLLocationCoordinate2D, text: String) {
+            pin.coordinate = point
+            if !map.annotations.contains(where: { $0 === pin }) { map.addAnnotation(pin) }
+            if pin.title != text {
+                pin.title = text
+                map.view(for: pin)?.image = MeasureLabel.image(text, color: pin.color)
+            }
+        }
+
+        private func clearMeasure(_ map: MKMapView) {
+            clearBoatLine(map)
+            clearMovedLine(map)
+        }
+
+        /// Moves a measuring label with the finger; it keeps that place relative to its line.
+        @objc func labelDragged(_ gesture: UIPanGestureRecognizer) {
+            guard let view = gesture.view as? MKAnnotationView, let pin = view.annotation as? MeasureAnnotation else { return }
+            // Hold the chart still while a label is being moved.
+            var ancestor = view.superview
+            while let v = ancestor, !(v is MKMapView) { ancestor = v.superview }
+            if let map = ancestor as? MKMapView {
+                switch gesture.state {
+                case .began: map.isScrollEnabled = false
+                case .ended, .cancelled, .failed: map.isScrollEnabled = true
+                default: break
+                }
+            }
+            let t = gesture.translation(in: view.superview)
+            pin.dragOffset.x += t.x
+            pin.dragOffset.y += t.y
+            view.centerOffset = pin.offset
+            gesture.setTranslation(.zero, in: view.superview)
+        }
+
+        /// The yellow boat-to-anchor line and its label.
+        private func clearBoatLine(_ map: MKMapView) {
+            showBoatLine = false
+            if let measureLine { map.removeOverlay(measureLine) }
+            measureLine = nil
+            map.removeAnnotation(measurePin)
+            measurePin.title = nil
+            measurePin.dragOffset = .zero
+        }
+
+        /// The white original-to-new line and its distance.
+        private func clearMovedLine(_ map: MKMapView) {
+            showMovedLine = false
+            if let movedLine { map.removeOverlay(movedLine) }
+            movedLine = nil
+            map.removeAnnotation(originalPin)
+            originalPin.title = nil
+            originalPin.dragOffset = .zero
+        }
+
+        /// The measuring label a long-press landed on, if any.
+        private func pressedMeasureLabel(_ map: MKMapView, at point: CGPoint) -> MeasureAnnotation? {
+            [measurePin, originalPin].first { pin in
+                map.annotations.contains { $0 === pin } && (map.view(for: pin)?.frame.insetBy(dx: -8, dy: -8).contains(point) ?? false)
             }
         }
 
@@ -492,6 +676,27 @@ struct ChartMapView: UIViewRepresentable {
                 view.centerOffset = CGPoint(x: 0, y: -AnchorIcon.size.height / 2)
                 view.isDraggable = true
                 view.canShowCallout = true
+                view.zPriority = .max
+                view.displayPriority = .required
+                view.collisionMode = .none
+                return view
+            case is OriginalAnchorAnnotation:
+                let view = MKAnnotationView(annotation: annotation, reuseIdentifier: "original")
+                view.image = AnchorIcon.image
+                view.alpha = 0.45
+                view.centerOffset = CGPoint(x: 0, y: -AnchorIcon.size.height / 2)
+                view.canShowCallout = true
+                view.displayPriority = .required
+                view.collisionMode = .none
+                return view
+            case let pin as MeasureAnnotation:
+                let view = MKAnnotationView(annotation: annotation, reuseIdentifier: "measure")
+                view.image = MeasureLabel.image(pin.title ?? "", color: pin.color)
+                view.centerOffset = pin.offset
+                // Labels can be dragged out of the way; a long-press (handled on the map) closes one.
+                view.isUserInteractionEnabled = true
+                let pan = UIPanGestureRecognizer(target: self, action: #selector(labelDragged(_:)))
+                view.addGestureRecognizer(pan)
                 view.zPriority = .max
                 view.displayPriority = .required
                 view.collisionMode = .none
@@ -583,6 +788,14 @@ struct ChartMapView: UIViewRepresentable {
                     r.lineWidth = 4
                     r.lineCap = .round
                     r.lineJoin = .round
+                } else if line.title == "measure" {
+                    r.strokeColor = .systemYellow
+                    r.lineWidth = 3
+                    r.lineCap = .round
+                } else if line.title == "moved" {
+                    r.strokeColor = .white
+                    r.lineWidth = 2.5
+                    r.lineDashPattern = [6, 5]
                 } else if line.title == "swingArc" {
                     r.strokeColor = UIColor.systemCyan.withAlphaComponent(0.55)
                     r.lineWidth = 7
@@ -730,6 +943,22 @@ enum AnchorIcon {
             UIColor.systemRed.setFill(); tip.fill()
         }
     }()
+}
+
+/// Distance and direction pill on the measuring line.
+enum MeasureLabel {
+    static func image(_ text: String, color: UIColor = .systemYellow) -> UIImage {
+        let attrs: [NSAttributedString.Key: Any] = [.font: UIFont.monospacedDigitSystemFont(ofSize: 14, weight: .bold),
+                                                    .foregroundColor: UIColor.black]
+        let textSize = (text as NSString).size(withAttributes: attrs)
+        let size = CGSize(width: ceil(textSize.width) + 18, height: ceil(textSize.height) + 8)
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            let pill = UIBezierPath(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: size.height / 2)
+            color.setFill()
+            pill.fill()
+            (text as NSString).draw(at: CGPoint(x: 9, y: 4), withAttributes: attrs)
+        }
+    }
 }
 
 /// Caption under the alarm circle.
