@@ -96,6 +96,30 @@ final class AnchorWatchEngine: ObservableObject {
     private var lastEstimate = Date.distantPast
     /// Set when the rolling swing fits show the anchor moving steadily: a red warning, before the boat leaves the circle.
     @Published private(set) var anchorDrift: AnchorDrift.Result?
+    /// Metres per minute the boat is steadily getting further from the anchor, past its earlier swing.
+    @Published private(set) var distanceTrend: Double?
+    /// (Minutes since the drop, distance) once the boat has settled, for `distanceTrend`.
+    private var distanceLog: [(minute: Double, distance: Double)] = []
+
+    /// One answer to "is the anchor holding?", worst first.
+    enum WatchState: Equatable {
+        case notAnchored
+        case alarm(AlarmReason)
+        /// Outside the circle, including after the alarm was silenced.
+        case outside(distance: Double)
+        case dragging(AnchorDrift.Result)
+        case movingAway(metersPerMinute: Double)
+        case holding
+    }
+
+    var watchState: WatchState {
+        guard anchor != nil else { return .notAnchored }
+        if let alarm { return .alarm(alarm) }
+        if let distance, distance > radius { return .outside(distance: distance) }
+        if let anchorDrift { return .dragging(anchorDrift) }
+        if let distanceTrend { return .movingAway(metersPerMinute: distanceTrend) }
+        return .holding
+    }
     /// Recent rolling-fit centres, and how many fits in a row have shown drift.
     private(set) var driftSamples: [AnchorDrift.Sample] = []
     private var driftStreak = 0
@@ -159,7 +183,31 @@ final class AnchorWatchEngine: ObservableObject {
     @Published private(set) var anchorDropped: Date?
     @Published var radius = 30.0 { didSet { save() } }
 
-    @Published var scope = ScopeSettings() { didSet { saveScope() } }
+    @Published var scope = ScopeSettings() {
+        didSet {
+            saveScope()
+            // A new depth reading belongs to the tide at that moment; the live depth follows the tide from there.
+            if scope.depth != oldValue.depth && !loading { depthTideRef = tideNow }
+        }
+    }
+
+    /// Tide height (above datum) when the depth was last set. Nil until tide data and a depth are both in hand.
+    private(set) var depthTideRef: Double? {
+        get { defaults.object(forKey: "anchorwatch.depthTideRef") as? Double }
+        set { defaults.set(newValue, forKey: "anchorwatch.depthTideRef") }
+    }
+
+    /// Depth now: the depth as entered, moved by however much the tide has risen or fallen since.
+    var liveDepth: Double {
+        guard let ref = depthTideRef, let now = tideNow else { return scope.depth }
+        return max(0, scope.depth + now - ref)
+    }
+
+    /// Scope with the rode assumed out and the live depth: drops as the tide rises.
+    var liveScopeRatio: Double? {
+        let height = liveDepth + scope.bowHeight
+        return height > 0 ? rodeOutEstimate / height : nil
+    }
     @Published var boat = BoatProfile() { didSet { saveBoat() } }
 
     // MARK: Is the phone ready to keep watch?
@@ -401,6 +449,7 @@ final class AnchorWatchEngine: ObservableObject {
         do {
             let result = try await TideService.snapshot(near: point)
             tide = result.snapshot
+            if depthTideRef == nil { depthTideRef = tideNow }
             tideIsSaved = result.fromCache
             tideStatus = ""
         } catch {
@@ -740,6 +789,8 @@ final class AnchorWatchEngine: ObservableObject {
     }
 
     private func resetDrift() {
+        distanceLog = []
+        distanceTrend = nil
         anchorDrift = nil
         driftSamples = []
         driftStreak = 0
@@ -819,6 +870,9 @@ final class AnchorWatchEngine: ObservableObject {
         player.arm()
         gps?.keepsRunningInBackground = true
         outsideCount = 0
+        // Distances measured from the old spot don't compare with ones from the new.
+        distanceLog = []
+        distanceTrend = nil
         if let fix { distance = Geo.distance(coordinate, fix.coordinate) }
         evaluate()
     }
@@ -858,6 +912,14 @@ final class AnchorWatchEngine: ObservableObject {
             let d = Geo.distance(anchor, new.coordinate)
             distance = d
             maxDistance = max(maxDistance, d)
+            if let anchorDropped {
+                let minute = now.timeIntervalSince(anchorDropped) * max(simTimeScale, 1) / 60
+                if minute >= AnchorEstimate.settleMinutes {
+                    distanceLog.append((minute, d))
+                    distanceLog.removeAll { minute - $0.minute > 30 }
+                    distanceTrend = AnchorDrift.distanceTrend(distanceLog, accuracy: new.accuracy)
+                }
+            }
             // Outside only when beyond the radius by more than the fix's own error (capped, so a very
             // noisy fix can't postpone a real alarm for long). Back inside resets the count; in the
             // grey zone the count is left alone.

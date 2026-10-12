@@ -92,4 +92,36 @@ enum AnchorDrift {
                       metersPerMinute: speed, minutes: span,
                       from: AnchorEstimate.coordinate(start, from: ref), to: AnchorEstimate.coordinate(end, from: ref))
     }
+
+    // MARK: Quick check from distance alone
+
+    /// The distance trend is read over this much time.
+    static let trendMinutes = 3.0
+    /// Slower than this isn't called moving away.
+    static let minTrendRate = 1.0          // m/min, about 3 ft/min
+    /// The boat must be this far past the furthest it reached before the trend window.
+    static let trendMargin = 3.0
+
+    /// How fast the boat is getting further from the anchor (m/min), if it's doing so steadily and into new ground.
+    /// A holding boat sags in and out with the gusts but keeps coming back to the same furthest reach; a dragging
+    /// one keeps setting new ones. `samples` are (minutes since the drop, metres from the anchor), oldest first,
+    /// taken once the boat has settled.
+    static func distanceTrend(_ samples: [(minute: Double, distance: Double)], accuracy: Double = 0) -> Double? {
+        guard let last = samples.last else { return nil }
+        let recent = samples.filter { last.minute - $0.minute <= trendMinutes }
+        let before = samples.filter { last.minute - $0.minute > trendMinutes }
+        guard recent.count >= 6, let first = recent.first, last.minute - first.minute >= trendMinutes * 0.8,
+              let earlierMax = before.map(\.distance).max() else { return nil }
+        guard last.distance > earlierMax + max(trendMargin, accuracy / 2) else { return nil }
+
+        let n = Double(recent.count)
+        let mx = recent.map(\.minute).reduce(0, +) / n, my = recent.map(\.distance).reduce(0, +) / n
+        let sxy = recent.reduce(0) { $0 + ($1.minute - mx) * ($1.distance - my) }
+        let sxx = recent.reduce(0) { $0 + ($1.minute - mx) * ($1.minute - mx) }
+        let syy = recent.reduce(0) { $0 + ($1.distance - my) * ($1.distance - my) }
+        guard sxx > 0, syy > 0 else { return nil }
+        let slope = sxy / sxx
+        let r2 = sxy * sxy / (sxx * syy)
+        return slope >= minTrendRate && r2 >= minSteadiness ? slope : nil
+    }
 }

@@ -1354,3 +1354,38 @@ final class CurrentDirectionTests: XCTestCase {
         XCTAssertTrue(AnchorMath.suggestions(b, scope: scope, c, r, units: .feet, tideTurn: turn).contains { $0.contains("reverses") })
     }
 }
+
+final class DistanceTrendTests: XCTestCase {
+    /// One sample every 10 s for `minutes`, distance from `f`.
+    private func log(_ minutes: Double, _ f: (Double) -> Double) -> [(minute: Double, distance: Double)] {
+        stride(from: 2.0, through: 2 + minutes, by: 1.0 / 6).map { ($0, f($0)) }
+    }
+
+    func testSteadyDragIntoNewGroundIsMovingAway() {
+        // Swinging at 40 m for 5 min, then pulling away at 2 m/min.
+        let samples = log(10) { m in m < 7 ? 40 + 2 * sin(m * 3) : 42 + 2 * (m - 7) }
+        XCTAssertEqual(AnchorDrift.distanceTrend(samples)!, 2, accuracy: 0.3)
+    }
+
+    func testSaggingBackToTheSameReachIsHolding() {
+        // Distance rising 4 m over two minutes in a gust, but no further than earlier gusts took it.
+        let samples = log(12) { m in 36 + 4 * max(0, sin(2 * .pi * m / 4)) }
+        XCTAssertNil(AnchorDrift.distanceTrend(samples))
+    }
+
+    func testNeedsEarlierHistory() {
+        // Straight away from the drop: no earlier reach to compare with yet.
+        XCTAssertNil(AnchorDrift.distanceTrend(log(3) { m in 20 + 3 * m }))
+    }
+
+    @MainActor func testEngineStaysOutsideAfterSilencing() {
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false)
+        let origin = CLLocationCoordinate2D(latitude: 48.6, longitude: -123.15)
+        func at(_ m: Double) -> Fix { Fix(coordinate: Geo.destination(from: origin, bearing: 90, meters: m), accuracy: 3, course: nil, speed: nil, timestamp: Date()) }
+        e.ingest(at(0)); e.dropAnchor(); e.radius = 30
+        for _ in 0..<3 { e.ingest(at(50)) }
+        XCTAssertNotNil(e.alarm)
+        e.silence()
+        XCTAssertEqual(e.watchState, .outside(distance: e.distance!))
+    }
+}

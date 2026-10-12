@@ -24,70 +24,22 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            ChartMapView(engine: engine)
-                .ignoresSafeArea()
-
-            VStack(spacing: 8) {
+            Color(red: 0.06, green: 0.09, blue: 0.15).ignoresSafeArea()
+            VStack(spacing: 10) {
+                DashboardHeader()
                 if let alarm = engine.alarm { AlarmBanner(reason: alarm) }
                 if let drift = engine.anchorDrift { DriftBanner(drift: drift) }
-                StatsBar()
-                WindBar(showConditions: $showConditions)
-                HoldingBar(show: $showAnchoring)
-                TideBar(show: $showDepth)
-                AlertsBar(showAlerts: $showAlerts)
-                ReadinessBar(show: $showWatchCheck)
-                if engine.sourceKind == .simulator {
-                    Label("SIMULATED GPS - not your real position", systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption.bold()).padding(6)
-                        .background(.yellow, in: Capsule()).foregroundStyle(.black)
-                }
-                Spacer()
-                if engine.windOverlayOn {
-                    WindTimeBar()
-                        .opacity(engine.controlsVisible ? 1 : 0)
-                        .allowsHitTesting(engine.controlsVisible)
-                        .animation(.easeInOut(duration: 0.6), value: engine.controlsVisible)
-                        // Dragging the hour slider keeps the controls up.
-                        .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in engine.pokeControls() })
-                }
-                if engine.placingAnchor {
-                    Text("Tap the map to place the anchor")
-                        .padding(8).background(.thinMaterial, in: Capsule())
-                }
-                ControlsPanel()
-                    .opacity(engine.controlsVisible ? 1 : 0)
-                    .allowsHitTesting(engine.controlsVisible)   // taps fall through to the map, which brings it back
-                    .animation(.easeInOut(duration: 0.6), value: engine.controlsVisible)
+                DashboardTiles(openConditions: { showConditions = true }, openDepth: { showDepth = true },
+                               openAnchoring: { showAnchoring = true })
+                chartPanel
+                NoticesCard(openAnchoring: { showAnchoring = true }, openConditions: { showConditions = true },
+                            openAlerts: { showAlerts = true }, openWatchCheck: { showWatchCheck = true })
+                controlRow
             }
             .padding(.horizontal, 12)
-
-            VStack(spacing: 10) {
-                Spacer().frame(height: 110)
-                RoundButton(icon: "gearshape") { showSettings = true }
-                Button { showAnchoring = true } label: { RoundIcon(icon: anchorGlyph, isText: true) }
-                    .accessibilityLabel("Anchoring")
-                RoundButton(icon: "water.waves") { showDepth = true }
-                Menu {
-                    Picker("Map", selection: $engine.mapLayer) {
-                        ForEach(ChartLayer.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                } label: { RoundIcon(icon: "map") }
-                Button { engine.windOverlayOn.toggle() } label: {
-                    RoundIcon(icon: "wind", active: engine.windOverlayOn)
-                }
-                RoundButton(icon: "scope") { engine.recenter() }
-                RoundButton(icon: "plus") { engine.zoom(by: 0.5) }
-                RoundButton(icon: "minus") { engine.zoom(by: 2) }
-                Spacer()
-            }
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .padding(.trailing, 12)
-            .opacity(engine.sideButtonsVisible ? 1 : 0)
-            .allowsHitTesting(engine.sideButtonsVisible)   // taps fall through to the map, which brings them back
-            .animation(.easeInOut(duration: 0.6), value: engine.sideButtonsVisible)
-            // Using a button restarts the fade timer.
-            .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in engine.pokeControls() })
+            .padding(.bottom, 4)
         }
+        .preferredColorScheme(.dark)
         // Coming back from a sheet shows the buttons again, rather than leaving them faded.
         .onChange(of: showSettings || showAnchoring || showDepth) { _, open in if !open { engine.pokeControls() } }
         .sheet(isPresented: $showSettings) { SettingsView() }
@@ -104,6 +56,68 @@ struct ContentView: View {
         .sheet(isPresented: $showAnchoring) { AnchoringView() }
         .sheet(isPresented: $showBoat) { NavigationStack { BoatProfileView() } }
         .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
+    }
+
+    /// The real chart in a rounded panel, with the anchor controls fading over its lower edge.
+    private var chartPanel: some View {
+        ZStack(alignment: .bottom) {
+            ChartMapView(engine: engine)
+            VStack(spacing: 8) {
+                if engine.windOverlayOn {
+                    WindTimeBar()
+                        .opacity(engine.controlsVisible ? 1 : 0)
+                        .allowsHitTesting(engine.controlsVisible)
+                        .animation(.easeInOut(duration: 0.6), value: engine.controlsVisible)
+                        // Dragging the hour slider keeps the controls up.
+                        .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in engine.pokeControls() })
+                }
+                if engine.placingAnchor {
+                    HStack {
+                        Text("Tap the map to place the anchor")
+                        Button("Cancel") { engine.placingAnchor = false }.bold()
+                    }
+                    .padding(8).padding(.horizontal, 6).background(.thinMaterial, in: Capsule())
+                }
+                if engine.anchor == nil {
+                    ControlsPanel()
+                        .opacity(engine.controlsVisible ? 1 : 0)
+                        .allowsHitTesting(engine.controlsVisible)   // taps fall through to the map, which brings it back
+                        .animation(.easeInOut(duration: 0.6), value: engine.controlsVisible)
+                }
+            }
+            .padding(8)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.1), lineWidth: 1))
+    }
+
+    /// The tools that used to run down the right edge of the chart.
+    private var controlRow: some View {
+        HStack(spacing: 0) {
+            Group {
+                RoundButton(icon: "gearshape") { showSettings = true }
+                Button { showAnchoring = true } label: { RoundIcon(icon: anchorGlyph, isText: true) }
+                    .accessibilityLabel("Anchoring")
+                RoundButton(icon: "water.waves") { showDepth = true }
+                Menu {
+                    Picker("Map", selection: $engine.mapLayer) {
+                        ForEach(ChartLayer.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                } label: { RoundIcon(icon: "map") }
+                Button { engine.windOverlayOn.toggle() } label: {
+                    RoundIcon(icon: "wind", active: engine.windOverlayOn)
+                }
+                RoundButton(icon: "scope") { engine.recenter() }
+                RoundButton(icon: "plus") { engine.zoom(by: 0.5) }
+                RoundButton(icon: "minus") { engine.zoom(by: 2) }
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .opacity(engine.sideButtonsVisible ? 1 : 0)
+        .allowsHitTesting(engine.sideButtonsVisible)
+        .animation(.easeInOut(duration: 0.6), value: engine.sideButtonsVisible)
+        // Using a button restarts the fade timer.
+        .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in engine.pokeControls() })
     }
 }
 
@@ -151,62 +165,14 @@ struct AlarmBanner: View {
     }
 }
 
-struct StatsBar: View {
-    @EnvironmentObject var engine: AnchorWatchEngine
-
-    var body: some View {
-        HStack {
-            stat("Distance", engine.distance.map(engine.units.format) ?? "--")
-            stat("Radius", engine.anchor == nil ? "--" : engine.units.format(engine.radius))
-            stat("Max", engine.anchor == nil ? "--" : engine.units.format(engine.maxDistance))
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                stat(gpsTitle, engine.fix.map { fix in
-                    let age = Int(context.date.timeIntervalSince(fix.timestamp))
-                    return engine.units.format(fix.accuracy) + (age > 5 ? " · \(age)s" : "")   // age only once it's stale
-                } ?? "--", color: gpsColor)
-            }
-            stat("Anchor", bearing)
-            stat("Depth", engine.units.format(engine.scope.depth))   // manual for now; Phase 2: Raspberry Pi sonar
-        }
-        .padding(10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-    }
-
-    /// Which receiver the position is coming from.
-    private var gpsTitle: String {
-        if engine.sourceKind == .simulator { return "Sim ±" }
-        return engine.fix?.external == true ? "Ext GPS ±" : "iPhone ±"
-    }
-
-    /// Green good enough to anchor, orange poor, red ignored.
-    private var gpsColor: Color {
-        guard engine.fix != nil else { return .primary }
-        return engine.gpsIsUnusable ? .red : engine.gpsIsPoor ? .orange : .green
-    }
-
-    /// Which way the anchor lies from the boat.
-    private var bearing: String {
-        guard let anchor = engine.anchor, let fix = engine.fix else { return "--" }
-        return Compass.name(Geo.bearing(from: fix.coordinate, to: anchor))
-    }
-
-    private func stat(_ title: String, _ value: String, color: Color = .primary) -> some View {
-        VStack {
-            Text(title).font(.caption2).foregroundStyle(.secondary)
-            Text(value).font(.system(.callout, design: .rounded).bold()).monospacedDigit().foregroundStyle(color)
-                .lineLimit(1).minimumScaleFactor(0.5)
-        }
-        .frame(maxWidth: .infinity)
-    }
-}
-
+/// Over the chart before anchoring: rode to pay out, GPS quality and the Drop button.
+/// Once anchored, the radius and anchor controls live on the Anchoring page (`AnchorRadiusControls`).
 struct ControlsPanel: View {
     @EnvironmentObject var engine: AnchorWatchEngine
     @State private var showScope = false
 
     var body: some View {
         VStack(spacing: 10) {
-            if engine.anchor == nil {
                 Button { showScope = true } label: {
                     Label("Scope: pay out \(engine.units.format(engine.rodeToPayOut)) of rode", systemImage: "ruler")
                 }.font(.footnote)
@@ -228,40 +194,52 @@ struct ControlsPanel: View {
                 .buttonStyle(.borderedProminent).controlSize(.large)
                 .tint(engine.gpsIsPoor ? .orange : .accentColor)
                 .disabled(engine.fix == nil || engine.gpsIsUnusable)
-            } else {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Alarm radius: \(engine.units.format(engine.radius))").font(.subheadline)
-                    Slider(value: radiusBinding, in: 10...300, step: 5)
-                    Button { showScope = true } label: {
-                        Label("Scope calculator · suggests \(engine.units.format(engine.suggestedRadius))", systemImage: "ruler")
-                    }.font(.footnote)
-                    swingFit
-                }
-                HStack {
-                    Button { engine.placingAnchor.toggle() } label: {
-                        Label("Move Anchor", systemImage: "hand.tap")
-                    }.tint(engine.placingAnchor ? .orange : .accentColor)
-                    Button { engine.moveAnchorToBoat() } label: {
-                        Label("Anchor → Boat", systemImage: "location")
-                    }
-                    Button(role: .destructive) { engine.raiseAnchor() } label: {
-                        Label("Raise", systemImage: "arrow.up.to.line")
-                    }
-                }
-                .buttonStyle(.bordered).font(.footnote)
-                if let placed = engine.anchorPlacement {
-                    Text(placementNote(placed)).font(.caption2).foregroundStyle(.secondary)
-                }
-                Text("Long-press and drag the ⚓ pin to fine-tune its position.")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
         }
         .padding(12)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
         .padding(.bottom, 8)
-        // Any touch inside the panel (slider, buttons) restarts the fade timer.
+        // Any touch inside the panel restarts the fade timer.
         .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in engine.pokeControls() })
         .onChange(of: showScope) { _, _ in engine.pokeControls() }
+        .sheet(isPresented: $showScope) { ScopeView() }
+    }
+}
+
+/// Alarm radius, swing fit and the anchor buttons, for the Anchoring page once anchored.
+/// `onMove` runs when Move Anchor is tapped, so the page can close and leave the chart free for the tap.
+struct AnchorRadiusControls: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+    let onMove: () -> Void
+    @State private var showScope = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                LabeledContent("Alarm radius", value: engine.units.format(engine.radius))
+                Slider(value: radiusBinding, in: 10...300, step: 5)
+                Button { showScope = true } label: {
+                    Label("Scope calculator · suggests \(engine.units.format(engine.suggestedRadius))", systemImage: "ruler")
+                }.font(.footnote)
+                swingFit
+            }
+            HStack {
+                Button { engine.placingAnchor = true; onMove() } label: {
+                    Label("Move Anchor", systemImage: "hand.tap")
+                }
+                Button { engine.moveAnchorToBoat() } label: {
+                    Label("Anchor → Boat", systemImage: "location")
+                }
+                Button(role: .destructive) { engine.raiseAnchor() } label: {
+                    Label("Raise", systemImage: "arrow.up.to.line")
+                }
+            }
+            .buttonStyle(.bordered).font(.footnote).labelStyle(.titleOnly).lineLimit(1)
+            if let placed = engine.anchorPlacement {
+                Text(placementNote(placed)).font(.caption2).foregroundStyle(.secondary)
+            }
+            Text("Long-press and drag the ⚓ pin on the chart to fine-tune its position.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
         .sheet(isPresented: $showScope) { ScopeView() }
     }
 
@@ -641,115 +619,6 @@ struct DepthView: View {
     }
 }
 
-/// Forecast wind at the anchorage, the nearest real measurement, and any gust or wind-shift warnings.
-/// Tap for the full list of nearby stations.
-struct WindBar: View {
-    @EnvironmentObject var engine: AnchorWatchEngine
-    @Binding var showConditions: Bool
-
-    var body: some View {
-        if showsCard {
-            Button { showConditions = true } label: { content }
-                .buttonStyle(.plain)
-                .padding(.trailing, 60)     // keep clear of the round buttons down the right edge
-        }
-    }
-
-    private var hasWarnings: Bool { engine.observedGustAlert != nil || !engine.windAlerts.isEmpty }
-
-    /// The full card appears only with the wind overlay. Gust and wind-shift warnings are safety
-    /// notices, so they stay up (as a slim card) even when the overlay is off.
-    private var showsCard: Bool {
-        engine.windOverlayOn ? (engine.windNow != nil || engine.observedWind != nil || hasWarnings) : hasWarnings
-    }
-
-    private var content: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            if engine.windOverlayOn, let now = engine.windNow {
-                HStack(spacing: 6) {
-                    Image(systemName: "location.north.fill")
-                        .rotationEffect(.degrees(now.direction + 180))     // points the way the wind is blowing
-                    Text("Forecast \(Compass.name(now.direction)) \(Int(now.speed.rounded())) kt, gusts \(Int(now.gust.rounded()))")
-                        .font(.caption.bold())
-                }
-            }
-            if engine.windOverlayOn, let obs = engine.observedWind, let speed = obs.windSpeed {
-                HStack(spacing: 6) {
-                    Image(systemName: "dot.radiowaves.left.and.right").foregroundStyle(.blue)
-                    Text("Now at \(shortName(obs.name)) (\(Int(obs.distanceKm.rounded())) km): "
-                         + (obs.windDirection.map { "\(Compass.name($0)) " } ?? "")
-                         + "\(Int(speed.rounded())) kt"
-                         + (obs.gust.map { ", gusts \(Int($0.rounded()))" } ?? ""))
-                        .font(.caption.bold())
-                }
-            }
-            if let hit = engine.observedGustAlert {
-                Label("Observed gusts \(Int(hit.gust.rounded())) kt at \(shortName(hit.station.name))",
-                      systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(.orange)
-            }
-            ForEach(engine.windAlerts, id: \.title) { alert in
-                Label("\(alert.title) · \(alert.time.formatted(.dateTime.weekday(.abbreviated).hour().minute()))",
-                      systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(.orange)
-            }
-            if engine.windOverlayOn && engine.nwsChecked != nil && engine.nwsAlerts.isEmpty {
-                Text("No active National Weather Service alerts").font(.caption2).foregroundStyle(.secondary)
-            }
-        }
-        .foregroundStyle(.primary)
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// "9449880 - Friday Harbor, WA" → "Friday Harbor, WA"; "NEW DUNGENESS - 17 NM NE of Port Angeles" → "NEW DUNGENESS".
-    private func shortName(_ name: String) -> String { StationName.short(name) }
-}
-
-/// The tide at a glance: which way it's going and the next high or low. Tap for the tide details.
-struct TideBar: View {
-    @EnvironmentObject var engine: AnchorWatchEngine
-    @Binding var show: Bool
-
-    var body: some View {
-        if let next = engine.nextTide, let now = engine.tideNow {
-            Button { show = true } label: {
-                let change = next.height - now
-                Label("Tide \(next.isHigh ? "rising" : "falling") · \(next.isHigh ? "High" : "Low") \(next.time.formatted(date: .omitted, time: .shortened)) (\(change >= 0 ? "+" : "−")\(engine.units.formatTenths(abs(change))))",
-                      systemImage: next.isHigh ? "arrow.up.right" : "arrow.down.right")
-                    .font(.caption.bold())
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.plain)
-            .padding(.trailing, 60)     // keep clear of the round buttons down the right edge
-        }
-    }
-}
-
-/// Forecast gusts beyond what the anchoring maths says this setup can hold. Tap to open Anchoring.
-struct HoldingBar: View {
-    @EnvironmentObject var engine: AnchorWatchEngine
-    @Binding var show: Bool
-
-    var body: some View {
-        if let w = engine.holdingWarning {
-            Button { show = true } label: {
-                Label("Forecast gusts \(Int(w.gust.rounded())) kt around \(w.time.formatted(date: .omitted, time: .shortened)). With \(engine.units.format(w.rodeOut)) out in \(engine.anchorBottom.rawValue.lowercased()), your setup is good to about \(Int(w.safeGust)) kt. Tap to plan more scope.",
-                      systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption.bold()).foregroundStyle(.orange)
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.plain)
-            .padding(.trailing, 60)
-        }
-    }
-}
-
 enum StationName {
     static func short(_ name: String) -> String {
         let parts = name.components(separatedBy: " - ")
@@ -851,41 +720,6 @@ extension NWSSeverity {
     }
 }
 
-/// Active National Weather Service alerts for the boat's position. Tap to read the full text.
-struct AlertsBar: View {
-    @EnvironmentObject var engine: AnchorWatchEngine
-    @Binding var showAlerts: Bool
-
-    var body: some View {
-        if !engine.nwsAlerts.isEmpty {
-            Button { showAlerts = true } label: {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(engine.nwsAlerts.prefix(2)) { alert in
-                        HStack(spacing: 6) {
-                            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(alert.severity.color)
-                            Text(alert.event).font(.caption.bold())
-                            if let ends = alert.ends {
-                                Text("until \(ends.formatted(.dateTime.weekday(.abbreviated).hour().minute()))").font(.caption)
-                            }
-                            Spacer(minLength: 0)
-                        }
-                    }
-                    if engine.nwsAlerts.count > 2 {
-                        Text("+\(engine.nwsAlerts.count - 2) more").font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-                .foregroundStyle(.primary)
-                .padding(.horizontal, 10).padding(.vertical, 6)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(engine.nwsAlerts[0].severity.color, lineWidth: 2))
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.plain)
-            .padding(.trailing, 60)     // keep clear of the round buttons down the right edge
-        }
-    }
-}
-
 struct AlertsView: View {
     @EnvironmentObject var engine: AnchorWatchEngine
     @Environment(\.dismiss) private var dismiss
@@ -922,36 +756,6 @@ struct AlertsView: View {
             .navigationTitle("Weather Alerts")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("Done") { dismiss() } }
-        }
-    }
-}
-
-/// A heads-up on the main screen when the phone isn't ready to keep watch. Tap for the full checklist.
-struct ReadinessBar: View {
-    @EnvironmentObject var engine: AnchorWatchEngine
-    @Binding var show: Bool
-
-    var body: some View {
-        let problems = engine.watchProblems.sorted { $0.state == .critical && $1.state != .critical }
-        if engine.armed, let first = problems.first {
-            let critical = first.state == .critical
-            Button { show = true } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: critical ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill")
-                        .foregroundStyle(critical ? .red : .orange)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(first.title).font(.caption.bold())
-                        if problems.count > 1 { Text("+\(problems.count - 1) more to check").font(.caption2).foregroundStyle(.secondary) }
-                    }
-                    Spacer(minLength: 0)
-                }
-                .foregroundStyle(.primary)
-                .padding(.horizontal, 10).padding(.vertical, 6)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(critical ? Color.red : Color.orange, lineWidth: 2))
-            }
-            .buttonStyle(.plain)
-            .padding(.trailing, 60)
         }
     }
 }

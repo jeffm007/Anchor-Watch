@@ -31,6 +31,12 @@ struct ChartMapView: UIViewRepresentable {
         tap.cancelsTouchesInView = false
         tap.delegate = context.coordinator
         map.addGestureRecognizer(tap)
+        // Long-press on the swing estimate moves the anchor there. On the map rather than the marker, where
+        // MapKit's own selection and pan gestures would take the touch first.
+        let press = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pressed(_:)))
+        press.minimumPressDuration = 0.6
+        press.delegate = context.coordinator
+        map.addGestureRecognizer(press)
         return map
     }
 
@@ -60,6 +66,8 @@ struct ChartMapView: UIViewRepresentable {
         private let estimatePin = EstimateAnnotation()
         private var estimateEllipse: MKPolygon?
         private var estimateKey: [Double] = []
+        /// Set once the current estimate has been brought into view, so the chart only zooms out for it once.
+        private var estimateShown = false
         /// Red arrow showing which way, and how far, the anchor has moved.
         private var driftArrow: MKPolyline?
         private var driftKey: [Double] = []
@@ -304,11 +312,18 @@ struct ChartMapView: UIViewRepresentable {
             estimateKey = key
             if let estimateEllipse { map.removeOverlay(estimateEllipse) }
             estimateEllipse = nil
-            guard let estimate else { map.removeAnnotation(estimatePin); return }
+            guard let estimate else { map.removeAnnotation(estimatePin); estimateShown = false; return }
+            // The first time an estimate appears off the visible chart, zoom out once to show it.
+            if !estimateShown {
+                estimateShown = true
+                if !map.visibleMapRect.contains(MKMapPoint(estimate.center)) {
+                    DispatchQueue.main.async { [engine] in engine.recenter() }   // not during the view update
+                }
+            }
 
             estimatePin.coordinate = estimate.center
             estimatePin.title = "Anchor by swing"
-            estimatePin.subtitle = "±\(engine.units.format(estimate.semiMajor)) · \(Int(estimate.minutes)) min of swing"
+            estimatePin.subtitle = "±\(engine.units.format(estimate.semiMajor)) · \(Int(estimate.minutes)) min of swing · long-press or tap Move to set the anchor here"
             if !map.annotations.contains(where: { $0 === estimatePin }) { map.addAnnotation(estimatePin) }
 
             // Error ellipse as a polygon: long axis along majorBearing.
@@ -378,7 +393,10 @@ struct ChartMapView: UIViewRepresentable {
             let center = engine.anchor ?? engine.fix?.coordinate
             guard let center else { return }
             framedOnce = true
-            let span = max(engine.anchor == nil ? 300 : engine.radius * 3.5, 150)
+            // Wide enough for the circle, the boat and the swing estimate, which can sit a rode-length from a poor mark.
+            let reach = [engine.fix?.coordinate, engine.anchorEstimate?.center].compactMap { $0 }
+                .map { Geo.distance(center, $0) }.max() ?? 0
+            let span = max(engine.anchor == nil ? 300 : engine.radius * 3.5, reach * 2.6 + 40, 150)
             map.setRegion(MKCoordinateRegion(center: center, latitudinalMeters: span, longitudinalMeters: span), animated: true)
         }
 
@@ -386,6 +404,27 @@ struct ChartMapView: UIViewRepresentable {
 
         /// Lets our tap run alongside the map's own gestures (annotation selection, double-tap zoom).
         nonisolated func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+
+        /// Long-press within reach of the purple swing marker moves the anchor there.
+        @objc func pressed(_ gesture: UILongPressGestureRecognizer) {
+            guard gesture.state == .began, let map = gesture.view as? MKMapView,
+                  engine.anchor != nil, let estimate = engine.anchorEstimate else { return }
+            let marker = map.convert(estimate.center, toPointTo: map)
+            let touch = gesture.location(in: map)
+            guard hypot(marker.x - touch.x, marker.y - touch.y) <= 36 else { return }
+            moveToEstimate(map)
+        }
+
+        func mapView(_ map: MKMapView, annotationView view: MKAnnotationView, calloutAccessoryControlTapped control: UIControl) {
+            if view.annotation is EstimateAnnotation { moveToEstimate(map) }
+        }
+
+        private func moveToEstimate(_ map: MKMapView) {
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            map.deselectAnnotation(estimatePin, animated: true)
+            engine.moveAnchorToEstimate()
+            engine.pokeControls()
+        }
 
         @objc func tapped(_ gesture: UITapGestureRecognizer) {
             engine.pokeControls()
@@ -424,6 +463,12 @@ struct ChartMapView: UIViewRepresentable {
                 let view = MKAnnotationView(annotation: annotation, reuseIdentifier: "estimate")
                 view.image = EstimateIcon.image
                 view.canShowCallout = true
+                // A button in the callout does the same as long-pressing the marker.
+                let move = UIButton(type: .system)
+                move.setTitle("Move anchor here", for: .normal)
+                move.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
+                move.sizeToFit()
+                view.rightCalloutAccessoryView = move
                 view.displayPriority = .required
                 view.collisionMode = .none
                 return view

@@ -72,6 +72,12 @@ struct AnchoringView: View {
                     statusRow(r)
                 }
 
+                if engine.anchor != nil {
+                    Section("Alarm radius") {
+                        AnchorRadiusControls(onMove: { dismiss() })
+                    }
+                }
+
                 Section {
                     knob("Water depth now", length($engine.scope.depth), 0...max(units == .feet ? 100 : 30, engine.scope.depth * units.perMeter),
                          step: units == .feet ? 1 : 0.5, format: (units == .feet ? "%.0f " : "%.1f ") + units.symbol)
