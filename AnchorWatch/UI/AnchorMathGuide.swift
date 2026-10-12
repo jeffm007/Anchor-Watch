@@ -28,7 +28,7 @@ private enum AnchorMathGuide {
         Boat Profile  → A, A_u, w
         Conditions    → wind, gust, current,
                         waves, bottom, rode
-        Depth & Scope → h at high water
+        Water tab → h at high water
                   ↓
         load at gusts  H
                   ↓

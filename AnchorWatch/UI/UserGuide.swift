@@ -63,7 +63,7 @@ enum UserGuideContent {
         .bullets([
             "Let the boat settle and the anchor bite, then wait for a good GPS reading (the green dot and ± under the boat's name, ideally under 26 ft).",
             "Tap **Drop Anchor Here**. The anchor symbol marks the spot and a green circle appears around it.",
-            "Set the circle with **Alarm radius** on the Anchoring page (the ⚓ button under the chart). **Depth & Scope** (the wave button) works out how much rode to pay out and a suggested radius.",
+            "Set the circle with **Alarm radius** on the **Anchor** tab. The **Water** tab works out how much rode to pay out and a suggested radius.",
             "Plug the phone in, turn the volume up, and glance at the **Watch check** if an orange or red bar shows.",
             "Sleep. If the boat leaves the circle, the siren sounds and the screen turns red.",
         ]),
@@ -78,20 +78,25 @@ enum UserGuideContent {
         .text("**Tap the status** to drop the anchor when you're not anchored, or to raise it (or silence the alarm) when you are. It always asks first, since raising ends the watch."),
         .heading("The six tiles"),
         .bullets([
-            "**Wind**: forecast speed with an arrow showing which way it blows, where it comes from and the gusts. Tap for Conditions.",
-            "**Depth**: the depth you entered, moved up or down as the tide has changed since, and whether it's rising or falling. Tap for Depth & Scope.",
+            "**Wind**: forecast speed with an arrow showing which way it blows, where it comes from and the gusts. Tap for the Weather tab.",
+            "**Depth**: the depth you entered, moved up or down as the tide has changed since, and whether it's rising or falling. Tap for the Water tab.",
             "**Scope**: rode out against today's depth plus bow height. It drops as the tide rises. Tap for Anchoring.",
             "**Anchor**: Secure and which way the anchor lies, or a warning: Moving away (the boat steadily getting further off, past its earlier swing), Dragging (the swing itself has moved), Outside or ALARM. Tap for Anchoring.",
-            "**Tide**: how much it will rise or fall to the next high or low, and when. Tap for Depth & Scope.",
+            "**Tide**: how much it will rise or fall to the next high or low, and when. Tap for the Water tab.",
             "**Distance**: from the anchor now, the furthest so far (Max), and the alarm radius. Orange near the circle, red outside it.",
         ]),
         .heading("Notices"),
         .text("Under the chart: anything to look at that isn't an alarm, such as forecast gusts beyond your setup, weather alerts, observed gusts, wind shifts and watch problems. Tap a notice to hide it for an hour (sooner if it gets worse), or its **›** to open the screen it's about. **Show hidden** brings them all back."),
+        .heading("Tabs along the bottom"),
+        .bullets([
+            "**Watch**: this screen: status, position and the chart.",
+            "**Anchor**: the alarm radius and anchor controls, plus wind, gusts, current, waves, bottom and rode out, the rode drawn from the side, and the safe gust limit for your boat.",
+            "**Water**: depth at the anchorage over the next 24 hours with your keel line, the lowest and highest water, how your scope changes, warnings if the water gets thin, and the depth, tide and scope settings.",
+            "**Weather**: the forecast and nearby station readings.",
+        ]),
         .heading("Buttons under the chart"),
         .bullets([
-            "**Gear**: Settings and this guide.",
-            "**Anchor**: Anchoring: the alarm radius and anchor controls, plus wind, gusts, current, waves, bottom and rode out, the rode drawn from the side, and the safe gust limit for your boat.",
-            "**Waves**: Depth & Scope, with the tide.",
+            "**Gear**: Settings, Boat Profile, Testing and this guide.",
             "**Map**: choose the chart.",
             "**Wind**: show the wind forecast on the chart.",
             "**Target**: re-centre the chart on the boat and anchor.",
@@ -137,8 +142,8 @@ enum UserGuideContent {
 
     static let alarmCircle = GuideTopic(id: "circle", title: "The alarm circle, rode and scope", icon: "circle.dashed", blocks: [
         .heading("Choosing the radius"),
-        .text("Drag the **Alarm radius** slider on the Anchoring page (the ⚓ button under the chart). The circle should be big enough for the boat to swing freely on its rode, plus some room for GPS error."),
-        .heading("Depth & Scope (the wave button)"),
+        .text("Drag the **Alarm radius** slider on the **Anchor** tab. The circle should be big enough for the boat to swing freely on its rode, plus some room for GPS error."),
+        .heading("The Water tab"),
         .bullets([
             "Enter the **water depth** at the anchorage with the − and + buttons, or type it.",
             "Add the **tide**: the extra depth you expect (see Tides). The rode has to cover high water.",
@@ -238,7 +243,7 @@ enum UserGuideContent {
     ])
 
     static let tides = GuideTopic(id: "tides", title: "Tides", icon: "water.waves", blocks: [
-        .text("Open **Depth & Scope** (the wave button). The Tide section finds the nearest tide station to you, in either the US or Canada, and lists the next highs and lows."),
+        .text("Open the **Water** tab. The Tide section finds the nearest tide station to you, in either the US or Canada, and lists the next highs and lows."),
         .bullets([
             "**Right now (estimated)** is the height above the chart's low-water level. It's an estimate drawn from the predicted highs and lows.",
             "Choose **Cover the next 6, 12 or 24 h**, then tap **Use tide data**. It fills in how far the water is expected to rise from now, so your rode covers high water.",

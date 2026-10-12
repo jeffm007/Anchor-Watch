@@ -6,7 +6,7 @@ struct AnchorWatchApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
                 .environmentObject(engine)
                 .onAppear { engine.start() }
         }

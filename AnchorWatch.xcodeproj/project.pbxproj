@@ -28,6 +28,7 @@
 		91D9FC2D073834574154F4C4 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21BFBA88AE0B50E6E9C07BC9 /* ContentView.swift */; };
 		9B1F0C2B3D4E5F6071829304 /* GPSQualityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A1F0C2B3D4E5F6071829304 /* GPSQualityView.swift */; };
 		9D2F0D3B4E5F607182930415 /* Dashboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C2F0D3B4E5F607182930415 /* Dashboard.swift */; };
+		9F3A0E4C5F6071829304A516 /* WaterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E3A0E4C5F6071829304A516 /* WaterView.swift */; };
 		A706D395010CF287A42BB757 /* LiveActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 155D9E41B3F2AF484AB3143F /* LiveActivityController.swift */; };
 		B1B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfile.swift */; };
 		B2B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfileView.swift */; };
@@ -99,6 +100,7 @@
 		9A1F0C2B3D4E5F6071829304 /* GPSQualityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPSQualityView.swift; sourceTree = "<group>"; };
 		9C2F0D3B4E5F607182930415 /* Dashboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Dashboard.swift; sourceTree = "<group>"; };
 		9E1004BEA5E770B2CB860816 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		9E3A0E4C5F6071829304A516 /* WaterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaterView.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoatProfile.swift; sourceTree = "<group>"; };
 		A2B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoatProfileView.swift; sourceTree = "<group>"; };
 		A3B2C3D4E5F6A7B8C9D0E1F2 /* AnchoringModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchoringModel.swift; sourceTree = "<group>"; };
@@ -218,6 +220,7 @@
 				A2B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfileView.swift */,
 				9A1F0C2B3D4E5F6071829304 /* GPSQualityView.swift */,
 				9C2F0D3B4E5F607182930415 /* Dashboard.swift */,
+				9E3A0E4C5F6071829304A516 /* WaterView.swift */,
 				21BFBA88AE0B50E6E9C07BC9 /* ContentView.swift */,
 				4821E4C3BD764289EE7A5E67 /* UserGuide.swift */,
 			);
@@ -359,6 +362,7 @@
 				B2B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfileView.swift in Sources */,
 				9B1F0C2B3D4E5F6071829304 /* GPSQualityView.swift in Sources */,
 				9D2F0D3B4E5F607182930415 /* Dashboard.swift in Sources */,
+				9F3A0E4C5F6071829304A516 /* WaterView.swift in Sources */,
 				91D9FC2D073834574154F4C4 /* ContentView.swift in Sources */,
 				0C84AC4C086A223F5D831374 /* GPSLocationSource.swift in Sources */,
 				14F24D408EBF6CC1EE3F7DE9 /* GeoMath.swift in Sources */,

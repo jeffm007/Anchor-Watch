@@ -481,6 +481,16 @@ final class AnchorWatchEngine: ObservableObject {
     var suggestedRadius: Double { ScopeCalculator.suggestedRadius(scope) }
     var rodeToPayOut: Double { ScopeCalculator.rode(scope) }
 
+    /// The four main pages.
+    enum Tab: Hashable { case watch, anchor, water, weather }
+    @Published var tab = Tab.watch
+
+    /// Depth at the anchorage over the next 24 h, from the live depth and the tide predictions.
+    var waterForecast: [(time: Date, depth: Double)] {
+        guard let events = tide?.events else { return [] }
+        return TideMath.depths(depthNow: liveDepth, events: events, from: Date())
+    }
+
     /// Seabed at the anchorage, chosen on the Anchoring page and used for the forecast check on the main screen.
     @Published var anchorBottom = AnchorConditions.Bottom.mud {
         didSet { defaults.set(anchorBottom.rawValue, forKey: "anchorwatch.bottom") }

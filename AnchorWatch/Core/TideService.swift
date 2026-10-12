@@ -86,6 +86,30 @@ enum TideMath {
         return (low, high)
     }
 
+    /// Depth at the anchorage every `step` for the next `hours`: today's depth moved by how much the tide
+    /// rises or falls from now. Stops where the predictions run out.
+    static func depths(depthNow: Double, events: [TideEvent], from now: Date, hours: Double = 24,
+                       step: TimeInterval = 600) -> [(time: Date, depth: Double)] {
+        guard let tideNow = height(at: now, events: events) else { return [] }
+        return stride(from: 0, through: hours * 3600, by: step).compactMap { offset in
+            let t = now.addingTimeInterval(offset)
+            return height(at: t, events: events).map { (t, max(0, depthNow + $0 - tideNow)) }
+        }
+    }
+
+    /// Stretches of `points` where the depth is below `limit`, with the least depth in each.
+    static func shallowWindows(_ points: [(time: Date, depth: Double)], below limit: Double) -> [(start: Date, end: Date, least: Double)] {
+        var windows: [(start: Date, end: Date, least: Double)] = []
+        for p in points where p.depth < limit {
+            if let last = windows.last, p.time.timeIntervalSince(last.end) <= 3600 {
+                windows[windows.count - 1] = (last.start, p.time, min(last.least, p.depth))
+            } else {
+                windows.append((p.time, p.time, p.depth))
+            }
+        }
+        return windows
+    }
+
     static func nearest(to point: CLLocationCoordinate2D, in stations: [TideStation]) -> TideStation? {
         stations.min { Geo.distance($0.coordinate, point) < Geo.distance($1.coordinate, point) }
     }

@@ -1,0 +1,155 @@
+import Charts
+import SwiftUI
+
+/// Tide, depth, keel clearance and scope over the next 24 hours, then the depth, tide and scope settings.
+/// Predictive: it says when the water gets thin and how the scope changes, not just what it is now.
+struct WaterView: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+
+    private var units: Units { engine.units }
+
+    var body: some View {
+        NavigationStack {
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                let points = engine.waterForecast
+                Form {
+                    if points.isEmpty {
+                        Section("Next 24 hours") {
+                            Text(engine.tideStatus.isEmpty ? "Waiting for tide predictions…" : engine.tideStatus)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        timeline(points, now: context.date)
+                        outlook(points)
+                    }
+                    DepthSections()
+                }
+            }
+            .task { await engine.refreshTide() }
+            .navigationTitle("Water")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    // MARK: Timeline
+
+    private func timeline(_ points: [(time: Date, depth: Double)], now: Date) -> some View {
+        let draft = engine.boat.draft
+        let clearanceLine = draft + AnchorMath.keelClearance
+        let events = engine.tide.map { TideMath.upcoming($0.events, after: now, limit: 6) }?
+            .filter { $0.time <= points.last!.time } ?? []
+        let tideNow = engine.tideNow ?? 0
+        let top = (points.map(\.depth).max() ?? 0) * units.perMeter * 1.15
+
+        return Section {
+            Chart {
+                ForEach(points, id: \.time) { p in
+                    AreaMark(x: .value("Time", p.time), y: .value("Depth", p.depth * units.perMeter))
+                        .foregroundStyle(.linearGradient(colors: [.blue.opacity(0.45), .blue.opacity(0.08)],
+                                                         startPoint: .top, endPoint: .bottom))
+                    LineMark(x: .value("Time", p.time), y: .value("Depth", p.depth * units.perMeter))
+                        .foregroundStyle(.blue)
+                }
+                if draft > 0 {
+                    RuleMark(y: .value("Keel", draft * units.perMeter))
+                        .foregroundStyle(.red)
+                        .lineStyle(StrokeStyle(lineWidth: 1.5))
+                        .annotation(position: .top, alignment: .leading) {
+                            Text("Keel \(units.formatTenths(draft))").font(.caption2).foregroundStyle(.red)
+                        }
+                    RuleMark(y: .value("Clearance", clearanceLine * units.perMeter))
+                        .foregroundStyle(.orange)
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                }
+                RuleMark(x: .value("Now", now))
+                    .foregroundStyle(.secondary)
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 2]))
+                ForEach(events, id: \.time) { e in
+                    let depth = engine.liveDepth + e.height - tideNow
+                    PointMark(x: .value("Time", e.time), y: .value("Depth", depth * units.perMeter))
+                        .foregroundStyle(e.isHigh ? .cyan : .orange)
+                        .annotation(position: e.isHigh ? .top : .bottom) {
+                            VStack(spacing: 0) {
+                                Text(e.isHigh ? "High" : "Low").font(.caption2.bold())
+                                Text(e.time.formatted(date: .omitted, time: .shortened)).font(.caption2)
+                            }
+                            .foregroundStyle(.secondary)
+                        }
+                }
+            }
+            .chartYScale(domain: 0...max(top, 1))
+            .chartYAxisLabel("depth (\(units.symbol))")
+            .chartXAxis {
+                AxisMarks(values: .stride(by: .hour, count: 6)) { _ in
+                    AxisGridLine()
+                    AxisValueLabel(format: .dateTime.hour())
+                }
+            }
+            .frame(height: 220)
+            .padding(.vertical, 6)
+        } header: { Text("Depth at the anchorage, next 24 hours") } footer: {
+            Text("From the depth you set and the \(engine.tide?.station.name ?? "nearest station") predictions. Red is your keel, orange dashed is \(units.format(AnchorMath.keelClearance)) under it.")
+        }
+    }
+
+    // MARK: Outlook
+
+    private func outlook(_ points: [(time: Date, depth: Double)]) -> some View {
+        let draft = engine.boat.draft
+        // The predicted highs and lows themselves, so the times match the chart rather than the nearest sample.
+        let tideNow = engine.tideNow ?? 0
+        let turns = (engine.tide.map { TideMath.upcoming($0.events, after: Date(), limit: 6) } ?? [])
+            .filter { $0.time <= points.last!.time }
+            .map { (time: $0.time, depth: max(0, engine.liveDepth + $0.height - tideNow)) }
+        let candidates = points + turns
+        let lowest = candidates.min { $0.depth < $1.depth }!
+        let highest = candidates.max { $0.depth < $1.depth }!
+        let rode = engine.rodeOutEstimate
+        let bow = engine.scope.bowHeight
+        let scopeAtHigh = rode / (highest.depth + bow)
+        let scopeAtLow = rode / (lowest.depth + bow)
+        let shallow = draft > 0 ? TideMath.shallowWindows(points, below: draft + AnchorMath.keelClearance) : []
+
+        return Section {
+            LabeledContent("Depth now", value: units.formatTenths(engine.liveDepth))
+            LabeledContent("Lowest, \(time(lowest.time))") {
+                Text("\(units.formatTenths(lowest.depth))" + (draft > 0 ? " · \(units.formatTenths(lowest.depth - draft)) under keel" : ""))
+                    .foregroundStyle(color(underKeel: lowest.depth - draft))
+            }
+            LabeledContent("Highest, \(time(highest.time))", value: units.formatTenths(highest.depth))
+            LabeledContent("Scope with \(units.format(rode)) out") {
+                Text(String(format: "%.1f:1 at high · %.1f:1 at low", scopeAtHigh, scopeAtLow))
+                    .foregroundStyle(scopeAtHigh < 3 ? .red : scopeAtHigh < 4 ? .orange : .secondary)
+            }
+            ForEach(Array(shallow.enumerated()), id: \.offset) { _, w in
+                Label(w.least <= draft
+                      ? "Aground from \(time(w.start)) to \(time(w.end)): as little as \(units.formatTenths(w.least)) of water for a \(units.formatTenths(draft)) draft."
+                      : "Under \(units.format(AnchorMath.keelClearance)) below the keel from \(time(w.start)) to \(time(w.end)), least \(units.formatTenths(w.least - draft)).",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote).foregroundStyle(w.least <= draft ? .red : .orange)
+            }
+            if scopeAtHigh < 4 {
+                Label(String(format: "Scope drops to %.1f:1 at high water around %@. Let out more rode before then.", scopeAtHigh, time(highest.time)),
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote).foregroundStyle(scopeAtHigh < 3 ? .red : .orange)
+            }
+            if shallow.isEmpty && scopeAtHigh >= 4 {
+                Label("Enough water and scope through the next 24 hours.", systemImage: "checkmark.circle")
+                    .font(.footnote).foregroundStyle(.green)
+            }
+        } header: { Text("Outlook") } footer: {
+            Text("Current isn't predicted yet; set it on the Anchor page.")
+        }
+    }
+
+    private func time(_ date: Date) -> String {
+        let sameDay = Calendar.current.isDateInToday(date)
+        return sameDay ? date.formatted(date: .omitted, time: .shortened)
+                       : date.formatted(.dateTime.weekday(.abbreviated).hour().minute())
+    }
+
+    private func color(underKeel: Double) -> Color {
+        guard engine.boat.draft > 0 else { return .secondary }
+        return underKeel <= 0 ? .red : underKeel < AnchorMath.keelClearance ? .orange : .secondary
+    }
+}

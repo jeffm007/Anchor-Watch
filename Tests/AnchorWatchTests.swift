@@ -639,6 +639,24 @@ final class TideTests: XCTestCase {
         XCTAssertEqual(ext.high.time.timeIntervalSince(t0), 18 * 3600, accuracy: 600)   // 5-min sampling
     }
 
+    func testDepthsFollowTheTideFromNow() {
+        // From the low (0 m), 5 m of water now; the 2 m high six hours on gives 7 m.
+        let points = TideMath.depths(depthNow: 5, events: events, from: t0, hours: 12, step: 3600)
+        XCTAssertEqual(points.first!.depth, 5, accuracy: 0.001)
+        XCTAssertEqual(points[6].depth, 7, accuracy: 0.001)
+        XCTAssertEqual(points[12].depth, 5, accuracy: 0.001)
+    }
+
+    func testShallowWindowsAroundTheLow() {
+        // 2 m now at the high (t0+6h), falling to 0 m at the next low: below 1 m from t0+9h to t0+15h.
+        let points = TideMath.depths(depthNow: 2, events: events, from: t0.addingTimeInterval(6 * 3600), hours: 12, step: 600)
+        let windows = TideMath.shallowWindows(points, below: 1)
+        XCTAssertEqual(windows.count, 1)
+        XCTAssertEqual(windows[0].least, 0, accuracy: 0.01)
+        XCTAssertEqual(windows[0].start.timeIntervalSince(t0) / 3600, 9, accuracy: 0.2)
+        XCTAssertEqual(windows[0].end.timeIntervalSince(t0) / 3600, 15, accuracy: 0.2)
+    }
+
     func testRiseIsZeroWhenTideIsFalling() {
         // From the high, the next 3 h are all lower.
         XCTAssertEqual(TideMath.rise(from: t0.addingTimeInterval(6 * 3600), hours: 3, events: events)!, 0, accuracy: 0.001)
@@ -1232,7 +1250,7 @@ final class UserGuideTests: XCTestCase {
             case .bullets(let items): return items.joined(separator: " ")
             }
         }.joined(separator: " ")
-        for phrase in ["30 seconds", "60 seconds", "10 minutes", "6 seconds", "25 knots", "60°", "Test siren in 15 seconds", "Drop Anchor Here", "Depth & Scope"] {
+        for phrase in ["30 seconds", "60 seconds", "10 minutes", "6 seconds", "25 knots", "60°", "Test siren in 15 seconds", "Drop Anchor Here", "Water tab"] {
             XCTAssertTrue(all.contains(phrase), "the guide should mention \"\(phrase)\"")
         }
     }

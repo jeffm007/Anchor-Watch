@@ -3,7 +3,6 @@ import SwiftUI
 /// Conditions knobs, a side view of the rode, and what the boat profile says about holding in them.
 struct AnchoringView: View {
     @EnvironmentObject var engine: AnchorWatchEngine
-    @Environment(\.dismiss) private var dismiss
     @State private var conditions = AnchorConditions()
     @State private var started = false
     @State private var tide = TideChoice.high
@@ -46,7 +45,7 @@ struct AnchoringView: View {
         guard let change = tideChange else { return "No tide data yet: showing the depth now." }
         let depth = units.formatTenths(tideScope.designDepth)
         let shift = "\(change >= 0 ? "+" : "−")\(units.formatTenths(abs(change)))"
-        guard let ext = tideExtremes else { return "At high water (rise from Depth & Scope): \(depth) (\(shift))" }
+        guard let ext = tideExtremes else { return "At high water (rise from the Water tab): \(depth) (\(shift))" }
         let when = (tide == .low ? ext.low : ext.high).time.formatted(date: .omitted, time: .shortened)
         return "At \(name) tide, \(when): \(depth) (\(shift))"
     }
@@ -74,7 +73,7 @@ struct AnchoringView: View {
 
                 if engine.anchor != nil {
                     Section("Alarm radius") {
-                        AnchorRadiusControls(onMove: { dismiss() })
+                        AnchorRadiusControls(onMove: { engine.tab = .watch })
                     }
                 }
 
@@ -101,7 +100,7 @@ struct AnchoringView: View {
                         Button("Use the forecast for the next 12 h") { fillFromForecast() }
                     }
                 } header: { Text("Conditions") } footer: {
-                    Text("Water depth is the depth now, the same one Depth & Scope uses; the tide buttons above move it to low or high water. The wind sets how the chain lies; gusts drive the limits below.")
+                    Text("Water depth is the depth now, the same one the Water tab uses; the tide buttons above move it to low or high water. The wind sets how the chain lies; gusts drive the limits below.")
                 }
 
                 Section("Suggestions") {
@@ -169,7 +168,6 @@ struct AnchoringView: View {
             }
             .navigationTitle("Anchoring")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { Button("Done") { dismiss() } }
             .onAppear(perform: start)
             .onChange(of: conditions.bottom) { _, bottom in engine.anchorBottom = bottom }
         }

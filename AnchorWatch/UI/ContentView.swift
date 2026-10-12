@@ -1,5 +1,47 @@
 import SwiftUI
 
+/// The four pages along the bottom. Settings, Boat Profile, Testing and the guide are under the gear on Watch.
+struct RootView: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+
+    var body: some View {
+        TabView(selection: $engine.tab) {
+            ContentView()
+                .tabItem { Label("Watch", systemImage: "map") }
+                .tag(AnchorWatchEngine.Tab.watch)
+            AnchoringView()
+                .tabItem { Label { Text("Anchor") } icon: { Image(uiImage: AnchorTabIcon.image) } }
+                .tag(AnchorWatchEngine.Tab.anchor)
+            WaterView()
+                .tabItem { Label("Water", systemImage: "water.waves") }
+                .tag(AnchorWatchEngine.Tab.water)
+            ConditionsView()
+                .tabItem { Label("Weather", systemImage: "wind") }
+                .tag(AnchorWatchEngine.Tab.weather)
+        }
+        .preferredColorScheme(.dark)
+        .onAppear {
+            // Dev aids for screenshots: open a page at launch.
+            let args = ProcessInfo.processInfo.arguments
+            if args.contains("-showAnchoring") { engine.tab = .anchor }
+            if args.contains("-showDepth") { engine.tab = .water }
+            if args.contains("-showConditions") { engine.tab = .weather }
+        }
+    }
+}
+
+/// SF Symbols has no anchor, so the tab icon is the anchor glyph drawn as a template image.
+enum AnchorTabIcon {
+    static let image: UIImage = {
+        let font = UIFont.systemFont(ofSize: 22, weight: .regular)
+        let text = anchorGlyph as NSString
+        let size = text.size(withAttributes: [.font: font])
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            text.draw(at: .zero, withAttributes: [.font: font, .foregroundColor: UIColor.black])
+        }.withRenderingMode(.alwaysTemplate)
+    }()
+}
+
 struct ContentView: View {
     @EnvironmentObject var engine: AnchorWatchEngine
     // `-showSettings` opens the settings sheet at launch, for screenshots.
@@ -14,11 +56,6 @@ struct ContentView: View {
     }()
     // `-showCheck` opens the watch check at launch, for screenshots.
     @State private var showWatchCheck = ProcessInfo.processInfo.arguments.contains("-showCheck")
-    @State private var showConditions = false
-    // `-showDepth` opens the depth sheet at launch, for screenshots.
-    @State private var showDepth = ProcessInfo.processInfo.arguments.contains("-showDepth")
-    // `-showAnchoring` opens the anchoring conditions screen at launch, for screenshots.
-    @State private var showAnchoring = ProcessInfo.processInfo.arguments.contains("-showAnchoring")
     // `-showBoat` opens the boat profile at launch, for screenshots.
     @State private var showBoat = ProcessInfo.processInfo.arguments.contains("-showBoat")
 
@@ -29,10 +66,10 @@ struct ContentView: View {
                 DashboardHeader()
                 if let alarm = engine.alarm { AlarmBanner(reason: alarm) }
                 if let drift = engine.anchorDrift { DriftBanner(drift: drift) }
-                DashboardTiles(openConditions: { showConditions = true }, openDepth: { showDepth = true },
-                               openAnchoring: { showAnchoring = true })
+                DashboardTiles(openConditions: { engine.tab = .weather }, openDepth: { engine.tab = .water },
+                               openAnchoring: { engine.tab = .anchor })
                 chartPanel
-                NoticesCard(openAnchoring: { showAnchoring = true }, openConditions: { showConditions = true },
+                NoticesCard(openAnchoring: { engine.tab = .anchor }, openConditions: { engine.tab = .weather },
                             openAlerts: { showAlerts = true }, openWatchCheck: { showWatchCheck = true })
                 controlRow
             }
@@ -41,9 +78,8 @@ struct ContentView: View {
         }
         .preferredColorScheme(.dark)
         // Coming back from a sheet shows the buttons again, rather than leaving them faded.
-        .onChange(of: showSettings || showAnchoring || showDepth) { _, open in if !open { engine.pokeControls() } }
+        .onChange(of: showSettings) { _, open in if !open { engine.pokeControls() } }
         .sheet(isPresented: $showSettings) { SettingsView() }
-        .sheet(isPresented: $showDepth) { DepthView() }
         .sheet(isPresented: $showAlerts) { AlertsView() }
         .sheet(isPresented: $showWatchCheck) { WatchCheckView() }
         .sheet(isPresented: $showGuide) {
@@ -52,8 +88,6 @@ struct ContentView: View {
         .sheet(item: $guideTopic) { topic in
             NavigationStack { GuideTopicView(topic: topic).toolbar { Button("Done") { guideTopic = nil } } }
         }
-        .sheet(isPresented: $showConditions) { ConditionsView() }
-        .sheet(isPresented: $showAnchoring) { AnchoringView() }
         .sheet(isPresented: $showBoat) { NavigationStack { BoatProfileView() } }
         .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
     }
@@ -96,9 +130,6 @@ struct ContentView: View {
         HStack(spacing: 0) {
             Group {
                 RoundButton(icon: "gearshape") { showSettings = true }
-                Button { showAnchoring = true } label: { RoundIcon(icon: anchorGlyph, isText: true) }
-                    .accessibilityLabel("Anchoring")
-                RoundButton(icon: "water.waves") { showDepth = true }
                 Menu {
                     Picker("Map", selection: $engine.mapLayer) {
                         ForEach(ChartLayer.allCases) { Text($0.rawValue).tag($0) }
@@ -501,9 +532,9 @@ struct ScopeView: View {
 }
 
 /// Quick depth entry. The depth feeds the scope calculation (rode to pay out and suggested radius).
-struct DepthView: View {
+/// Depth, tide and scope settings: the lower part of the Water page.
+struct DepthSections: View {
     @EnvironmentObject var engine: AnchorWatchEngine
-    @Environment(\.dismiss) private var dismiss
 
     private var units: Units { engine.units }
 
@@ -554,68 +585,59 @@ struct DepthView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("Water depth at the anchorage") {
-                    HStack {
-                        Button { depth.wrappedValue = max(0, depth.wrappedValue - step) } label: {
-                            Image(systemName: "minus.circle.fill").font(.largeTitle)
-                        }
-                        TextField("Depth", value: depth, format: .number.precision(.fractionLength(0...1)))
-                            .keyboardType(.decimalPad)
-                            .multilineTextAlignment(.center)
-                            .font(.system(size: 44, weight: .bold, design: .rounded))
-                        Text(units.symbol).font(.title3).foregroundStyle(.secondary)
-                        Button { depth.wrappedValue += step } label: {
-                            Image(systemName: "plus.circle.fill").font(.largeTitle)
-                        }
-                    }
-                    .buttonStyle(.borderless)
+        Section("Water depth at the anchorage") {
+            HStack {
+                Button { depth.wrappedValue = max(0, depth.wrappedValue - step) } label: {
+                    Image(systemName: "minus.circle.fill").font(.largeTitle)
                 }
-                Section("Tide") {
-                    tideData
-                    HStack {
-                        Button { tide.wrappedValue = max(0, tide.wrappedValue - step) } label: {
-                            Image(systemName: "minus.circle.fill").font(.title)
-                        }
-                        Spacer()
-                        VStack {
-                            TextField("Tide", value: tide, format: .number.precision(.fractionLength(0...1)))
-                                .keyboardType(.decimalPad)
-                                .multilineTextAlignment(.center)
-                                .font(.system(size: 30, weight: .semibold, design: .rounded))
-                            Text("expected rise above this depth (\(units.symbol))")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button { tide.wrappedValue += step } label: {
-                            Image(systemName: "plus.circle.fill").font(.title)
-                        }
-                    }
-                    .buttonStyle(.borderless)
-                    LabeledContent("Depth to cover at high water", value: units.format(engine.scope.designDepth))
-                }
-                Section("Scope") {
-                    Picker("Scope ratio", selection: $engine.scope.scopeRatio) {
-                        ForEach([3.0, 5.0, 7.0, 10.0], id: \.self) { Text("\(Int($0)):1").tag($0) }
-                    }.pickerStyle(.segmented)
-                    LabeledContent("Rode to pay out", value: units.format(engine.rodeToPayOut)).bold()
-                    if let shortfall = engine.rodeShortfall {
-                        Label("That's \(units.format(shortfall)) more rode than the boat carries.", systemImage: "exclamationmark.triangle.fill")
-                            .font(.footnote).foregroundStyle(.orange)
-                    }
-                    LabeledContent("Suggested alarm radius", value: units.format(engine.suggestedRadius))
-                    Button("Use suggested radius") { engine.applySuggestedRadius(); dismiss() }
-                    Text("Rode = ratio × (depth + tide + \(units.format(engine.scope.bowHeight)) bow height). Change the bow height and boat length in Settings → Boat Profile.")
-                        .font(.footnote).foregroundStyle(.secondary)
+                TextField("Depth", value: depth, format: .number.precision(.fractionLength(0...1)))
+                    .keyboardType(.decimalPad)
+                    .multilineTextAlignment(.center)
+                    .font(.system(size: 44, weight: .bold, design: .rounded))
+                Text(units.symbol).font(.title3).foregroundStyle(.secondary)
+                Button { depth.wrappedValue += step } label: {
+                    Image(systemName: "plus.circle.fill").font(.largeTitle)
                 }
             }
-            .task { await engine.refreshTide() }
-            .navigationTitle("Depth & Scope")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { Button("Done") { dismiss() } }
+            .buttonStyle(.borderless)
         }
-        .presentationDetents([.medium, .large])
+        Section("Tide") {
+            tideData
+            HStack {
+                Button { tide.wrappedValue = max(0, tide.wrappedValue - step) } label: {
+                    Image(systemName: "minus.circle.fill").font(.title)
+                }
+                Spacer()
+                VStack {
+                    TextField("Tide", value: tide, format: .number.precision(.fractionLength(0...1)))
+                        .keyboardType(.decimalPad)
+                        .multilineTextAlignment(.center)
+                        .font(.system(size: 30, weight: .semibold, design: .rounded))
+                    Text("expected rise above this depth (\(units.symbol))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { tide.wrappedValue += step } label: {
+                    Image(systemName: "plus.circle.fill").font(.title)
+                }
+            }
+            .buttonStyle(.borderless)
+            LabeledContent("Depth to cover at high water", value: units.format(engine.scope.designDepth))
+        }
+        Section("Scope") {
+            Picker("Scope ratio", selection: $engine.scope.scopeRatio) {
+                ForEach([3.0, 5.0, 7.0, 10.0], id: \.self) { Text("\(Int($0)):1").tag($0) }
+            }.pickerStyle(.segmented)
+            LabeledContent("Rode to pay out", value: units.format(engine.rodeToPayOut)).bold()
+            if let shortfall = engine.rodeShortfall {
+                Label("That's \(units.format(shortfall)) more rode than the boat carries.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote).foregroundStyle(.orange)
+            }
+            LabeledContent("Suggested alarm radius", value: units.format(engine.suggestedRadius))
+            Button("Use suggested radius") { engine.applySuggestedRadius() }
+            Text("Rode = ratio × (depth + tide + \(units.format(engine.scope.bowHeight)) bow height). Change the bow height and boat length in Settings → Boat Profile.")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -630,7 +652,6 @@ enum StationName {
 /// Every nearby station's latest readings.
 struct ConditionsView: View {
     @EnvironmentObject var engine: AnchorWatchEngine
-    @Environment(\.dismiss) private var dismiss
 
     private var units: Units { engine.units }
 
@@ -644,7 +665,7 @@ struct ConditionsView: View {
                 }
                 if !engine.observations.isEmpty {
                     Section {
-                        Button { engine.fitStations(); dismiss() } label: {
+                        Button { engine.fitStations(); engine.tab = .watch } label: {
                             Label("Show these stations on the chart", systemImage: "mappin.and.ellipse")
                         }
                     }
@@ -669,7 +690,7 @@ struct ConditionsView: View {
             }
             .navigationTitle("Conditions")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { Button("Done") { dismiss() } }
+            
         }
     }
 
