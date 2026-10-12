@@ -57,10 +57,28 @@ struct AnchoringView: View {
         return depth <= boat.draft ? .red : depth < boat.draft + AnchorMath.keelClearance ? .orange : .secondary
     }
 
+    /// Set once the wind or gusts are moved by hand, so a late-arriving forecast doesn't overwrite them.
+    @State private var windSetByHand = false
+    @State private var showConditions = false
+    @State private var showLoads = false
+    @State private var showBoat = false
+
     var body: some View {
         let r = result
         NavigationStack {
             Form {
+                // The verdict first: is this setup good, for how much wind, and will the forecast stay under it?
+                Section {
+                    statusRow(r)
+                    lookAhead(r)
+                    if let safe = r.safeGust {
+                        Button("Set gust warning to \(Int(min(50, max(10, safe)))) kt") {
+                            engine.gustLimit = min(50, max(10, safe.rounded(.down)))
+                        }
+                        .font(.footnote)
+                    }
+                }
+
                 Section {
                     RodeDiagram(boat: boat, scope: tideScope, conditions: conditions, result: r, units: units)
                         .frame(height: 240)
@@ -68,7 +86,16 @@ struct AnchoringView: View {
                     Picker("Tide", selection: $tide) {
                         ForEach(TideChoice.allCases) { Text($0.rawValue).tag($0) }
                     }.pickerStyle(.segmented)
-                    statusRow(r)
+                }
+
+                Section("Your setup") {
+                    let scopeRatio = conditions.rodeOut / max(r.height, 0.1)
+                    LabeledContent("Rode out", value: "\(units.format(conditions.rodeOut)) · \(String(format: "%.1f:1", scopeRatio)) scope")
+                    LabeledContent(tide == .now ? "Depth now" : "Depth at \(tide == .low ? "low" : "high") tide") {
+                        Text(units.formatTenths(tideScope.designDepth)).foregroundStyle(tideDepthColor == .secondary ? .primary : tideDepthColor)
+                    }
+                    LabeledContent("Anchor", value: "\(boat.anchorType.rawValue), \(units.formatWeight(boat.anchorWeight)) in \(conditions.bottom.rawValue.lowercased())")
+                    LabeledContent("Snubber", value: boat.hasSnubber ? units.format(boat.snubberLength) : "None")
                 }
 
                 if engine.anchor != nil {
@@ -78,29 +105,38 @@ struct AnchoringView: View {
                 }
 
                 Section {
-                    knob("Water depth now", length($engine.scope.depth), 0...max(units == .feet ? 100 : 30, engine.scope.depth * units.perMeter),
-                         step: units == .feet ? 1 : 0.5, format: (units == .feet ? "%.0f " : "%.1f ") + units.symbol)
-                    if let line = tideDepthLine {
-                        Text(line).font(.footnote.bold()).foregroundStyle(tideDepthColor)
+                    DisclosureGroup(isExpanded: $showConditions) {
+                        knob("Water depth now", length($engine.scope.depth), 0...max(units == .feet ? 100 : 30, engine.scope.depth * units.perMeter),
+                             step: units == .feet ? 1 : 0.5, format: (units == .feet ? "%.0f " : "%.1f ") + units.symbol)
+                        if let line = tideDepthLine {
+                            Text(line).font(.footnote.bold()).foregroundStyle(tideDepthColor)
+                        }
+                        knob("Wind", wind, 0...60, step: 1, format: "%.0f kt")
+                        knob("Gusts", gust, 0...70, step: 1, format: "%.0f kt")
+                        knob("Current", $conditions.current, 0...4, step: 0.25, format: "%.2g kt")
+                        Picker("Current runs", selection: $conditions.currentDirection) {
+                            ForEach(AnchorConditions.CurrentDirection.allCases) { Text($0.rawValue).tag($0) }
+                        }.pickerStyle(.segmented)
+                        knob("Waves", length($conditions.waveHeight), 0...(units == .feet ? 10 : 3), step: units == .feet ? 0.5 : 0.1,
+                             format: "%.1f " + units.symbol)
+                        Picker("Bottom", selection: $conditions.bottom) {
+                            ForEach(AnchorConditions.Bottom.allCases) { Text($0.rawValue).tag($0) }
+                        }
+                        knob("Rode out", length($conditions.rodeOut), 0...max(10, rodeMax * units.perMeter), step: units == .feet ? 5 : 1,
+                             format: "%.0f " + units.symbol)
+                        if engine.windHere != nil {
+                            Button("Use the forecast for the next 12 h") { fillFromForecast() }
+                        }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Conditions").font(.headline)
+                            Text(conditionsSummary).font(.caption).foregroundStyle(.secondary)
+                        }
                     }
-                    knob("Wind", wind, 0...60, step: 1, format: "%.0f kt")
-                    knob("Gusts", gust, 0...70, step: 1, format: "%.0f kt")
-                    knob("Current", $conditions.current, 0...4, step: 0.25, format: "%.2g kt")
-                    Picker("Current runs", selection: $conditions.currentDirection) {
-                        ForEach(AnchorConditions.CurrentDirection.allCases) { Text($0.rawValue).tag($0) }
-                    }.pickerStyle(.segmented)
-                    knob("Waves", length($conditions.waveHeight), 0...(units == .feet ? 10 : 3), step: units == .feet ? 0.5 : 0.1,
-                         format: "%.1f " + units.symbol)
-                    Picker("Bottom", selection: $conditions.bottom) {
-                        ForEach(AnchorConditions.Bottom.allCases) { Text($0.rawValue).tag($0) }
+                } footer: {
+                    if showConditions {
+                        Text("Water depth is the depth now, the same one the Water tab uses; the tide buttons move it to low or high water. The wind sets how the chain lies; gusts drive the limits.")
                     }
-                    knob("Rode out", length($conditions.rodeOut), 0...max(10, rodeMax * units.perMeter), step: units == .feet ? 5 : 1,
-                         format: "%.0f " + units.symbol)
-                    if engine.windHere != nil {
-                        Button("Use the forecast for the next 12 h") { fillFromForecast() }
-                    }
-                } header: { Text("Conditions") } footer: {
-                    Text("Water depth is the depth now, the same one the Water tab uses; the tide buttons above move it to low or high water. The wind sets how the chain lies; gusts drive the limits below.")
                 }
 
                 Section("Suggestions") {
@@ -110,66 +146,108 @@ struct AnchoringView: View {
                 }
 
                 Section {
-                    LabeledContent("Load now (\(Int(conditions.wind)) kt)", value: units.formatForce(r.steadyLoad.design))
-                    LabeledContent("Load in \(Int(conditions.gust)) kt gusts", value: units.formatForce(r.load.design))
-                    LabeledContent("  wind / current before allowances", value: "\(units.formatForce(r.load.wind)) / \(units.formatForce(r.load.current))")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    LabeledContent("  taken by chain on the bottom", value: "− \(units.formatForce(r.chainFriction))")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    LabeledContent("Reaching the anchor in gusts", value: units.formatForce(r.anchorLoad))
-                    if let gust = r.liftOffGust {
-                        LabeledContent("Chain lifts off at", value: gust > 0 ? "\(Int(gust)) kt" : "already")
-                    }
-                    if let holding = r.holding {
-                        LabeledContent("Anchor holding (rough)", value: units.formatForce(holding))
-                    }
-                    if let safe = r.safeGust {
-                        LabeledContent("Safe gust limit", value: "\(Int(safe)) kt").bold()
-                        Button("Set gust warning to \(Int(min(50, max(10, safe)))) kt") {
-                            engine.gustLimit = min(50, max(10, safe.rounded(.down)))
+                    DisclosureGroup(isExpanded: $showLoads) {
+                        LabeledContent("Load now (\(Int(conditions.wind)) kt)", value: units.formatForce(r.steadyLoad.design))
+                        LabeledContent("Load in \(Int(conditions.gust)) kt gusts", value: units.formatForce(r.load.design))
+                        LabeledContent("  wind / current before allowances", value: "\(units.formatForce(r.load.wind)) / \(units.formatForce(r.load.current))")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        LabeledContent("  taken by chain on the bottom", value: "− \(units.formatForce(r.chainFriction))")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        LabeledContent("Reaching the anchor in gusts", value: units.formatForce(r.anchorLoad))
+                        if let gust = r.liftOffGust {
+                            LabeledContent("Chain lifts off at", value: gust > 0 ? "\(Int(gust)) kt" : "already")
+                        }
+                        if let holding = r.holding {
+                            LabeledContent("Anchor holding (rough)", value: units.formatForce(holding))
+                        }
+                        if let needed = r.rodeNeeded {
+                            LabeledContent("Rode for these gusts", value: units.format(needed))
+                        }
+                        LabeledContent("Chain on the bottom", value: "\(units.format(r.steadyShape.lying)) now · \(units.format(r.shape.lying)) in gusts")
+                        LabeledContent("Pull angle at the anchor", value: String(format: "%.0f° now · %.0f° in gusts", r.steadyShape.shankAngle, r.shape.shankAngle))
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Load analysis").font(.headline)
+                            Text("\(units.formatForce(r.anchorLoad)) at the anchor in \(Int(conditions.gust)) kt gusts" + (r.holding.map { " · holds about \(units.formatForce($0))" } ?? ""))
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                    if let needed = r.rodeNeeded {
-                        LabeledContent("Rode for these gusts", value: units.format(needed))
+                } footer: {
+                    if showLoads {
+                        Text("Loads include an allowance for yawing and waves. Holding is a rough band for a \(boat.anchorType.rawValue.lowercased()) anchor of \(units.formatWeight(boat.anchorWeight)) in \(conditions.bottom.rawValue.lowercased()); a well-set anchor can do much better or worse. The status, limits and suggestions are all worked out at the gusts, since gusts are what break an anchor out.")
                     }
-                    LabeledContent("Chain on the bottom", value: "\(units.format(r.steadyShape.lying)) now · \(units.format(r.shape.lying)) in gusts")
-                    LabeledContent("Pull angle at the anchor", value: String(format: "%.0f° now · %.0f° in gusts", r.steadyShape.shankAngle, r.shape.shankAngle))
-                } header: { Text("Calculated:") } footer: {
-                    Text("Loads include an allowance for yawing and waves. Holding is a rough band for a \(boat.anchorType.rawValue.lowercased()) anchor of \(units.formatWeight(boat.anchorWeight)) in \(conditions.bottom.rawValue.lowercased()); a well-set anchor can do much better or worse. The status, limits and suggestions are all worked out at the gusts, since gusts are what break an anchor out.")
                 }
 
                 Section {
-                    NavigationLink {
-                        BoatProfileView()
+                    DisclosureGroup(isExpanded: $showBoat) {
+                        NavigationLink {
+                            BoatProfileView()
+                        } label: {
+                            Label("Boat Profile", systemImage: "sailboat")
+                        }
+                        LabeledContent("Rode on board", value: carriedText)
+                        if let deepest = BoatMath.deepestWater(boat, scopeRatio: engine.scope.scopeRatio, bowHeight: engine.scope.bowHeight) {
+                            LabeledContent("Deepest water at \(Int(engine.scope.scopeRatio)):1", value: units.format(deepest))
+                        }
+                        if let shortfall = engine.rodeShortfall {
+                            Label("Today's scope needs \(units.format(shortfall)) more rode than you carry.", systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                        }
+                        if let area = BoatMath.windage(boat) {
+                            LabeledContent("Windage (Front)", value: units.formatArea(area))
+                        }
+                        if let load = BoatMath.windLoad(boat, knots: engine.gustLimit) {
+                            LabeledContent("Wind load at \(Int(engine.gustLimit)) kt", value: units.formatForce(load))
+                            LabeledContent("Peak with yawing and surge", value: units.formatForce(load * BoatMath.peakFactor))
+                        }
                     } label: {
-                        Label("Boat Profile", systemImage: "sailboat")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Your boat").font(.headline)
+                            Text("\(boat.name) · \(carriedText) of rode on board").font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                 } footer: {
-                    Text("Chain size and length, anchor weights, freeboard, cabin height and snubber are guesses until you measure them. Change them in the Boat Profile.")
+                    if showBoat {
+                        Text("Chain size and length, anchor weights, freeboard, cabin height and snubber are guesses until you measure them. Change them in the Boat Profile.")
+                    }
                 }
-
-                Section {
-                    LabeledContent("Rode on board", value: carriedText)
-                    if let deepest = BoatMath.deepestWater(boat, scopeRatio: engine.scope.scopeRatio, bowHeight: engine.scope.bowHeight) {
-                        LabeledContent("Deepest water at \(Int(engine.scope.scopeRatio)):1", value: units.format(deepest))
-                    }
-                    if let shortfall = engine.rodeShortfall {
-                        Label("Today's scope needs \(units.format(shortfall)) more rode than you carry.", systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
-                    }
-                    if let area = BoatMath.windage(boat) {
-                        LabeledContent("Windage (Front)", value: units.formatArea(area))
-                    }
-                    if let load = BoatMath.windLoad(boat, knots: engine.gustLimit) {
-                        LabeledContent("Wind load at \(Int(engine.gustLimit)) kt", value: units.formatForce(load))
-                        LabeledContent("Peak with yawing and surge", value: units.formatForce(load * BoatMath.peakFactor))
-                    }
-                } header: { Text("Calculated from your boat:") }
             }
             .navigationTitle("Anchoring")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear(perform: start)
             .onChange(of: conditions.bottom) { _, bottom in engine.anchorBottom = bottom }
+            // The forecast often arrives after the page first opens; use it unless the wind was set by hand.
+            .onChange(of: engine.windHere) { _, _ in if !windSetByHand { fillFromForecast() } }
+        }
+    }
+
+    /// One line for the collapsed Conditions group.
+    private var conditionsSummary: String {
+        var parts = ["Wind \(Int(conditions.wind)) G\(Int(conditions.gust)) kt"]
+        if conditions.current > 0 {
+            parts.append(String(format: "current %.2g kt ", conditions.current) + conditions.currentDirection.rawValue.lowercased())
+        }
+        if conditions.waveHeight > 0 { parts.append("waves \(units.formatTenths(conditions.waveHeight))") }
+        return parts.joined(separator: " · ")
+    }
+
+    /// Will the forecast stay under this setup's limit? The strongest gust in the next 12 hours against the safe gust.
+    @ViewBuilder private func lookAhead(_ r: AnchorAssessment) -> some View {
+        let now = Date()
+        let window = engine.windHere?.samples.filter { $0.time >= now.addingTimeInterval(-1800) && $0.time <= now.addingTimeInterval(12 * 3600) } ?? []
+        if let peak = window.max(by: { $0.gust < $1.gust }), let safe = r.safeGust {
+            let when = peak.time.formatted(date: .omitted, time: .shortened)
+            if peak.gust > safe {
+                Label("Forecast gusts reach \(Int(peak.gust.rounded())) kt around \(when), above the \(Int(safe)) kt this setup holds. Let out more rode or pick a better spot.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote).foregroundStyle(.orange)
+            } else {
+                Label("Next 12 h: forecast peak \(Int(peak.gust.rounded())) kt around \(when), within the \(Int(safe)) kt limit.",
+                      systemImage: "checkmark.circle")
+                    .font(.footnote).foregroundStyle(.green)
+            }
+        } else if engine.windHere == nil {
+            Text("Waiting for the wind forecast to look ahead.").font(.footnote).foregroundStyle(.secondary)
         }
     }
 
@@ -208,10 +286,10 @@ struct AnchoringView: View {
         }
         return VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Label(text, systemImage: icon).foregroundStyle(color).bold()
+                Label(text, systemImage: icon).font(.title3.bold()).foregroundStyle(color)
                 Spacer()
                 if let safe = r.safeGust {
-                    Text("good to \(Int(safe)) kt").foregroundStyle(.secondary)
+                    Text("good to \(Int(safe)) kt").font(.headline).foregroundStyle(.secondary)
                 }
             }
             if let why = statusReason(r) {
@@ -240,11 +318,11 @@ struct AnchoringView: View {
 
     /// Wind and gusts stay in step: gusts are never below the wind.
     private var wind: Binding<Double> {
-        Binding(get: { conditions.wind }, set: { conditions.wind = $0; conditions.gust = max(conditions.gust, $0) })
+        Binding(get: { conditions.wind }, set: { windSetByHand = true; conditions.wind = $0; conditions.gust = max(conditions.gust, $0) })
     }
 
     private var gust: Binding<Double> {
-        Binding(get: { conditions.gust }, set: { conditions.gust = $0; conditions.wind = min(conditions.wind, $0) })
+        Binding(get: { conditions.gust }, set: { windSetByHand = true; conditions.gust = $0; conditions.wind = min(conditions.wind, $0) })
     }
 
     /// A metre value shown in the user's units.

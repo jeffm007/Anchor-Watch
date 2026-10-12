@@ -1,6 +1,6 @@
 import Foundation
 
-/// The user-guide page that shows the maths behind the Anchoring screen's "Calculated" numbers.
+/// The user-guide page that shows the maths behind the Anchor tab's load analysis.
 /// Every constant is read from `AnchorMath` and `BoatMath`, and the worked example runs the real model,
 /// so this page can't drift from the code.
 extension UserGuideContent {
@@ -23,7 +23,7 @@ private enum AnchorMathGuide {
     // MARK: The pipeline
 
     static let overview: [GuideTopic.Block] = [
-        .text("The **Calculated** section on the Anchoring screen is a static force balance: how hard the wind, current and waves push the boat back, against how much of that the rode and anchor can resist. Everything is in SI units inside (metres, kilograms, newtons, m/s) and converted for display."),
+        .text("The **Load analysis** on the Anchor tab (tap it to open) is a static force balance: how hard the wind, current and waves push the boat back, against how much of that the rode and anchor can resist. Everything is in SI units inside (metres, kilograms, newtons, m/s) and converted for display."),
         .formula("""
         Boat Profile  → A, A_u, w
         Conditions    → wind, gust, current,
