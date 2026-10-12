@@ -62,7 +62,7 @@ enum UserGuideContent {
         .heading("Each time you anchor"),
         .bullets([
             "Let the boat settle and the anchor bite, then wait for a good GPS reading (the green dot and ± under the boat's name, ideally under 26 ft).",
-            "Tap **Drop Anchor Here**. The anchor symbol marks the spot and a green circle appears around it.",
+            "Tap **Drop Anchor Here** (or the status at the top) and say where the anchor is: **Anchor going down now** if you tap it as it goes over the bow, or **Boat has settled on the rode** if you've already fallen back. The anchor symbol marks the spot and a green circle appears around it.",
             "Set the circle with **Alarm radius** on the **Anchor** tab. The **Water** tab works out how much rode to pay out and a suggested radius.",
             "Plug the phone in, turn the volume up, and glance at the **Watch check** if an orange or red bar shows.",
             "Sleep. If the boat leaves the circle, the siren sounds and the screen turns red.",
@@ -80,7 +80,7 @@ enum UserGuideContent {
         .bullets([
             "**Wind**: forecast speed with an arrow showing which way it blows, where it comes from and the gusts. Tap for the Weather tab.",
             "**Depth**: the depth you entered, moved up or down as the tide has changed since, and whether it's rising or falling. Tap for the Water tab.",
-            "**Scope**: rode out against today's depth plus bow height. It drops as the tide rises. Tap for Anchoring.",
+            "**Scope**: rode out against today's depth plus bow height. It drops as the tide rises. It says **out** once you've set **Rode out** (under the drawing on the Anchor tab), and **suggested** (the scope calculator's figure) until then; Raise clears it. Tap for the Anchor tab.",
             "**Anchor**: Secure and which way the anchor lies, or a warning: Moving away (the boat steadily getting further off, past its earlier swing), Dragging (the swing itself has moved), Outside or ALARM. Tap for Anchoring.",
             "**Tide**: how much it will rise or fall to the next high or low, and when. Tap for the Water tab.",
             "**Distance**: from the anchor now, the furthest so far (Max), and the alarm radius. Orange near the circle, red outside it.",
@@ -115,7 +115,7 @@ enum UserGuideContent {
             "The small **dotted orange circle** round the anchor shows how far off the drop point may be: the GPS accuracy (±) when you dropped, plus the uncertainty in which way the bow pointed. The true spot is inside it about two times in three. It disappears if you move the anchor by hand.",
             "The purple line is the **track** of where the boat has been. It starts when you drop the anchor, or as soon as you're moving if **Settings → Track** is on.",
             "The label under the circle shows the **Alarm Radius**, and turns red when the alarm sounds.",
-            "The **dashed cyan circle** is how far the boat can swing: the rode stretched taut at the lowest water in the next 24 hours, plus the boat's length, since it's the stern that sweeps the edge. Keep it clear of rocks, shallows and other boats. The **thick cyan arc** on it is where the wind and current are forecast to put the boat over the next 24 hours.",
+            "The **dashed cyan circle** is how far the boat can swing: the rode stretched taut at the lowest water in the next 24 hours, plus the distance back to the phone amidships. It's the farthest the boat's position (the blue boat) can go, and the alarm circle sits 20 ft outside it. Remember the **stern reaches half a boat length further** (about 23 ft on Nereus) when checking clearance from rocks, shallows and other boats. The **thick cyan arc** on it is where the wind and current are forecast to put the boat over the next 24 hours.",
         ]),
         .heading("Before you anchor"),
         .text("A panel over the chart shows how much rode to pay out and the **Drop Anchor Here** button. It fades after \(GuideFacts.controlsFadeSeconds) seconds so you can see the chart; **tap the chart** to bring it back. Once you're anchored it goes away, and the radius and anchor controls are on the Anchor tab."),
@@ -125,8 +125,8 @@ enum UserGuideContent {
 
     static let settingAnchor = GuideTopic(id: "anchor", title: "Setting and moving the anchor", icon: "arrow.down.to.line", blocks: [
         .heading("Dropping it"),
-        .text("Tap **Drop Anchor Here** once the boat has settled. The app uses the average of the last \(GuideFacts.averagingSeconds) seconds of GPS positions, so one stray reading can't put the anchor in the wrong place."),
-        .text("The phone is taken to be amidships, but the anchor goes over the bow, half a boat length ahead. So the app moves the drop point forward by half your boat length (from the Boat Profile) toward where the bow pointed: the direction you came in on over the last minute, if you moved at least 15 m (about 50 ft); otherwise into the forecast wind, if there's 5 knots or more. If it can't tell, it leaves the anchor at the phone and widens the dotted circle instead. A note in the Alarm radius section of the Anchor tab says which it used."),
+        .text("Tap **Drop Anchor Here** and choose when: **Anchor going down now** puts the mark half a boat length ahead of the phone, since the phone is amidships and the anchor goes over the bow. **Boat has settled on the rode** puts it a whole scope distance ahead (your rode out stretched across the bottom, plus half the boat), upwind, since a settled boat lies downwind of its anchor. Either way the app uses the average of the last \(GuideFacts.averagingSeconds) seconds of GPS positions, so one stray reading can't put the anchor in the wrong place."),
+        .text("Which way is \"ahead\"? For **going down**, toward where the bow pointed: the direction you came in on over the last minute, if you moved at least 15 m (about 50 ft); otherwise into the forecast wind, if there's 5 knots or more. For **settled**, into the wind only, since the last minute's movement is the boat falling back. If there's too little wind (under 5 knots) to tell which way a settled anchor lies, the mark could be a whole scope distance out, so **the circle alarm isn't armed until the swing fit** finds the anchor, about 20 minutes on: the status reads **Finding anchor** and the Anchor tile **Not armed**. The GPS and battery alarms still work, and placing the anchor yourself arms it straight away. If it can't tell, it leaves the anchor at the phone and widens the dotted circle instead. A note in the Alarm radius section of the Anchor tab says which it used."),
         .bullets([
             "If GPS accuracy is worse than about 26 ft, an orange warning appears and the button reads **Drop Anchor Anyway**. Waiting a minute usually helps.",
             "If accuracy is worse than about 165 ft, the button is disabled. Move the phone near a window, or outside.",
@@ -139,7 +139,7 @@ enum UserGuideContent {
         ]),
         .text("Moving the anchor resets the Max distance and gives the alarm a fresh start."),
         .heading("Finding the anchor from the swing"),
-        .text("After about 20 minutes at anchor, the app fits a circle to the edge of your swing to work out where the anchor really is. It shows a purple ring on the chart and a line in the Alarm radius section of the Anchor tab: either the swing agrees with your mark, or it says how far off the mark is with **Move there** to correct it. You can also **long-press the purple ring** on the chart, or tap it and choose **Move anchor here**, to move the anchor there. See **How Anchoring works it out** for the details."),
+        .text("After about 20 minutes at anchor, the app fits a circle to the edge of your swing to work out where the anchor really is. It shows a purple ring on the chart and a line in the Alarm radius section of the Anchor tab: either the swing agrees with your mark, or it says how far off the mark is with **Move there** to correct it. The **first** fit after a drop (within 90 minutes) moves the mark there by itself if it's clearly off, and says so in a purple banner with **Undo**. It only does this once, and never if you've moved the anchor yourself: after that a moving swing is a sign of dragging, so it raises the drag warning rather than moving the circle. You can also **long-press the purple ring** on the chart, or tap it and choose **Move anchor here**, to move the anchor there. See **How Anchoring works it out** for the details."),
         .heading("Raising it"),
         .text("**Raise**, on the Anchor tab, ends the watch: it clears the anchor, the track and any alarm, and switches the audio and lock-screen card off."),
         .tip("Your anchor and radius are saved, so closing the app or restarting the phone doesn't lose the watch. If you reopen the app while at a different place, tap Raise first."),
@@ -154,7 +154,7 @@ enum UserGuideContent {
             "Add the **tide**: the extra depth you expect (see Tides). The rode has to cover high water.",
             "Pick a **scope ratio**: 3:1, 5:1, 7:1 or 10:1. Use more scope in wind or a poor bottom.",
             "**Rode to pay out** = ratio × (depth + tide + bow height).",
-            "**Suggested alarm radius** = how far the taut rode reaches, plus half the boat's length (the phone is assumed amidships), plus a safety margin. **Use suggested radius** applies it.",
+            "**Suggested alarm radius** = the **scope distance** (how far your rode out reaches across the bottom when taut, at the lowest water in the next 24 hours), plus half the boat's length (the phone is assumed amidships), plus a **20 ft** margin. It's set automatically when you drop the anchor, and follows if you change **Rode out**, until you move the radius slider yourself; **Use suggested radius** goes back to it.",
         ]),
         .text("Bow height and boat length live in **Settings → Boat Profile**, and also in the **Scope calculator** (the link in the Alarm radius section of the Anchor tab) along with the safety margin. Nereus is set to 47 ft, or 50 ft with the swim deck lowered."),
         .text("If you enter the rode you carry in the Boat Profile, the scope screens warn when the scope calls for more than you have."),

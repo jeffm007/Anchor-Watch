@@ -104,6 +104,8 @@ final class AnchorWatchEngine: ObservableObject {
     /// One answer to "is the anchor holding?", worst first.
     enum WatchState: Equatable {
         case notAnchored
+        /// Settled drop with no wind to place the mark: the circle alarm waits for the swing fit.
+        case awaitingFix
         case alarm(AlarmReason)
         /// Outside the circle, including after the alarm was silenced.
         case outside(distance: Double)
@@ -115,6 +117,7 @@ final class AnchorWatchEngine: ObservableObject {
     var watchState: WatchState {
         guard anchor != nil else { return .notAnchored }
         if let alarm { return .alarm(alarm) }
+        if awaitingSwingFix { return .awaitingFix }
         if let distance, distance > radius { return .outside(distance: distance) }
         if let anchorDrift { return .dragging(anchorDrift) }
         if let distanceTrend { return .movingAway(metersPerMinute: distanceTrend) }
@@ -188,6 +191,7 @@ final class AnchorWatchEngine: ObservableObject {
             saveScope()
             // A new depth reading belongs to the tide at that moment; the live depth follows the tide from there.
             if scope.depth != oldValue.depth && !loading { depthTideRef = tideNow }
+            if scope != oldValue { followRode() }
         }
     }
 
@@ -206,7 +210,7 @@ final class AnchorWatchEngine: ObservableObject {
     /// Scope with the rode assumed out and the live depth: drops as the tide rises.
     var liveScopeRatio: Double? {
         let height = liveDepth + scope.bowHeight
-        return height > 0 ? rodeOutEstimate / height : nil
+        return height > 0 ? rodeOut / height : nil
     }
     @Published var boat = BoatProfile() { didSet { saveBoat() } }
 
@@ -478,7 +482,39 @@ final class AnchorWatchEngine: ObservableObject {
         if let rise = tideRiseEstimate { scope.tideRise = rise }
     }
 
-    var suggestedRadius: Double { ScopeCalculator.suggestedRadius(scope) }
+    /// Scope distance: how far the rode out reaches across the bottom when taut, at the lowest water in the next
+    /// 24 hours (when it reaches farthest).
+    var scopeReach: Double {
+        let shallowest = waterForecast.map(\.depth).min() ?? liveDepth
+        let h = shallowest + scope.bowHeight
+        return rodeOut > h ? (rodeOut * rodeOut - h * h).squareRoot() : 0
+    }
+
+    /// Default alarm radius: the swing radius (scope distance plus half the boat, to the phone amidships) plus the
+    /// margin (20 ft unless changed), so the alarm only sounds once the boat is past anywhere its rode lets it go.
+    var suggestedRadius: Double { swingRadius + scope.margin }
+
+    /// The alarm radius follows the rode (set on Drop, and when the rode or depth change) until it's moved by hand.
+    @Published var radiusFollowsRode = true {
+        didSet { defaults.set(radiusFollowsRode, forKey: "anchorwatch.radiusFollows") }
+    }
+
+    /// The radius slider: a hand-set radius stays put when the rode changes.
+    func setRadiusByHand(_ meters: Double) {
+        radius = meters
+        radiusFollowsRode = false
+    }
+
+    private func followRode() {
+        syncSimulatorRode()
+        if anchor != nil && radiusFollowsRode && !loading { radius = min(max(suggestedRadius, 10), 300) }
+    }
+
+    /// The simulated boat swings on the same rode the app thinks is out, so the circles and the boat agree.
+    private func syncSimulatorRode() {
+        let reach = swingRadius
+        if reach > 0 { simulator.rode = reach }
+    }
     var rodeToPayOut: Double { ScopeCalculator.rode(scope) }
 
     /// The four main pages.
@@ -496,16 +532,28 @@ final class AnchorWatchEngine: ObservableObject {
         didSet { defaults.set(anchorBottom.rawValue, forKey: "anchorwatch.bottom") }
     }
 
-    /// Rode assumed out: what the scope calls for, or everything on board if that's less.
-    var rodeOutEstimate: Double {
+    /// Rode actually let out, set with the Rode out slider on the Anchor tab. Nil until then; cleared on Raise.
+    @Published var rodeOutSet: Double? {
+        didSet {
+            if let rodeOutSet { defaults.set(rodeOutSet, forKey: "anchorwatch.rodeOut") } else { defaults.removeObject(forKey: "anchorwatch.rodeOut") }
+            lastOutlook = .distantPast
+            followRode()
+        }
+    }
+
+    /// What the scope calls for, or everything on board if that's less.
+    var rodeSuggested: Double {
         let carried = BoatMath.rodeCarried(boat)
         return carried > 0 ? min(rodeToPayOut, carried) : rodeToPayOut
     }
 
+    /// Rode out, as set, else the suggestion: what the Scope tile, outlook, swing circle and gust limits use.
+    var rodeOut: Double { rodeOutSet ?? rodeSuggested }
+
     /// Forecast gusts in the next 12 h beyond what this setup can hold.
     var holdingWarning: HoldingWarning? {
         guard let samples = windHere?.samples else { return nil }
-        return AnchorMath.forecastWarning(boat, scope: scope, bottom: anchorBottom, rodeOut: rodeOutEstimate, forecast: samples)
+        return AnchorMath.forecastWarning(boat, scope: scope, bottom: anchorBottom, rodeOut: rodeOut, forecast: samples)
     }
 
     /// The next 24 hours: forecast hours with the safe gust at each hour's depth, and what's coming up.
@@ -517,8 +565,8 @@ final class AnchorWatchEngine: ObservableObject {
     /// How far the boat can swing from the anchor over the next 24 hours, and the arc it's predicted to lie in.
     var swingRadius: Double {
         let shallowest = waterForecast.map(\.depth).min() ?? liveDepth
-        return Outlook.swingRadius(rodeOut: rodeOutEstimate, shallowest: shallowest, bowHeight: scope.bowHeight,
-                                   boatLength: scope.boatLength)
+        return Outlook.swingRadius(rodeOut: rodeOut, shallowest: shallowest, bowHeight: scope.bowHeight,
+                                   bowToPhone: ScopeCalculator.gpsFromBow(scope))
     }
 
     var predictedSwingArc: (from: Double, width: Double)? {
@@ -533,11 +581,11 @@ final class AnchorWatchEngine: ObservableObject {
         guard hasData, Date().timeIntervalSince(lastOutlook) >= 60 || (outlook.isEmpty && hourlyHolding.isEmpty) else { return }
         lastOutlook = Date()
         let depths = waterForecast
-        let hourly = Outlook.hourly(boat, scope: scope, bottom: anchorBottom, rodeOut: rodeOutEstimate,
+        let hourly = Outlook.hourly(boat, scope: scope, bottom: anchorBottom, rodeOut: rodeOut,
                                     depths: depths, forecast: windHere?.samples ?? [],
                                     current: currents == nil ? nil : { [weak self] in self?.currentHere(at: $0) })
         hourlyHolding = hourly
-        outlook = Outlook.items(boat, scope: scope, rodeOut: rodeOutEstimate, depths: depths, hourly: hourly,
+        outlook = Outlook.items(boat, scope: scope, rodeOut: rodeOut, depths: depths, hourly: hourly,
                                 tideTurns: tide?.events ?? [], currentEvents: scaledCurrentEvents, units: units)
     }
 
@@ -587,7 +635,10 @@ final class AnchorWatchEngine: ObservableObject {
         return carried > 0 && rodeToPayOut > carried ? rodeToPayOut - carried : nil
     }
 
-    func applySuggestedRadius() { radius = min(max(suggestedRadius, 10), 300) }
+    func applySuggestedRadius() {
+        radius = min(max(suggestedRadius, 10), 300)
+        radiusFollowsRode = true
+    }
 
     /// The bottom control panel fades out when idle; any tap on the map brings it back.
     @Published private(set) var controlsVisible = true
@@ -714,6 +765,7 @@ final class AnchorWatchEngine: ObservableObject {
         #if !targetEnvironment(simulator)
         if !demo { player.prepare() }
         #endif
+        syncSimulatorRode()
         simulator.onFix = { [weak self] in self?.ingest($0) }
         gps?.onFix = { [weak self] in self?.ingest($0) }
         gps?.onReading = { [weak self] fix in
@@ -725,7 +777,7 @@ final class AnchorWatchEngine: ObservableObject {
         if demo {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
                 if self?.anchor != nil { self?.raiseAnchor() }
-                self?.dropAnchor()
+                self?.dropAnchor(.settled)
             }
         }
         if armed { player.arm() }
@@ -802,9 +854,32 @@ final class AnchorWatchEngine: ObservableObject {
 
     // MARK: Anchor control
 
-    func dropAnchor() {
+    /// When Drop is tapped: as the anchor goes down under the bow, or once the boat has fallen back on its rode.
+    enum DropMoment { case goingDown, settled }
+
+    /// How far ahead of the phone the last drop put the anchor, for the note under the radius controls.
+    @Published private(set) var dropOffset = 0.0
+
+    /// Rode reach across the bottom at today's depth, plus the bow-to-phone distance: where a settled boat's
+    /// phone is from its anchor.
+    var settledOffset: Double {
+        let h = liveDepth + scope.bowHeight
+        let reach = rodeOut > h ? (rodeOut * rodeOut - h * h).squareRoot() : 0
+        return reach + ScopeCalculator.gpsFromBow(scope)
+    }
+
+    func dropAnchor(_ moment: DropMoment = .goingDown) {
         guard let fix, let position = averagedPosition, let accuracy = averagedAccuracy else { return }
-        let placed = placeAtBow(position, accuracy: accuracy, lyingTo: nil)
+        // Settled: the anchor is a whole scope distance upwind. The last minute's movement is the boat falling
+        // back, not the way the bow points, so only the wind gives the direction.
+        let offset = moment == .settled ? settledOffset : ScopeCalculator.gpsFromBow(scope)
+        let placed = placeAtBow(position, accuracy: accuracy, lyingTo: nil, offset: offset, useApproach: moment == .goingDown)
+        dropOffset = offset
+        estimateAutoApplied = false
+        anchorCorrection = nil
+        // Settled with no wind to say which way the anchor lies: the mark could be a whole scope distance out,
+        // so the circle alarm waits for the swing fit rather than going off as the boat swings.
+        awaitingSwingFix = moment == .settled && placed.source == .unknown
         setAnchor(placed.coordinate)
         anchorUncertainty = placed.uncertainty
         anchorPlacement = placed
@@ -813,6 +888,9 @@ final class AnchorWatchEngine: ObservableObject {
         resetDrift()
         pokeControls()
         anchorDropped = Date()
+        // A new anchorage gets the default radius from its rode and depth, and the chart frames it.
+        applySuggestedRadius()
+        recenter()
         // Keep the way in when recording under way; otherwise the track starts at the drop.
         if trackWhenUnanchored { if track.last != fix { track.append(fix) } } else { track = [fix] }
         maxDistance = 0
@@ -822,6 +900,8 @@ final class AnchorWatchEngine: ObservableObject {
     /// Relocate the anchor after it was set (drag the pin, tap the map, or snap to the boat).
     func moveAnchor(to coordinate: CLLocationCoordinate2D) {
         guard anchor != nil else { return }
+        estimateAutoApplied = true      // a mark set by hand (or from the swing) isn't corrected again
+        awaitingSwingFix = false
         setAnchor(coordinate)
         anchorUncertainty = nil     // placed by hand, not by GPS
         anchorPlacement = nil
@@ -834,6 +914,7 @@ final class AnchorWatchEngine: ObservableObject {
     func moveAnchorToBoat() {
         guard let position = averagedPosition, let accuracy = averagedAccuracy else { return }
         let placed = placeAtBow(position, accuracy: accuracy, lyingTo: anchor)
+        dropOffset = ScopeCalculator.gpsFromBow(scope)
         moveAnchor(to: placed.coordinate)
         anchorUncertainty = placed.uncertainty
         anchorPlacement = placed
@@ -851,7 +932,7 @@ final class AnchorWatchEngine: ObservableObject {
         let modelRadius = ScopeCalculator.horizontalReach(scope) + ScopeCalculator.gpsFromBow(scope)
         switch AnchorEstimate.evaluate(track: track, dropped: anchorDropped, mark: anchor, modelRadius: modelRadius,
                                        windFrom: wind?.direction, windKnots: wind?.speed, timeScale: simTimeScale) {
-        case .success(let r): anchorEstimate = r; estimatePending = nil
+        case .success(let r): anchorEstimate = r; estimatePending = nil; correctFromSwing(r)
         case .failure(let p): anchorEstimate = nil; estimatePending = p.pending
         }
         updateDrift(anchor: anchor, dropped: anchorDropped, modelRadius: modelRadius)
@@ -889,12 +970,56 @@ final class AnchorWatchEngine: ObservableObject {
         updateAnchorEstimate()
     }
 
+    /// Moved by the first swing fit, so the banner can say how far and offer Undo.
+    struct AnchorCorrection: Equatable {
+        let meters: Double
+        let bearing: Double
+        let previous: CLLocationCoordinate2D
+    }
+    @Published private(set) var anchorCorrection: AnchorCorrection?
+    /// The circle alarm is held until the swing fit (or a hand-placed mark) says where the anchor is.
+    @Published private(set) var awaitingSwingFix = false
+    /// The first swing fit after a drop may move the mark; after that, or once the mark is moved by hand, a moving
+    /// estimate is left to the drag warning, so a dragging anchor never takes the circle with it.
+    private var estimateAutoApplied = false
+    static let autoCorrectWithinMinutes = 90.0
+
+    private func correctFromSwing(_ r: AnchorEstimate.Result) {
+        guard !estimateAutoApplied, r.windAgrees != false, let anchor, let anchorDropped else { return }
+        estimateAutoApplied = true
+        awaitingSwingFix = false        // the swing has spoken: arm the circle alarm
+        let minutes = Date().timeIntervalSince(anchorDropped) * max(simTimeScale, 1) / 60
+        let off = Geo.distance(anchor, r.center)
+        guard minutes <= Self.autoCorrectWithinMinutes, off > max(r.semiMajor, 5) else { return }
+        moveAnchorToEstimate()
+        anchorCorrection = AnchorCorrection(meters: off, bearing: Geo.bearing(from: anchor, to: r.center), previous: anchor)
+        recenter()          // the circle has moved: bring it into view
+        // The mark was what was wrong: if that put the boat back inside, stop the outside alarm.
+        if case .outsideCircle? = alarm, let distance, distance <= radius { silence(snoozeAfter: false) }
+    }
+
+    /// The mark sits where the swing says the anchor is: the chart then shows just the anchor, without the swing
+    /// marker or the uncertainty ring. If the swing later moves away from the mark, they come back.
+    var anchorAgreesWithSwing: Bool {
+        guard let anchor, let estimate = anchorEstimate else { return false }
+        return Geo.distance(anchor, estimate.center) <= estimate.semiMajor
+    }
+
+    func undoAnchorCorrection() {
+        guard let previous = anchorCorrection?.previous else { return }
+        moveAnchor(to: previous)
+        anchorCorrection = nil
+    }
+
+    func dismissAnchorCorrection() { anchorCorrection = nil }
+
     /// Moves a phone position forward to the bow roller, using the best guess at which way the bow points.
-    private func placeAtBow(_ position: CLLocationCoordinate2D, accuracy: Double, lyingTo anchor: CLLocationCoordinate2D?) -> AnchorPlacement.Result {
+    private func placeAtBow(_ position: CLLocationCoordinate2D, accuracy: Double, lyingTo anchor: CLLocationCoordinate2D?,
+                            offset: Double? = nil, useApproach: Bool = true) -> AnchorPlacement.Result {
         let newest = approach.last?.timestamp ?? Date()
-        let from = approach.first { newest.timeIntervalSince($0.timestamp) <= approachLookback }?.coordinate
+        let from = useApproach ? approach.first { newest.timeIntervalSince($0.timestamp) <= approachLookback }?.coordinate : nil
         let wind = windNow
-        return AnchorPlacement.place(phone: position, gpsAccuracy: accuracy, bowOffset: ScopeCalculator.gpsFromBow(scope),
+        return AnchorPlacement.place(phone: position, gpsAccuracy: accuracy, bowOffset: offset ?? ScopeCalculator.gpsFromBow(scope),
                                      approachFrom: from, lyingTo: anchor, windFrom: wind?.direction, windKnots: wind?.speed)
     }
 
@@ -907,6 +1032,9 @@ final class AnchorWatchEngine: ObservableObject {
         resetDrift()
         distance = nil
         anchorDropped = nil
+        anchorCorrection = nil
+        awaitingSwingFix = false
+        rodeOutSet = nil
         placingAnchor = false
         outsideCount = 0
         track = []
@@ -1014,7 +1142,7 @@ final class AnchorWatchEngine: ObservableObject {
     }
 
     private func evaluate() {
-        guard let distance, outsideCount >= confirmFixes else { return }
+        guard let distance, outsideCount >= confirmFixes, !awaitingSwingFix else { return }
         trigger(.outsideCircle(distance: distance))
     }
 
@@ -1093,6 +1221,8 @@ final class AnchorWatchEngine: ObservableObject {
         if let raw = defaults.string(forKey: "anchorwatch.source"), let kind = SourceKind(rawValue: raw) { sourceKind = kind }
         fadeSideButtons = defaults.bool(forKey: "anchorwatch.fadeSideButtons")
         trackWhenUnanchored = defaults.bool(forKey: "anchorwatch.trackUnanchored")
+        rodeOutSet = defaults.object(forKey: "anchorwatch.rodeOut") as? Double
+        if defaults.object(forKey: "anchorwatch.radiusFollows") != nil { radiusFollowsRode = defaults.bool(forKey: "anchorwatch.radiusFollows") }
         if defaults.object(forKey: "anchorwatch.currentFactor") != nil { currentFactor = defaults.double(forKey: "anchorwatch.currentFactor") }
         if let raw = defaults.string(forKey: "anchorwatch.bottom"), let bottom = AnchorConditions.Bottom(rawValue: raw) { anchorBottom = bottom }
         // Dev aid: `-layer "NOAA Charts (US)"` overrides the saved map layer at launch.

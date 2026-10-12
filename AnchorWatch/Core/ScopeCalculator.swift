@@ -12,8 +12,8 @@ struct ScopeSettings: Codable, Equatable {
     var boatLength = 14.326
     /// Rode length : (depth + bow height).
     var scopeRatio = 5.0
-    /// Extra allowance for GPS error and chain slack.
-    var margin = 5.0
+    /// Extra room in the alarm radius beyond where the rode lets the boat go: GPS error and chain slack. 20 ft.
+    var margin = 6.096
 
     init() {}
 
@@ -26,6 +26,7 @@ struct ScopeSettings: Codable, Equatable {
         boatLength = try c.decodeIfPresent(Double.self, forKey: .boatLength) ?? boatLength
         scopeRatio = try c.decodeIfPresent(Double.self, forKey: .scopeRatio) ?? scopeRatio
         margin = try c.decodeIfPresent(Double.self, forKey: .margin) ?? margin
+        if margin == 5.0 { margin = 6.096 }     // the old 5 m default becomes 20 ft
     }
 
     /// Memberwise-style init for tests and previews.

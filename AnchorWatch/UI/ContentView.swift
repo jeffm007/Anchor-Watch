@@ -65,6 +65,7 @@ struct ContentView: View {
             VStack(spacing: 10) {
                 DashboardHeader()
                 if let alarm = engine.alarm { AlarmBanner(reason: alarm) }
+                AnchorCorrectionBanner()
                 if let drift = engine.anchorDrift { DriftBanner(drift: drift) }
                 DashboardTiles(openConditions: { engine.tab = .weather }, openDepth: { engine.tab = .water },
                                openAnchoring: { engine.tab = .anchor })
@@ -201,6 +202,7 @@ struct AlarmBanner: View {
 /// Once anchored, the radius and anchor controls live on the Anchoring page (`AnchorRadiusControls`).
 struct ControlsPanel: View {
     @EnvironmentObject var engine: AnchorWatchEngine
+    @State private var choosingMoment = false
     @State private var showScope = false
 
     var body: some View {
@@ -219,10 +221,11 @@ struct ControlsPanel: View {
                           systemImage: "exclamationmark.triangle.fill")
                         .font(.footnote).foregroundStyle(.orange)
                 }
-                Button { engine.dropAnchor() } label: {
+                Button { choosingMoment = true } label: {
                     Label(engine.gpsIsPoor ? "Drop Anchor Anyway" : "Drop Anchor Here", systemImage: "arrow.down.to.line")
                         .frame(maxWidth: .infinity)
                 }
+                .sheet(isPresented: $choosingMoment) { DropAnchorSheet() }
                 .buttonStyle(.borderedProminent).controlSize(.large)
                 .tint(engine.gpsIsPoor ? .orange : .accentColor)
                 .disabled(engine.fix == nil || engine.gpsIsUnusable)
@@ -309,7 +312,7 @@ struct AnchorRadiusControls: View {
 
     /// Says how the drop point was moved from the phone to the bow roller.
     private func placementNote(_ placed: AnchorPlacement.Result) -> String {
-        let offset = engine.units.format(ScopeCalculator.gpsFromBow(engine.scope))
+        let offset = engine.units.format(engine.dropOffset)
         let toward = placed.bowBearing.map { " toward \(Compass.name($0))" } ?? ""
         switch placed.source {
         case .approach: return "Anchor set \(offset) ahead of the phone\(toward), the way you came in."
@@ -321,7 +324,7 @@ struct AnchorRadiusControls: View {
 
     /// Slider works in metres; steps are 5 m regardless of display units.
     private var radiusBinding: Binding<Double> {
-        Binding(get: { engine.radius }, set: { engine.radius = $0 })
+        Binding(get: { engine.radius }, set: { engine.setRadiusByHand($0) })
     }
 }
 

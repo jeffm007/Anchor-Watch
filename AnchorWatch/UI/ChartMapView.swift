@@ -299,12 +299,14 @@ struct ChartMapView: UIViewRepresentable {
         }
 
         private func syncUncertainty(_ map: MKMapView, anchor: CLLocationCoordinate2D) {
-            let key = engine.anchorUncertainty.map { [anchor.latitude, anchor.longitude, $0] } ?? []
+            // Once the swing confirms the mark, the uncertainty ring has done its job.
+            let meters = engine.anchorAgreesWithSwing ? nil : engine.anchorUncertainty
+            let key = meters.map { [anchor.latitude, anchor.longitude, $0] } ?? []
             guard key != uncertaintyKey else { return }
             uncertaintyKey = key
             if let uncertainty { map.removeOverlay(uncertainty) }
             uncertainty = nil
-            guard let meters = engine.anchorUncertainty, meters > 0 else { return }
+            guard let meters, meters > 0 else { return }
             let new = MKCircle(center: anchor, radius: meters)
             new.title = "uncertainty"
             uncertainty = new
@@ -339,7 +341,8 @@ struct ChartMapView: UIViewRepresentable {
         }
 
         private func syncEstimate(_ map: MKMapView) {
-            let estimate = engine.anchor == nil ? nil : engine.anchorEstimate
+            // Shown only while it disagrees with the mark; once the anchor is moved there, just the anchor shows.
+            let estimate = engine.anchor == nil || engine.anchorAgreesWithSwing ? nil : engine.anchorEstimate
             let key = estimate.map { [$0.center.latitude, $0.center.longitude, $0.semiMajor, $0.semiMinor, $0.majorBearing] } ?? []
             guard key != estimateKey else { return }
             estimateKey = key

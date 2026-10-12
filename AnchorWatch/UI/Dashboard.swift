@@ -4,6 +4,8 @@ import SwiftUI
 struct DashboardHeader: View {
     @EnvironmentObject var engine: AnchorWatchEngine
     @State private var confirming = false
+    // `-showDrop` opens the drop sheet at launch, for screenshots.
+    @State private var dropping = ProcessInfo.processInfo.arguments.contains("-showDrop")
 
     var body: some View {
         HStack(alignment: .top) {
@@ -15,37 +17,20 @@ struct DashboardHeader: View {
             Spacer(minLength: 8)
             // The status doubles as the anchor switch: drop when not anchored, raise (or silence) when anchored.
             // Always confirmed, since raising also ends the alarm watch.
-            Button { confirming = true } label: { statusPill }
+            Button { if engine.anchor == nil { dropping = true } else { confirming = true } } label: { statusPill }
                 .buttonStyle(.plain)
                 .accessibilityHint(engine.anchor == nil ? "Drop the anchor" : "Raise the anchor")
-                .confirmationDialog(engine.anchor == nil ? "Drop the anchor here?" : "Anchor watch",
-                                    isPresented: $confirming, titleVisibility: .visible) {
-                    if engine.anchor == nil {
-                        if engine.fix != nil && !engine.gpsIsUnusable {
-                            Button(engine.gpsIsPoor ? "Drop Anchor Anyway" : "Drop Anchor Here") { engine.dropAnchor() }
-                        }
-                    } else {
-                        if engine.alarm != nil {
-                            Button("Silence Alarm") { engine.silence() }
-                        }
-                        Button("Raise Anchor", role: .destructive) { engine.raiseAnchor() }
+                .confirmationDialog("Anchor watch", isPresented: $confirming, titleVisibility: .visible) {
+                    if engine.alarm != nil {
+                        Button("Silence Alarm") { engine.silence() }
                     }
+                    Button("Raise Anchor", role: .destructive) { engine.raiseAnchor() }
                     Button("Cancel", role: .cancel) {}
                 } message: {
-                    Text(dialogMessage)
+                    Text("Raising ends the watch: the circle, track and alarm all stop.")
                 }
+                .sheet(isPresented: $dropping) { DropAnchorSheet() }
         }
-    }
-
-    private var dialogMessage: String {
-        let units = engine.units
-        if engine.anchor != nil {
-            return "Raising ends the watch: the circle, track and alarm all stop."
-        }
-        guard let fix = engine.fix else { return "Waiting for a GPS position before the anchor can be dropped." }
-        if engine.gpsIsUnusable { return "GPS accuracy is only ±\(units.format(fix.accuracy)), too poor to set an anchor. Wait, or move the phone near a window." }
-        if engine.gpsIsPoor { return "GPS accuracy is only ±\(units.format(fix.accuracy)), so the anchor point may be off. Waiting a minute usually helps." }
-        return "GPS ±\(units.format(fix.accuracy)). Pay out \(units.format(engine.rodeToPayOut)) of rode for your scope."
     }
 
     @ViewBuilder private var subtitle: some View {
@@ -66,6 +51,7 @@ struct DashboardHeader: View {
     private var statusPill: some View {
         let (text, icon, color): (String, String, Color) = switch engine.watchState {
         case .notAnchored: ("Not anchored", "circle.dashed", .gray)
+        case .awaitingFix: ("Finding anchor", "scope", .purple)
         case .alarm: ("Alarm", "exclamationmark.octagon.fill", .red)
         case .outside: ("Outside circle", "exclamationmark.octagon.fill", .red)
         case .dragging: ("Dragging", "exclamationmark.triangle.fill", .red)
@@ -128,13 +114,18 @@ struct DashboardTiles: View {
 
     private var scope: some View {
         DashboardTile(title: "Scope", value: engine.liveScopeRatio.map { String(format: "%.1f:1", $0) } ?? "--",
-                      detail: "\(units.format(engine.rodeOutEstimate)) rode")
+                      detail: "\(units.format(engine.rodeOut)) \(engine.rodeOutSet == nil ? "suggested" : "out")")
     }
 
     private var anchor: some View {
         switch engine.watchState {
         case .notAnchored:
             return DashboardTile(title: "Anchor", value: "Not set", detail: "Drop it below")
+        case .awaitingFix:
+            let progress: String = if case .collecting(let m) = engine.estimatePending {
+                " \(Int(m))/\(Int(AnchorEstimate.minMinutes)) min"
+            } else { "" }
+            return DashboardTile(title: "Anchor", value: "Not armed", detail: "Waiting for the swing fit" + progress, color: .purple)
         case .alarm(let reason):
             return DashboardTile(title: "Anchor", value: "ALARM", detail: reason.message, color: .red)
         case .outside(let distance):
@@ -386,7 +377,7 @@ struct OutlookList: View {
                     }
                 }
                 Section {
-                    Text("Worked out from the tide predictions, the wind forecast and your boat, rode (\(engine.units.format(engine.rodeOutEstimate)) assumed out) and bottom. The safe gust limit is recalculated for each hour's depth. Forecasts can be wrong; keep a lookout.")
+                    Text("Worked out from the tide predictions, the wind forecast and your boat, rode (\(engine.units.format(engine.rodeOut)) assumed out) and bottom. The safe gust limit is recalculated for each hour's depth. Forecasts can be wrong; keep a lookout.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -427,6 +418,104 @@ struct OutlookList: View {
         case .caution: .orange
         case .danger: .red
         }
+    }
+}
+
+/// The first swing fit moved the anchor mark: say so, with Undo.
+struct AnchorCorrectionBanner: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+
+    var body: some View {
+        if let c = engine.anchorCorrection {
+            HStack(spacing: 10) {
+                Image(systemName: "scope").font(.title3).foregroundStyle(.purple)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Anchor mark corrected from the swing").font(.subheadline.bold())
+                    Text("Moved \(engine.units.format(c.meters)) \(Compass.name(c.bearing)) to where the boat swings around.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Button("Undo") { engine.undoAnchorCorrection() }.font(.caption.bold())
+                Button { engine.dismissAnchorCorrection() } label: { Image(systemName: "xmark").font(.caption.bold()) }
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .background(Color.purple.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.purple.opacity(0.5), lineWidth: 1))
+        }
+    }
+}
+
+/// Dropping the anchor: when it went down decides where it's marked. White on dark grey so it reads easily
+/// on deck and at night, where the system action sheet's small grey text doesn't.
+struct DropAnchorSheet: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+    @Environment(\.dismiss) private var dismiss
+
+    private var units: Units { engine.units }
+    private var calm: Bool { (engine.windNow?.speed ?? 0) < AnchorPlacement.minWindKnots }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Drop the anchor").font(.title2.bold())
+            if let problem = gpsProblem {
+                Label(problem, systemImage: "exclamationmark.triangle.fill")
+                    .fixedSize(horizontal: false, vertical: true)
+                    .font(.body).foregroundStyle(engine.gpsIsUnusable || engine.fix == nil ? .red : .orange)
+            }
+            if engine.fix != nil && !engine.gpsIsUnusable {
+                choice("Anchor going down now", detail: "Marked just ahead of the bow, \(units.format(ScopeCalculator.gpsFromBow(engine.scope))) from the phone.",
+                       icon: "arrow.down.to.line", moment: .goingDown)
+                choice("Boat has settled on the rode",
+                       detail: "Marked \(units.format(engine.settledOffset)) upwind: a full scope distance with \(units.format(engine.rodeOut)) out.",
+                       icon: "arrow.uturn.backward", moment: .settled)
+                if calm {
+                    Label("Too little wind to tell which way is upwind. If you choose settled, the circle alarm waits for the swing fit (about 20 minutes) before arming.",
+                          systemImage: "wind")
+                        .font(.callout).foregroundStyle(.orange)
+                }
+            }
+            Button { dismiss() } label: {
+                Text("Cancel").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 12)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.white)
+            .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+        }
+        .padding(20)
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .presentationDetents([.medium, .large])
+        .presentationBackground(Color(white: 0.17))
+        .preferredColorScheme(.dark)
+    }
+
+    private var gpsProblem: String? {
+        guard let fix = engine.fix else { return "Waiting for a GPS position before the anchor can be dropped." }
+        if engine.gpsIsUnusable { return "GPS accuracy is only ±\(units.format(fix.accuracy)), too poor to set an anchor. Wait, or move the phone near a window." }
+        if engine.gpsIsPoor { return "GPS accuracy is only ±\(units.format(fix.accuracy)), so the anchor point may be off. Waiting a minute usually helps." }
+        return nil
+    }
+
+    private func choice(_ title: String, detail: String, icon: String, moment: AnchorWatchEngine.DropMoment) -> some View {
+        Button {
+            engine.dropAnchor(moment)
+            dismiss()
+        } label: {
+            HStack(spacing: 14) {
+                Image(systemName: icon).font(.title2).frame(width: 32)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.headline)
+                    Text(detail).font(.subheadline).opacity(0.9).multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.white)
+            .padding(14)
+            .background(Color.blue.opacity(0.55), in: RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(.plain)
     }
 }
 

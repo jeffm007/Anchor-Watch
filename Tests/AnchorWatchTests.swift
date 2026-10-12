@@ -216,6 +216,89 @@ final class EngineTests: XCTestCase {
         XCTAssertFalse(AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false).trackWhenUnanchored)
     }
 
+    /// 40 minutes swinging 120° on a 36 m circle round `anchor`.
+    private func swing(_ e: AnchorWatchEngine, around anchor: CLLocationCoordinate2D) {
+        for i in 0..<240 {
+            let bearing = 160 + 120 * (0.5 - 0.5 * cos(Double(i) / 240 * 4 * .pi))
+            e.ingest(Fix(coordinate: Geo.destination(from: anchor, bearing: bearing, meters: 36), accuracy: 3,
+                         course: nil, speed: nil, timestamp: Date().addingTimeInterval(180 + Double(i) * 10)))
+        }
+    }
+
+    func testFirstSwingFitCorrectsTheMarkOnceAndUndoPutsItBack() {
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false)
+        e.scope = ScopeSettings(depth: 5, bowHeight: 1, boatLength: 14, scopeRatio: 5, margin: 0)
+        e.ingest(fix(0)); e.dropAnchor()
+        let mark = e.anchor!
+        let anchor = Geo.destination(from: mark, bearing: 45, meters: 12)
+        swing(e, around: anchor)
+        e.updateAnchorEstimate()
+        XCTAssertLessThan(Geo.distance(e.anchor!, anchor), 2, "moved to the swing's centre without being asked")
+        XCTAssertTrue(e.anchorAgreesWithSwing, "so the chart shows just the anchor")
+        XCTAssertEqual(e.anchorCorrection?.meters ?? 0, 12, accuracy: 2)
+
+        e.undoAnchorCorrection()
+        XCTAssertLessThan(Geo.distance(e.anchor!, mark), 0.01)
+        XCTAssertNil(e.anchorCorrection)
+        e.updateAnchorEstimate()
+        XCTAssertLessThan(Geo.distance(e.anchor!, mark), 0.01, "only once: after that a moving estimate is for the drag warning")
+    }
+
+    func testHandPlacedMarkIsNotCorrected() {
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false)
+        e.scope = ScopeSettings(depth: 5, bowHeight: 1, boatLength: 14, scopeRatio: 5, margin: 0)
+        e.ingest(fix(0)); e.dropAnchor()
+        let placed = Geo.destination(from: e.anchor!, bearing: 200, meters: 8)
+        e.moveAnchor(to: placed)
+        swing(e, around: Geo.destination(from: placed, bearing: 45, meters: 12))
+        e.updateAnchorEstimate()
+        XCTAssertNotNil(e.anchorEstimate)
+        XCTAssertLessThan(Geo.distance(e.anchor!, placed), 0.01)
+        XCTAssertNil(e.anchorCorrection)
+    }
+
+    func testSettledDropAllowsForAFullScopeAhead() {
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false)
+        e.scope = ScopeSettings(depth: 5, bowHeight: 1, boatLength: 14, scopeRatio: 5, margin: 0)
+        e.rodeOutSet = 30
+        e.ingest(fix(0)); e.dropAnchor(.goingDown)
+        XCTAssertEqual(e.dropOffset, 7, accuracy: 0.001, "half the boat")
+        e.raiseAnchor()
+        e.rodeOutSet = 30
+        e.ingest(fix(0)); e.dropAnchor(.settled)
+        // √(30² − 6²) ≈ 29.39 m of rode across the bottom, plus 7 m back to the phone. With no wind to say which way,
+        // the mark stays at the phone and the dotted circle covers the whole distance.
+        XCTAssertEqual(e.dropOffset, 29.39 + 7, accuracy: 0.05)
+        XCTAssertGreaterThan(e.anchorUncertainty!, 36)
+    }
+
+    func testSettledCalmDropHoldsTheCircleAlarmUntilTheSwingFit() {
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false)
+        e.scope = ScopeSettings(depth: 5, bowHeight: 1, boatLength: 14, scopeRatio: 5, margin: 0)
+        e.ingest(fix(0)); e.dropAnchor(.settled)                    // no wind forecast: direction unknown
+        XCTAssertTrue(e.awaitingSwingFix)
+        XCTAssertEqual(e.watchState, .awaitingFix)
+        e.radius = 30
+        for _ in 0..<4 { e.ingest(fix(120)) }
+        XCTAssertNil(e.alarm, "the circle alarm waits")
+
+        let anchor = Geo.destination(from: e.anchor!, bearing: 45, meters: 12)
+        swing(e, around: anchor)
+        e.updateAnchorEstimate()
+        XCTAssertFalse(e.awaitingSwingFix, "armed once the swing says where the anchor is")
+    }
+
+    func testGoingDownAndHandPlacedMarksAreArmed() {
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false)
+        e.ingest(fix(0)); e.dropAnchor(.goingDown)
+        XCTAssertFalse(e.awaitingSwingFix)
+        e.raiseAnchor()
+        e.ingest(fix(0)); e.dropAnchor(.settled)
+        XCTAssertTrue(e.awaitingSwingFix)
+        e.moveAnchor(to: Geo.destination(from: e.anchor!, bearing: 0, meters: 20))
+        XCTAssertFalse(e.awaitingSwingFix, "placing it by hand arms the alarm")
+    }
+
     func testMoveToSwingEstimateThenItAgrees() {
         let e = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false)
         e.scope = ScopeSettings(depth: 5, bowHeight: 1, boatLength: 14, scopeRatio: 5, margin: 0)
@@ -1344,16 +1427,34 @@ final class HoldingWarningTests: XCTestCase {
 final class CurrentDirectionTests: XCTestCase {
     private let scope = ScopeSettings(depth: 6, bowHeight: 1.2, boatLength: 14.3, scopeRatio: 5, margin: 5)
 
-    func testAgainstUsesSideWindageAndNeverLess() {
+    func testAgainstCountsSomeSideWindageAndNeverLess() {
         let b = BoatProfile()
         var c = AnchorConditions(); c.wind = 15; c.gust = 25; c.current = 1; c.rodeOut = 60
         let with = AnchorMath.assess(b, scope: scope, c)
         c.currentDirection = .against
         let against = AnchorMath.assess(b, scope: scope, c)
         let side = BoatMath.sideWindage(b, length: scope.boatLength)!, front = BoatMath.windage(b)!
-        XCTAssertEqual(against.load.wind / with.load.wind, side / front, accuracy: 0.001)
+        let ratio = against.load.wind / with.load.wind
+        XCTAssertGreaterThan(ratio, 1)
+        XCTAssertLessThan(ratio, side / front, "a 1 kt current against 25 kt gusts doesn't hold the boat fully beam-on")
         XCTAssertGreaterThan(against.load.design, with.load.design)
         XCTAssertLessThan(against.safeGust!, with.safeGust!)
+    }
+
+    func testWeakCrossCurrentHardlyTurnsTheBoat() {
+        // 0.5 kt across 13 kt gusts: the wind wins and the boat stays near head to wind.
+        let b = BoatProfile()
+        var c = AnchorConditions(); c.wind = 6; c.gust = 13; c.current = 0.5; c.currentDirection = .across
+        let front = BoatMath.windage(b)!, side = BoatMath.sideWindage(b, length: scope.boatLength)!
+        let area = AnchorMath.windArea(b, scope: scope, c)!
+        XCTAssertLessThan((area - front) / (side - front), 0.25)
+    }
+
+    func testBalancedAgainstLiesBeamOn() {
+        XCTAssertEqual(AnchorMath.beamOnShare(windPush: 500, currentPush: 500, .against), 1, accuracy: 0.001)
+        XCTAssertEqual(AnchorMath.beamOnShare(windPush: 1000, currentPush: 100, .against), 0.01, accuracy: 0.001)
+        XCTAssertEqual(AnchorMath.beamOnShare(windPush: 100, currentPush: 100, .across), 0.5, accuracy: 0.001)
+        XCTAssertEqual(AnchorMath.beamOnShare(windPush: 100, currentPush: 100, .with), 0)
     }
 
     func testGustRoundTripWithSideArea() {
@@ -1394,6 +1495,42 @@ final class DistanceTrendTests: XCTestCase {
     func testNeedsEarlierHistory() {
         // Straight away from the drop: no earlier reach to compare with yet.
         XCTAssertNil(AnchorDrift.distanceTrend(log(3) { m in 20 + 3 * m }))
+    }
+
+    @MainActor func testRodeOutSetOnceIsUsedEverywhereUntilRaised() {
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false)
+        XCTAssertEqual(e.rodeOut, e.rodeSuggested, "the suggestion until it's set")
+        e.ingest(Fix(coordinate: CLLocationCoordinate2D(latitude: 48.6, longitude: -123.15), accuracy: 3, course: nil, speed: nil, timestamp: Date()))
+        e.dropAnchor()
+        e.rodeOutSet = 30
+        XCTAssertEqual(e.rodeOut, 30)
+        XCTAssertEqual(e.liveScopeRatio!, 30 / (e.liveDepth + e.scope.bowHeight), accuracy: 0.001)
+        e.raiseAnchor()
+        XCTAssertNil(e.rodeOutSet, "a new anchorage starts from the suggestion")
+    }
+
+    @MainActor func testDropSetsTheRadiusFromTheRodeAndItFollowsUntilSetByHand() {
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false)
+        e.scope = ScopeSettings(depth: 5, bowHeight: 1, boatLength: 14, scopeRatio: 5, margin: 6.096)
+        e.rodeOutSet = 60
+        e.ingest(Fix(coordinate: CLLocationCoordinate2D(latitude: 48.6, longitude: -123.15), accuracy: 3, course: nil, speed: nil, timestamp: Date()))
+        e.dropAnchor()
+        // √(60² − 6²) ≈ 59.70 m of reach, plus 7 m to the phone amidships, plus 20 ft.
+        XCTAssertEqual(e.radius, 59.70 + 7 + 6.096, accuracy: 0.05)
+        XCTAssertEqual(e.swingRadius, 59.70 + 7, accuracy: 0.05, "the boat's position, amidships")
+        XCTAssertEqual(e.radius - e.swingRadius, 6.096, accuracy: 0.001, "the alarm is 20 ft outside the swing")
+        e.rodeOutSet = 80
+        XCTAssertEqual(e.radius, (80.0 * 80 - 36).squareRoot() + 7 + 6.096, accuracy: 0.05, "follows the rode")
+        e.setRadiusByHand(40)
+        e.rodeOutSet = 60
+        XCTAssertEqual(e.radius, 40, "a hand-set radius stays put")
+        e.applySuggestedRadius()
+        XCTAssertTrue(e.radiusFollowsRode)
+    }
+
+    func testOldFiveMetreMarginBecomesTwentyFeet() throws {
+        let old = #"{"depth":4,"bowHeight":1,"boatLength":15,"scopeRatio":5,"margin":5}"#.data(using: .utf8)!
+        XCTAssertEqual(try JSONDecoder().decode(ScopeSettings.self, from: old).margin, 6.096)
     }
 
     @MainActor func testEngineStaysOutsideAfterSilencing() {
@@ -1548,9 +1685,9 @@ final class SwingTests: XCTestCase {
         XCTAssertNil(Outlook.arc([]))
     }
 
-    func testSwingRadiusIsTheTautRodePlusTheBoat() {
-        // 50 m of rode in 3 m of water with a 1 m bow: √(2500 − 16) ≈ 49.84 m of reach, plus 14 m of boat.
-        XCTAssertEqual(Outlook.swingRadius(rodeOut: 50, shallowest: 3, bowHeight: 1, boatLength: 14), 63.84, accuracy: 0.01)
+    func testSwingRadiusIsTheTautRodePlusBowToPhone() {
+        // 50 m of rode in 3 m of water with a 1 m bow: √(2500 − 16) ≈ 49.84 m of reach, plus 7 m back to the phone.
+        XCTAssertEqual(Outlook.swingRadius(rodeOut: 50, shallowest: 3, bowHeight: 1, bowToPhone: 7), 56.84, accuracy: 0.01)
     }
 
     func testLightWindTideTurnIsACautionWithoutCurrentData() {

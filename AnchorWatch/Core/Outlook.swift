@@ -228,10 +228,11 @@ enum Outlook {
         return gap < 30 ? (0, 360) : (start, 360 - gap)
     }
 
-    /// Farthest the stern can be from the anchor: the rode taut at the shallowest water, plus the boat's length.
-    static func swingRadius(rodeOut: Double, shallowest depth: Double, bowHeight: Double, boatLength: Double) -> Double {
+    /// Farthest the boat's position (the phone, amidships) can be from the anchor: the rode taut at the shallowest
+    /// water, plus the distance from the bow back to the phone. The stern reaches the same again beyond it.
+    static func swingRadius(rodeOut: Double, shallowest depth: Double, bowHeight: Double, bowToPhone: Double) -> Double {
         let h = depth + bowHeight
-        return (rodeOut > h ? (rodeOut * rodeOut - h * h).squareRoot() : 0) + boatLength
+        return (rodeOut > h ? (rodeOut * rodeOut - h * h).squareRoot() : 0) + bowToPhone
     }
 
     /// The first thing worth worrying about.

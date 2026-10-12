@@ -255,10 +255,33 @@ enum AnchorMath {
         return RodeShape(points: points, lying: 0, shankAngle: atan(u0) * 180 / .pi)
     }
 
-    /// Area the wind pushes on. With current against or across the wind the boat can lie beam-on, so the side
-    /// windage is used; current is still added on top, so these never show less load than with the wind.
+    /// Area the wind pushes on. Head to wind it's the front windage; the further the current turns the boat from
+    /// that, the more of the side counts: front + (side − front) × sin² of the turn. The turn comes from the wind's
+    /// push (front windage, at the gusts) against the current's push on the hull:
+    /// - across: the boat lies along their sum, so a weak cross-current hardly turns it;
+    /// - against: the stronger one wins, but near a balance a boat sails about and lies beam-on, so the closer the
+    ///   two are, the more side counts.
+    /// Never less than the front windage.
     static func windArea(_ b: BoatProfile, scope s: ScopeSettings, _ c: AnchorConditions) -> Double? {
-        c.currentDirection == .with ? BoatMath.windage(b) : BoatMath.sideWindage(b, length: s.boatLength) ?? BoatMath.windage(b)
+        guard let front = BoatMath.windage(b) else { return nil }
+        guard c.currentDirection != .with, c.current > 0, let side = BoatMath.sideWindage(b, length: s.boatLength) else { return front }
+        return front + max(0, side - front) * beamOnShare(windPush: BoatMath.windForce(area: front, knots: c.gust),
+                                                          currentPush: currentLoad(b, knots: c.current), c.currentDirection)
+    }
+
+    /// How far toward beam-on the current turns the boat: 0 head to wind, 1 beam-on (sin² of the turn).
+    static func beamOnShare(windPush w: Double, currentPush cur: Double, _ direction: AnchorConditions.CurrentDirection) -> Double {
+        guard w + cur > 0 else { return 0 }
+        switch direction {
+        case .with:
+            return 0
+        case .across:
+            let turn = atan2(cur, w)
+            return sin(turn) * sin(turn)
+        case .against:
+            let balance = min(w, cur) / max(w, cur)
+            return balance * balance
+        }
     }
 
     static func assess(_ b: BoatProfile, scope s: ScopeSettings, _ c: AnchorConditions) -> AnchorAssessment {

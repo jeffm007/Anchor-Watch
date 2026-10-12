@@ -84,6 +84,17 @@ struct AnchoringView: View {
                     RodeDiagram(boat: boat, scope: tideScope, conditions: conditions, result: r, units: units)
                         .frame(height: 240)
                         .listRowInsets(EdgeInsets())
+                    // The depth now, the same one the Water tab sets; the tide buttons below move it to low or high water.
+                    knob("Water depth at anchorage", length($engine.scope.depth), 0...max(units == .feet ? 100 : 30, engine.scope.depth * units.perMeter),
+                         step: units == .feet ? 1 : 0.5, format: (units == .feet ? "%.0f " : "%.1f ") + units.symbol)
+                    if let line = tideDepthLine {
+                        Text(line).font(.footnote.bold()).foregroundStyle(tideDepthColor)
+                    }
+                    // Setting the rode here sets it for the whole app: Watch, the outlook and the swing circle.
+                    knob("Rode out", length(Binding(get: { conditions.rodeOut },
+                                                    set: { conditions.rodeOut = $0; engine.rodeOutSet = $0 })),
+                         0...max(10, rodeMax * units.perMeter), step: units == .feet ? 5 : 1,
+                         format: "%.0f " + units.symbol)
                     Picker("Tide", selection: $tide) {
                         ForEach(TideChoice.allCases) { Text($0.rawValue).tag($0) }
                     }.pickerStyle(.segmented)
@@ -107,11 +118,6 @@ struct AnchoringView: View {
 
                 Section {
                     DisclosureGroup(isExpanded: $showConditions) {
-                        knob("Water depth now", length($engine.scope.depth), 0...max(units == .feet ? 100 : 30, engine.scope.depth * units.perMeter),
-                             step: units == .feet ? 1 : 0.5, format: (units == .feet ? "%.0f " : "%.1f ") + units.symbol)
-                        if let line = tideDepthLine {
-                            Text(line).font(.footnote.bold()).foregroundStyle(tideDepthColor)
-                        }
                         knob("Wind", wind, 0...60, step: 1, format: "%.0f kt")
                         knob("Gusts", gust, 0...70, step: 1, format: "%.0f kt")
                         knob("Current", Binding(get: { conditions.current }, set: { currentSetByHand = true; conditions.current = $0 }),
@@ -125,8 +131,6 @@ struct AnchoringView: View {
                         Picker("Bottom", selection: $conditions.bottom) {
                             ForEach(AnchorConditions.Bottom.allCases) { Text($0.rawValue).tag($0) }
                         }
-                        knob("Rode out", length($conditions.rodeOut), 0...max(10, rodeMax * units.perMeter), step: units == .feet ? 5 : 1,
-                             format: "%.0f " + units.symbol)
                         if engine.windHere != nil {
                             Button("Use the forecast for the next 12 h") { fillFromForecast() }
                         }
@@ -138,7 +142,7 @@ struct AnchoringView: View {
                     }
                 } footer: {
                     if showConditions {
-                        Text("Water depth is the depth now, the same one the Water tab uses; the tide buttons move it to low or high water. The wind sets how the chain lies; gusts drive the limits.")
+                        Text("The wind sets how the chain lies; gusts drive the limits.")
                     }
                 }
 
@@ -222,6 +226,7 @@ struct AnchoringView: View {
             // The forecast often arrives after the page first opens; use it unless the wind was set by hand.
             .onChange(of: engine.windHere) { _, _ in if !windSetByHand { fillFromForecast() } }
             .onChange(of: engine.currents) { _, _ in if !currentSetByHand { fillCurrent() } }
+            .onChange(of: engine.rodeOut) { _, rode in conditions.rodeOut = rode }
         }
     }
 
@@ -269,7 +274,7 @@ struct AnchoringView: View {
     private func start() {
         guard !started else { return }
         started = true
-        conditions.rodeOut = engine.rodeOutEstimate
+        conditions.rodeOut = engine.rodeOut
         conditions.bottom = engine.anchorBottom
         fillFromForecast()
         fillCurrent()

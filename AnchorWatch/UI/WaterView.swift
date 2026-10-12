@@ -106,7 +106,7 @@ struct WaterView: View {
         let candidates = points + turns
         let lowest = candidates.min { $0.depth < $1.depth }!
         let highest = candidates.max { $0.depth < $1.depth }!
-        let rode = engine.rodeOutEstimate
+        let rode = engine.rodeOut
         let bow = engine.scope.bowHeight
         let scopeAtHigh = rode / (highest.depth + bow)
         let scopeAtLow = rode / (lowest.depth + bow)
@@ -233,7 +233,7 @@ struct WindOutlookSections: View {
                 .frame(height: 200)
                 .padding(.vertical, 6)
             } header: { Text("Wind, next 24 hours") } footer: {
-                Text("Blue is the wind, orange the gusts, red dashed the gust your setup holds at each hour's depth (\(engine.units.format(engine.rodeOutEstimate)) of rode in \(engine.anchorBottom.rawValue.lowercased())). Arrows show which way it blows.")
+                Text("Blue is the wind, orange the gusts, red dashed the gust your setup holds at each hour's depth (\(engine.units.format(engine.rodeOut)) of rode in \(engine.anchorBottom.rawValue.lowercased())). Arrows show which way it blows.")
             }
         }
         let wind = engine.outlook.filter { $0.kind == .gusts || $0.kind == .windShift || $0.kind == .swing }
