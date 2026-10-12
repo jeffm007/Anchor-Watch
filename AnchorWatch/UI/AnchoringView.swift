@@ -59,6 +59,7 @@ struct AnchoringView: View {
 
     /// Set once the wind or gusts are moved by hand, so a late-arriving forecast doesn't overwrite them.
     @State private var windSetByHand = false
+    @State private var currentSetByHand = false
     @State private var showConditions = false
     @State private var showLoads = false
     @State private var showBoat = false
@@ -113,8 +114,10 @@ struct AnchoringView: View {
                         }
                         knob("Wind", wind, 0...60, step: 1, format: "%.0f kt")
                         knob("Gusts", gust, 0...70, step: 1, format: "%.0f kt")
-                        knob("Current", $conditions.current, 0...4, step: 0.25, format: "%.2g kt")
-                        Picker("Current runs", selection: $conditions.currentDirection) {
+                        knob("Current", Binding(get: { conditions.current }, set: { currentSetByHand = true; conditions.current = $0 }),
+                             0...4, step: 0.25, format: "%.2g kt")
+                        Picker("Current runs", selection: Binding(get: { conditions.currentDirection },
+                                                                  set: { currentSetByHand = true; conditions.currentDirection = $0 })) {
                             ForEach(AnchorConditions.CurrentDirection.allCases) { Text($0.rawValue).tag($0) }
                         }.pickerStyle(.segmented)
                         knob("Waves", length($conditions.waveHeight), 0...(units == .feet ? 10 : 3), step: units == .feet ? 0.5 : 0.1,
@@ -218,6 +221,7 @@ struct AnchoringView: View {
             .onChange(of: conditions.bottom) { _, bottom in engine.anchorBottom = bottom }
             // The forecast often arrives after the page first opens; use it unless the wind was set by hand.
             .onChange(of: engine.windHere) { _, _ in if !windSetByHand { fillFromForecast() } }
+            .onChange(of: engine.currents) { _, _ in if !currentSetByHand { fillCurrent() } }
         }
     }
 
@@ -268,6 +272,16 @@ struct AnchoringView: View {
         conditions.rodeOut = engine.rodeOutEstimate
         conditions.bottom = engine.anchorBottom
         fillFromForecast()
+        fillCurrent()
+    }
+
+    /// The predicted current now, and which way it runs against the wind.
+    private func fillCurrent() {
+        guard let flow = engine.currentHere(at: Date()) else { return }
+        conditions.current = (flow.speed * 4).rounded() / 4          // the slider's 0.25 kt steps
+        let windToward = ((engine.windNow?.direction ?? 0) + 180).truncatingRemainder(dividingBy: 360)
+        let angle = Compass.difference(windToward, flow.toward)
+        conditions.currentDirection = angle <= 45 ? .with : angle >= 135 ? .against : .across
     }
 
     private func fillFromForecast() {

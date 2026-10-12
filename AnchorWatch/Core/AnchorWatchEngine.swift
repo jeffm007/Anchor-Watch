@@ -514,6 +514,17 @@ final class AnchorWatchEngine: ObservableObject {
     @Published private(set) var outlook: [OutlookItem] = []
     private var lastOutlook = Date.distantPast
 
+    /// How far the boat can swing from the anchor over the next 24 hours, and the arc it's predicted to lie in.
+    var swingRadius: Double {
+        let shallowest = waterForecast.map(\.depth).min() ?? liveDepth
+        return Outlook.swingRadius(rodeOut: rodeOutEstimate, shallowest: shallowest, bowHeight: scope.bowHeight,
+                                   boatLength: scope.boatLength)
+    }
+
+    var predictedSwingArc: (from: Double, width: Double)? {
+        Outlook.arc(hourlyHolding.filter { $0.push >= Outlook.minPush(boat) }.map(\.lie))
+    }
+
     /// The first thing in the outlook worth worrying about.
     var nextRisk: OutlookItem? { Outlook.nextRisk(outlook) }
 
@@ -523,10 +534,49 @@ final class AnchorWatchEngine: ObservableObject {
         lastOutlook = Date()
         let depths = waterForecast
         let hourly = Outlook.hourly(boat, scope: scope, bottom: anchorBottom, rodeOut: rodeOutEstimate,
-                                    depths: depths, forecast: windHere?.samples ?? [])
+                                    depths: depths, forecast: windHere?.samples ?? [],
+                                    current: currents == nil ? nil : { [weak self] in self?.currentHere(at: $0) })
         hourlyHolding = hourly
         outlook = Outlook.items(boat, scope: scope, rodeOut: rodeOutEstimate, depths: depths, hourly: hourly,
-                                tideTurns: tide?.events ?? [], units: units)
+                                tideTurns: tide?.events ?? [], currentEvents: scaledCurrentEvents, units: units)
+    }
+
+    // MARK: Tidal current (NOAA predictions for the nearest current station)
+
+    @Published private(set) var currents: CurrentSnapshot?
+    /// Stations sit in channels; the anchorage usually runs slower. The share of the station's speed to use.
+    @Published var currentFactor = 0.5 {
+        didSet { defaults.set(currentFactor, forKey: "anchorwatch.currentFactor"); lastOutlook = .distantPast }
+    }
+    private var currentFetching = false
+    private var lastCurrentAttempt = Date.distantPast
+
+    /// Current at the anchorage at `time`: the station's prediction scaled by `currentFactor`.
+    func currentHere(at time: Date) -> CurrentAt? {
+        guard let events = currents?.events, let flow = CurrentMath.at(time, events: events) else { return nil }
+        let flooding = flow.toward == events.first!.floodToward
+        return CurrentAt(speed: flow.speed * currentFactor, toward: flow.toward, flooding: flooding)
+    }
+
+    /// The predicted slacks and maximums with speeds scaled to the anchorage.
+    var scaledCurrentEvents: [CurrentEvent]? {
+        currents?.events.map { CurrentEvent(time: $0.time, velocity: $0.velocity * currentFactor,
+                                            floodToward: $0.floodToward, ebbToward: $0.ebbToward) }
+    }
+
+    /// Loads current predictions once there's a position, then every six hours. No station nearby leaves it nil.
+    private func refreshCurrentsIfDue() {
+        guard !currentFetching, let point = anchor ?? fix?.coordinate,
+              Date().timeIntervalSince(lastCurrentAttempt) > (currents == nil ? 600 : 6 * 3600) else { return }
+        currentFetching = true
+        lastCurrentAttempt = Date()
+        Task {
+            defer { currentFetching = false }
+            if let snapshot = try? await CurrentService.snapshot(near: point) {
+                currents = snapshot
+                lastOutlook = .distantPast
+            }
+        }
     }
 
     /// The next predicted high or low.
@@ -587,6 +637,7 @@ final class AnchorWatchEngine: ObservableObject {
             track = []
             tide = nil
             windHere = nil; windGrid = []; lastWindAttempt = .distantPast
+            currents = nil; lastCurrentAttempt = .distantPast
             observations = []; observationsChecked = nil; lastObservationAttempt = .distantPast
             nwsAlerts = []; nwsChecked = nil; lastAlertAttempt = .distantPast
             if started && sourceKind == .simulator { simulator.restart() }
@@ -727,6 +778,7 @@ final class AnchorWatchEngine: ObservableObject {
         refreshPermissionsIfDue()
         refreshWindHereIfDue()
         refreshTideIfDue()
+        refreshCurrentsIfDue()
         refreshOutlookIfDue()
         refreshAlertsIfDue()
         refreshObservationsIfDue()
@@ -1041,6 +1093,7 @@ final class AnchorWatchEngine: ObservableObject {
         if let raw = defaults.string(forKey: "anchorwatch.source"), let kind = SourceKind(rawValue: raw) { sourceKind = kind }
         fadeSideButtons = defaults.bool(forKey: "anchorwatch.fadeSideButtons")
         trackWhenUnanchored = defaults.bool(forKey: "anchorwatch.trackUnanchored")
+        if defaults.object(forKey: "anchorwatch.currentFactor") != nil { currentFactor = defaults.double(forKey: "anchorwatch.currentFactor") }
         if let raw = defaults.string(forKey: "anchorwatch.bottom"), let bottom = AnchorConditions.Bottom(rawValue: raw) { anchorBottom = bottom }
         // Dev aid: `-layer "NOAA Charts (US)"` overrides the saved map layer at launch.
         let args = ProcessInfo.processInfo.arguments

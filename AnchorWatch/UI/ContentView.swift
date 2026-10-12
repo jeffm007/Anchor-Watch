@@ -533,17 +533,44 @@ struct ScopeView: View {
 }
 
 /// Quick depth entry. The depth feeds the scope calculation (rode to pay out and suggested radius).
-/// Depth, tide and scope settings: the lower part of the Water page.
-struct DepthSections: View {
+/// The depth you read off the sounder: the first thing on the Water page.
+struct DepthEntrySection: View {
     @EnvironmentObject var engine: AnchorWatchEngine
 
     private var units: Units { engine.units }
 
-    /// Depth in the display units; stored in metres.
     private var depth: Binding<Double> {
         Binding(get: { engine.scope.depth * units.perMeter },
                 set: { engine.scope.depth = max(0, $0 / units.perMeter) })
     }
+
+    private var step: Double { units == .feet ? 1 : 0.5 }
+
+    var body: some View {
+        Section("Water depth at the anchorage") {
+            HStack {
+                Button { depth.wrappedValue = max(0, depth.wrappedValue - step) } label: {
+                    Image(systemName: "minus.circle.fill").font(.largeTitle)
+                }
+                TextField("Depth", value: depth, format: .number.precision(.fractionLength(0...1)))
+                    .keyboardType(.decimalPad)
+                    .multilineTextAlignment(.center)
+                    .font(.system(size: 44, weight: .bold, design: .rounded))
+                Text(units.symbol).font(.title3).foregroundStyle(.secondary)
+                Button { depth.wrappedValue += step } label: {
+                    Image(systemName: "plus.circle.fill").font(.largeTitle)
+                }
+            }
+            .buttonStyle(.borderless)
+        }
+    }
+}
+
+/// Tide and scope settings: the lower part of the Water page.
+struct DepthSections: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+
+    private var units: Units { engine.units }
 
     private var tide: Binding<Double> {
         Binding(get: { engine.scope.tideRise * units.perMeter },
@@ -586,22 +613,6 @@ struct DepthSections: View {
     }
 
     var body: some View {
-        Section("Water depth at the anchorage") {
-            HStack {
-                Button { depth.wrappedValue = max(0, depth.wrappedValue - step) } label: {
-                    Image(systemName: "minus.circle.fill").font(.largeTitle)
-                }
-                TextField("Depth", value: depth, format: .number.precision(.fractionLength(0...1)))
-                    .keyboardType(.decimalPad)
-                    .multilineTextAlignment(.center)
-                    .font(.system(size: 44, weight: .bold, design: .rounded))
-                Text(units.symbol).font(.title3).foregroundStyle(.secondary)
-                Button { depth.wrappedValue += step } label: {
-                    Image(systemName: "plus.circle.fill").font(.largeTitle)
-                }
-            }
-            .buttonStyle(.borderless)
-        }
         Section("Tide") {
             tideData
             HStack {

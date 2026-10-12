@@ -1454,10 +1454,111 @@ final class OutlookTests: XCTestCase {
     }
 
     func testWindShiftIsInformation() {
-        let list = items(depths: depths { _ in 6 }, forecast: forecast(gust: { _ in 12 }, direction: { $0 < 8 ? 200 : 290 }))
+        // 70°: a shift worth knowing about, short of the 90° that swings the boat round and resets the anchor.
+        let list = items(depths: depths { _ in 6 }, forecast: forecast(gust: { _ in 12 }, direction: { $0 < 8 ? 200 : 270 }))
         let shift = list.first { $0.kind == .windShift }
         XCTAssertEqual(shift?.severity, .info)
         XCTAssertNil(Outlook.nextRisk(list.filter { $0.kind == .windShift }))
+    }
+}
+
+final class CurrentTests: XCTestCase {
+    private let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+
+    /// Slack, 2 kt flood toward 090 three hours on, slack, 2 kt ebb toward 270.
+    private var events: [CurrentEvent] {
+        [0.0, 2, 0, -2, 0].enumerated().map { i, v in
+            CurrentEvent(time: t0.addingTimeInterval(Double(i) * 3 * 3600), velocity: v, floodToward: 90, ebbToward: 270)
+        }
+    }
+
+    func testCurrentFollowsTheCosineBetweenSlackAndMax() {
+        XCTAssertEqual(CurrentMath.at(t0, events: events)!.speed, 0, accuracy: 0.001)
+        XCTAssertEqual(CurrentMath.at(t0.addingTimeInterval(1.5 * 3600), events: events)!.speed, 1, accuracy: 0.001)
+        let max = CurrentMath.at(t0.addingTimeInterval(3 * 3600), events: events)!
+        XCTAssertEqual(max.speed, 2, accuracy: 0.001)
+        XCTAssertEqual(max.toward, 90)
+        XCTAssertEqual(CurrentMath.at(t0.addingTimeInterval(9 * 3600), events: events)!.toward, 270, "ebbing")
+    }
+
+    func testParsesNOAACurrentPredictions() throws {
+        let json = #"{"current_predictions":{"units":"feet, knots","cp":[{"Type":"slack","meanFloodDir":82,"Bin":"7","meanEbbDir":282,"Time":"2026-10-12 00:47","Depth":"205","Velocity_Major":0.01},{"Type":"ebb","meanFloodDir":82,"Bin":"7","meanEbbDir":282,"Time":"2026-10-12 04:38","Depth":"205","Velocity_Major":-3.71}]}}"#
+        let parsed = try CurrentMath.parsePredictions(Data(json.utf8))
+        XCTAssertEqual(parsed.count, 2)
+        XCTAssertTrue(parsed[0].isSlack)
+        XCTAssertEqual(parsed[1].velocity, -3.71)
+        XCTAssertEqual(parsed[1].ebbToward, 282)
+    }
+
+    func testStationListKeepsOneEntryPerStation() throws {
+        let json = #"{"stations":[{"id":"PUG1719","name":"Spieden Channel","lat":48.6,"lng":-123.1,"currbin":19},{"id":"PUG1719","name":"Spieden Channel","lat":48.6,"lng":-123.1,"currbin":7}]}"#
+        XCTAssertEqual(try CurrentMath.parseStations(Data(json.utf8)).count, 1)
+    }
+}
+
+final class SwingTests: XCTestCase {
+    private let now = Date(timeIntervalSince1970: 1_800_000_000)
+    private let scope = ScopeSettings(depth: 6, bowHeight: 1.2, boatLength: 14.3, scopeRatio: 5, margin: 5)
+    private let depths: [(time: Date, depth: Double)] = (0...144).map { (Date(timeIntervalSince1970: 1_800_000_000 + Double($0) * 600), 6.0) }
+
+    private func forecast(speed: Double, direction: @escaping (Int) -> Double) -> [WindSample] {
+        (0...24).map { WindSample(time: now.addingTimeInterval(Double($0) * 3600), speed: speed, direction: direction($0), gust: speed) }
+    }
+
+    private func outlook(_ f: [WindSample], current: ((Date) -> CurrentAt?)? = nil, events: [CurrentEvent]? = nil,
+                         turns: [TideEvent] = []) -> [OutlookItem] {
+        let b = BoatProfile()
+        let hourly = Outlook.hourly(b, scope: scope, bottom: .mud, rodeOut: 40, depths: depths, forecast: f, current: current, now: now)
+        return Outlook.items(b, scope: scope, rodeOut: 40, depths: depths, hourly: hourly, tideTurns: turns,
+                             currentEvents: events, units: .feet, now: now)
+    }
+
+    func testBigWindShiftIsASwingCaution() {
+        let list = outlook(forecast(speed: 15) { $0 < 6 ? 200 : 20 })
+        let swing = list.first { $0.kind == .swing }
+        XCTAssertEqual(swing?.severity, .caution)
+        XCTAssertEqual(swing?.start, now.addingTimeInterval(6 * 3600))
+        XCTAssertEqual(Outlook.nextRisk(list)?.kind, .swing)
+    }
+
+    func testCurrentTurningInLightWindSwingsTheBoat() {
+        // 2 kt wind, and a 1.5 kt current that reverses at hour 6: the current holds the boat, so it swings round.
+        let current: (Date) -> CurrentAt? = { t in
+            t < self.now.addingTimeInterval(6 * 3600) ? CurrentAt(speed: 1.5, toward: 90, flooding: true)
+                                                      : CurrentAt(speed: 1.5, toward: 270, flooding: false)
+        }
+        let swing = outlook(forecast(speed: 2) { _ in 0 }, current: current, events: []).first { $0.kind == .swing }
+        XCTAssertNotNil(swing)
+        XCTAssertTrue(swing!.detail.contains("ebb"), swing!.detail)
+    }
+
+    func testStrongWindHoldsTheBoatThroughACurrentTurn() {
+        let current: (Date) -> CurrentAt? = { t in
+            CurrentAt(speed: 0.3, toward: t < self.now.addingTimeInterval(6 * 3600) ? 90 : 270, flooding: true)
+        }
+        XCTAssertNil(outlook(forecast(speed: 20) { _ in 0 }, current: current, events: []).first { $0.kind == .swing })
+    }
+
+    func testArcWrapsThroughNorth() {
+        let arc = Outlook.arc([350, 10, 30])!
+        XCTAssertEqual(arc.from, 350)
+        XCTAssertEqual(arc.width, 40)
+        XCTAssertEqual(Outlook.arc([90, 100])!.width, 10)
+        XCTAssertEqual(Outlook.arc(stride(from: 0.0, to: 360, by: 20).map { $0 })!.width, 360, "all the way round")
+        XCTAssertNil(Outlook.arc([]))
+    }
+
+    func testSwingRadiusIsTheTautRodePlusTheBoat() {
+        // 50 m of rode in 3 m of water with a 1 m bow: √(2500 − 16) ≈ 49.84 m of reach, plus 14 m of boat.
+        XCTAssertEqual(Outlook.swingRadius(rodeOut: 50, shallowest: 3, bowHeight: 1, boatLength: 14), 63.84, accuracy: 0.01)
+    }
+
+    func testLightWindTideTurnIsACautionWithoutCurrentData() {
+        let turn = TideEvent(time: now.addingTimeInterval(4 * 3600), height: 2, isHigh: true)
+        let calm = outlook(forecast(speed: 3) { _ in 0 }, turns: [turn]).first { $0.kind == .tideTurn }
+        XCTAssertEqual(calm?.severity, .caution)
+        let windy = outlook(forecast(speed: 15) { _ in 0 }, turns: [turn]).first { $0.kind == .tideTurn }
+        XCTAssertEqual(windy?.severity, .info)
     }
 }
 

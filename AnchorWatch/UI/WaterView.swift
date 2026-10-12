@@ -13,6 +13,7 @@ struct WaterView: View {
             TimelineView(.periodic(from: .now, by: 60)) { context in
                 let points = engine.waterForecast
                 Form {
+                    DepthEntrySection()
                     if points.isEmpty {
                         Section("Next 24 hours") {
                             Text(engine.tideStatus.isEmpty ? "Waiting for tide predictions…" : engine.tideStatus)
@@ -22,6 +23,7 @@ struct WaterView: View {
                         timeline(points, now: context.date)
                         outlook(points)
                     }
+                    currentSection(now: context.date)
                     DepthSections()
                 }
             }
@@ -138,7 +140,41 @@ struct WaterView: View {
                     .font(.footnote).foregroundStyle(.green)
             }
         } header: { Text("Outlook") } footer: {
-            Text("Current isn't predicted yet; set it on the Anchor page.")
+            Text("Swings and slack water are in Next 24 hours on the Watch tab.")
+        }
+    }
+
+    // MARK: Current
+
+    @ViewBuilder private func currentSection(now: Date) -> some View {
+        Section {
+            if let snapshot = engine.currents {
+                let km = engine.fix.map { Geo.distance(snapshot.station.coordinate, $0.coordinate) / 1000 }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(snapshot.station.name).font(.subheadline.bold())
+                    Text((km.map { String(format: "%.0f km away · ", $0) } ?? "") + "NOAA current predictions").font(.caption).foregroundStyle(.secondary)
+                }
+                if let flow = engine.currentHere(at: now) {
+                    LabeledContent("Here now (estimated)",
+                                   value: flow.speed < 0.1 ? "Slack" : String(format: "%.1f kt toward the %@ (%@)", flow.speed, Compass.name(flow.toward), flow.flooding ? "flood" : "ebb"))
+                }
+                ForEach((engine.scaledCurrentEvents ?? []).filter { $0.time > now }.prefix(4), id: \.time) { e in
+                    LabeledContent(e.isSlack ? "Slack" : e.velocity >= 0 ? "Strongest flood" : "Strongest ebb") {
+                        Text(time(e.time) + (e.isSlack ? "" : String(format: " · %.1f kt %@", abs(e.velocity),
+                                                                      Compass.name(e.velocity >= 0 ? e.floodToward : e.ebbToward))))
+                    }
+                }
+                Picker("Current here vs the station", selection: $engine.currentFactor) {
+                    Text("100%").tag(1.0); Text("50%").tag(0.5); Text("25%").tag(0.25)
+                }
+            } else {
+                Text("No NOAA current station within \(Int(CurrentService.maxDistance / 1000)) km. The outlook uses the highs and lows for when the current turns.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        } header: { Text("Current") } footer: {
+            if engine.currents != nil {
+                Text("Stations are mostly in channels, where the current runs harder than in a sheltered anchorage, so the speeds here are scaled. Use 100% if you're anchored in the channel itself.")
+            }
         }
     }
 
@@ -200,10 +236,10 @@ struct WindOutlookSections: View {
                 Text("Blue is the wind, orange the gusts, red dashed the gust your setup holds at each hour's depth (\(engine.units.format(engine.rodeOutEstimate)) of rode in \(engine.anchorBottom.rawValue.lowercased())). Arrows show which way it blows.")
             }
         }
-        let wind = engine.outlook.filter { $0.kind == .gusts || $0.kind == .windShift }
+        let wind = engine.outlook.filter { $0.kind == .gusts || $0.kind == .windShift || $0.kind == .swing }
         Section("Wind outlook") {
             if wind.isEmpty {
-                Label(hours.isEmpty ? "Waiting for the wind forecast…" : "No gusts beyond your setup and no big wind shifts in the next 24 hours.",
+                Label(hours.isEmpty ? "Waiting for the wind forecast…" : "No gusts beyond your setup and no big swings in the next 24 hours.",
                       systemImage: hours.isEmpty ? "clock" : "checkmark.circle")
                     .font(.subheadline).foregroundStyle(hours.isEmpty ? Color.secondary : Color.green)
             }

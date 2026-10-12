@@ -240,7 +240,6 @@ struct NoticesCard: View {
     }
 
     private var notices: [Notice] {
-        let units = engine.units
         var list: [Notice] = []
         if engine.armed {
             for problem in engine.watchProblems.sorted(by: { $0.state == .critical && $1.state != .critical }) {
@@ -317,7 +316,8 @@ struct NoticesCard: View {
 /// and how long until it does. Tap for the whole outlook.
 struct OutlookBanner: View {
     @EnvironmentObject var engine: AnchorWatchEngine
-    @State private var showAll = false
+    // `-showOutlook` opens the full list at launch, for screenshots.
+    @State private var showAll = ProcessInfo.processInfo.arguments.contains("-showOutlook")
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -414,8 +414,10 @@ struct OutlookList: View {
         case .shallow: "arrow.down.to.line"
         case .scope: "ruler"
         case .gusts: "wind"
+        case .swing: "arrow.triangle.2.circlepath"
         case .windShift: "arrow.triangle.turn.up.right.circle"
         case .tideTurn: "water.waves"
+        case .slack: "arrow.left.arrow.right"
         }
     }
 

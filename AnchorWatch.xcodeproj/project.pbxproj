@@ -19,7 +19,6 @@
 		35D281D5FE0591A4C7871324 /* WindService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E367FC84FFFD453E35855706 /* WindService.swift */; };
 		3E783633E64A539FE481BF06 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 9E1004BEA5E770B2CB860816 /* PrivacyInfo.xcprivacy */; };
 		529E73F56F3E646C6E99590C /* TideService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16802792B90A9D0C484ED686 /* TideService.swift */; };
-		A13B0F5D607182930415B627 /* Outlook.swift in Sources */ = {isa = PBXBuildFile; fileRef = A03B0F5D607182930415B627 /* Outlook.swift */; };
 		53467BEC44F9A9CBAAD7FBE8 /* ChartLayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C33A4095E0E5048A68AF7BF9 /* ChartLayer.swift */; };
 		558ABB443A2DC84412EEB12E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5CBC271D43FD64AD6968EF0F /* Assets.xcassets */; };
 		5E3993A7349864B4694FA601 /* Readiness.swift in Sources */ = {isa = PBXBuildFile; fileRef = E02E019B7B9B68186FBD5B25 /* Readiness.swift */; };
@@ -30,6 +29,8 @@
 		9B1F0C2B3D4E5F6071829304 /* GPSQualityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A1F0C2B3D4E5F6071829304 /* GPSQualityView.swift */; };
 		9D2F0D3B4E5F607182930415 /* Dashboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C2F0D3B4E5F607182930415 /* Dashboard.swift */; };
 		9F3A0E4C5F6071829304A516 /* WaterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E3A0E4C5F6071829304A516 /* WaterView.swift */; };
+		A13B0F5D607182930415B627 /* Outlook.swift in Sources */ = {isa = PBXBuildFile; fileRef = A03B0F5D607182930415B627 /* Outlook.swift */; };
+		A34C1060718293041526C738 /* CurrentService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A24C1060718293041526C738 /* CurrentService.swift */; };
 		A706D395010CF287A42BB757 /* LiveActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 155D9E41B3F2AF484AB3143F /* LiveActivityController.swift */; };
 		B1B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfile.swift */; };
 		B2B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfileView.swift */; };
@@ -80,7 +81,6 @@
 		1265034A4830D9C31F477C7B /* SimulatedLocationSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimulatedLocationSource.swift; sourceTree = "<group>"; };
 		155D9E41B3F2AF484AB3143F /* LiveActivityController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityController.swift; sourceTree = "<group>"; };
 		16802792B90A9D0C484ED686 /* TideService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TideService.swift; sourceTree = "<group>"; };
-		A03B0F5D607182930415B627 /* Outlook.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Outlook.swift; sourceTree = "<group>"; };
 		19186A028FEFB8D2C5ABA945 /* AnchorActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorActivity.swift; sourceTree = "<group>"; };
 		21BFBA88AE0B50E6E9C07BC9 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		227DDA1B10737D49F8445A4F /* LocationSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSource.swift; sourceTree = "<group>"; };
@@ -103,7 +103,9 @@
 		9C2F0D3B4E5F607182930415 /* Dashboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Dashboard.swift; sourceTree = "<group>"; };
 		9E1004BEA5E770B2CB860816 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		9E3A0E4C5F6071829304A516 /* WaterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WaterView.swift; sourceTree = "<group>"; };
+		A03B0F5D607182930415B627 /* Outlook.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Outlook.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoatProfile.swift; sourceTree = "<group>"; };
+		A24C1060718293041526C738 /* CurrentService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CurrentService.swift; sourceTree = "<group>"; };
 		A2B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoatProfileView.swift; sourceTree = "<group>"; };
 		A3B2C3D4E5F6A7B8C9D0E1F2 /* AnchoringModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchoringModel.swift; sourceTree = "<group>"; };
 		A428B8B5556401357AD0F48E /* AnchorLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorLiveActivity.swift; sourceTree = "<group>"; };
@@ -176,6 +178,7 @@
 				1265034A4830D9C31F477C7B /* SimulatedLocationSource.swift */,
 				16802792B90A9D0C484ED686 /* TideService.swift */,
 				A03B0F5D607182930415B627 /* Outlook.swift */,
+				A24C1060718293041526C738 /* CurrentService.swift */,
 				E367FC84FFFD453E35855706 /* WindService.swift */,
 			);
 			path = Core;
@@ -377,6 +380,7 @@
 				B9ABD4E905D08404E0F68166 /* SimulatedLocationSource.swift in Sources */,
 				529E73F56F3E646C6E99590C /* TideService.swift in Sources */,
 				A13B0F5D607182930415B627 /* Outlook.swift in Sources */,
+				A34C1060718293041526C738 /* CurrentService.swift in Sources */,
 				669049C9F0800FFBE30B1190 /* UserGuide.swift in Sources */,
 				35D281D5FE0591A4C7871324 /* WindService.swift in Sources */,
 			);

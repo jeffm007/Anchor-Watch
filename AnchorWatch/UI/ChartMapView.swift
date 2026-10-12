@@ -62,6 +62,10 @@ struct ChartMapView: UIViewRepresentable {
         /// Dotted circle round the anchor: how far off the drop point may be from GPS error.
         private var uncertainty: MKCircle?
         private var uncertaintyKey: [Double] = []
+        /// Predicted swing: how far the stern can reach, and the arc the boat should lie in over the next 24 h.
+        private var swingCircle: MKCircle?
+        private var swingArc: MKPolyline?
+        private var swingKey: [Double] = []
         /// The swing estimate: a marker and its error ellipse.
         private let estimatePin = EstimateAnnotation()
         private var estimateEllipse: MKPolygon?
@@ -109,6 +113,7 @@ struct ChartMapView: UIViewRepresentable {
                 syncEstimate(map)
                 syncDrift(map)
                 syncTether(map, anchor: anchor)
+                syncSwing(map, anchor: anchor)
                 syncCircleLabel(map, anchor: anchor)
             } else {
                 map.removeAnnotation(anchorPin)
@@ -116,8 +121,9 @@ struct ChartMapView: UIViewRepresentable {
                 // The track may still be recording under way; syncTrack removes it once it's empty.
                 syncEstimate(map)
                 syncDrift(map)
-                for o in [circle, uncertainty, tether] as [MKOverlay?] { if let o { map.removeOverlay(o) } }
+                for o in [circle, uncertainty, tether, swingCircle, swingArc] as [MKOverlay?] { if let o { map.removeOverlay(o) } }
                 circle = nil; uncertainty = nil; tether = nil; circleKey = []; uncertaintyKey = []
+                swingCircle = nil; swingArc = nil; swingKey = []
             }
             syncTrack(map)
             frame(map)
@@ -305,6 +311,33 @@ struct ChartMapView: UIViewRepresentable {
             map.addOverlay(new, level: .aboveLabels)
         }
 
+        private func syncSwing(_ map: MKMapView, anchor: CLLocationCoordinate2D) {
+            let radius = engine.swingRadius
+            let arc = engine.predictedSwingArc
+            let key = [anchor.latitude, anchor.longitude, radius.rounded(), arc?.from.rounded() ?? -1, arc?.width.rounded() ?? -1]
+            guard key != swingKey else { return }
+            swingKey = key
+            for o in [swingCircle, swingArc] as [MKOverlay?] { if let o { map.removeOverlay(o) } }
+            swingCircle = nil; swingArc = nil
+            guard radius > 0 else { return }
+
+            let circle = MKCircle(center: anchor, radius: radius)
+            circle.title = "swing"
+            swingCircle = circle
+            map.addOverlay(circle, level: .aboveLabels)
+
+            if let arc, arc.width > 0 {
+                let steps = max(2, Int(arc.width / 3))
+                var coords = (0...steps).map { i in
+                    Geo.destination(from: anchor, bearing: arc.from + arc.width * Double(i) / Double(steps), meters: radius)
+                }
+                let line = MKPolyline(coordinates: &coords, count: coords.count)
+                line.title = "swingArc"
+                swingArc = line
+                map.addOverlay(line, level: .aboveLabels)
+            }
+        }
+
         private func syncEstimate(_ map: MKMapView) {
             let estimate = engine.anchor == nil ? nil : engine.anchorEstimate
             let key = estimate.map { [$0.center.latitude, $0.center.longitude, $0.semiMajor, $0.semiMinor, $0.majorBearing] } ?? []
@@ -396,7 +429,8 @@ struct ChartMapView: UIViewRepresentable {
             // Wide enough for the circle, the boat and the swing estimate, which can sit a rode-length from a poor mark.
             let reach = [engine.fix?.coordinate, engine.anchorEstimate?.center].compactMap { $0 }
                 .map { Geo.distance(center, $0) }.max() ?? 0
-            let span = max(engine.anchor == nil ? 300 : engine.radius * 3.5, reach * 2.6 + 40, 150)
+            let swing = engine.anchor == nil ? 0 : engine.swingRadius * 2.8
+            let span = max(engine.anchor == nil ? 300 : engine.radius * 3.5, reach * 2.6 + 40, swing, 150)
             map.setRegion(MKCoordinateRegion(center: center, latitudinalMeters: span, longitudinalMeters: span), animated: true)
         }
 
@@ -512,6 +546,12 @@ struct ChartMapView: UIViewRepresentable {
             switch overlay {
             case let tile as MKTileOverlay:
                 return MKTileOverlayRenderer(tileOverlay: tile)
+            case let circle as MKCircle where circle.title == "swing":
+                let r = MKCircleRenderer(circle: circle)
+                r.strokeColor = UIColor.systemCyan.withAlphaComponent(0.7)
+                r.lineWidth = 1.5
+                r.lineDashPattern = [8, 6]
+                return r
             case let circle as MKCircle where circle.title == "uncertainty":
                 let r = MKCircleRenderer(circle: circle)
                 r.strokeColor = UIColor.systemOrange
@@ -540,6 +580,10 @@ struct ChartMapView: UIViewRepresentable {
                     r.lineWidth = 4
                     r.lineCap = .round
                     r.lineJoin = .round
+                } else if line.title == "swingArc" {
+                    r.strokeColor = UIColor.systemCyan.withAlphaComponent(0.55)
+                    r.lineWidth = 7
+                    r.lineCap = .round
                 } else if line.title == "tether" {
                     r.strokeColor = UIColor.systemOrange.withAlphaComponent(0.8)
                     r.lineWidth = 1.5
