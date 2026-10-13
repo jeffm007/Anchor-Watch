@@ -41,7 +41,7 @@ struct GuideTopic: Identifiable {
 enum UserGuideContent {
     static let sections: [(title: String, topics: [GuideTopic])] = [
         ("Getting started", [quickStart, mainScreen]),
-        ("Keeping watch", [settingAnchor, alarmCircle, alarms, watchCheck, lockScreen]),
+        ("Keeping watch", [settingAnchor, alarmCircle, alarms, watchCheck, lockScreen, appleWatch]),
         ("Charts and weather", [charts, wind, tides, canada]),
         ("Reference", [settings, anchorMath, troubleshooting, dataSources, safety]),
     ]
@@ -82,11 +82,19 @@ enum UserGuideContent {
             "**Depth at High Tide**: the depth at the next high water (today's depth plus how much the tide will rise), with the depth now and the time of the high underneath. Tap for the Water tab.",
             "**Scope**: rode out against today's depth plus bow height. It drops as the tide rises. It says **out** once you've set **Rode out** (under the drawing on the Anchor tab), and **suggested** (the scope calculator's figure) until then; Raise clears it. Tap for the Anchor tab.",
             "**Anchor**: Secure and which way the anchor lies, or a warning: Moving away (the boat steadily getting further off, past its earlier swing), Dragging (the swing itself has moved), Outside or ALARM. Tap for Anchoring.",
-            "**Tide**: how much it will rise or fall to the next high or low, and when. Tap for the Water tab.",
+            "**Tide**: how much it will rise or fall to the next high or low, and when. Tap for the Water tab. Once you've marked hazards it becomes **Clearance**: the gap between your stern at full swing and the nearest hazard (orange when close, red if the swing reaches it).",
             "**Distance**: from the anchor now, the furthest so far (Max), and the alarm radius. Orange near the circle, red outside it.",
         ]),
+        .heading("Night mode"),
+        .text("The **moon button** in the row of buttons under the chart turns the screen black and red and dims it right down, so it won't spoil your night vision: the status, the distance from the anchor and the alarm radius, a small radar of the circle with the boat's position, and the wind, next tide, time and GPS accuracy. **Tap anywhere** to show Exit; leaving puts the brightness back. The watch keeps running, and an alarm shows in night mode with its **Silence** button."),
+        .heading("Anchorage log"),
+        .text("When you raise the anchor after ten minutes or more, the stay is saved to **Settings → Anchorage Log**: where (named from the map), when, depth, rode, bottom, alarm radius, furthest swing and the track. Open one to see the track on a map, note **how it held**, add notes, rename or delete it. **Swipe a stay left** for **Delete** or **Lock**: a locked stay shows a padlock and can't be deleted until you swipe again to **Unlock** (or turn **Locked** off on its page). When you anchor within about 500 ft of a logged spot, a notice shows that visit; its **›** uses the same rode and bottom."),
+        .heading("Barometer"),
+        .text("The phone's own pressure sensor is read about once a minute. If it falls **3 hPa in 3 hours**, a notice says wind is likely; **6 hPa or more** is shown in red as a gale risk and turns the status to Check. You get a notification the first time each is crossed. The Weather tab shows the reading, the 3-hour change and 6 hours of history."),
+        .heading("Hazards"),
+        .text("**Long-press an empty spot on the chart** to mark a rock, shoal, dock, another boat or anything else to keep clear of, with how far to stay off and a name. It shows as a red badge with a red circle. Tap a badge to see it: **Edit** changes its kind, keep-off distance or name, and **Remove** deletes it. **Long-press a badge and drag** to move it, just like the anchor: a yellow line gives its distance and bearing from the boat, a white one how far it moved, and the labels close with their ✕. Hazards are kept between anchorages. The outlook checks where the wind and current will put your stern each hour and warns if it comes within about 30 ft of one, or reaches it."),
         .heading("Next 24 hours"),
-        .text("Under the tiles, the app looks ahead through the tide predictions and the wind forecast and shows the **first thing that will go wrong**, with a countdown: thin water under the keel at low tide, short scope at high water, forecast gusts beyond what your setup holds (worked out again for each hour, since high water's shorter scope holds less), or a **swing**. Green means nothing in the next 24 hours. **Tap it** for the full list in time order, including smaller wind shifts and slack water."),
+        .text("Under the tiles, the app looks ahead through the tide predictions and the wind forecast and shows the **first thing that will go wrong**, with a countdown: thin water under the keel at low tide, short scope at high water, forecast gusts beyond what your setup holds (worked out again for each hour, since high water's shorter scope holds less), or a **swing**. Green means nothing in the next 24 hours. **Tap it** for the full list in time order, including smaller wind shifts and slack water. **Swipe a warning left** for **Delete** or **Lock**. **Lock** keeps it in the list with a padlock and stops it being deleted; swipe again to **Unlock**. A deleted warning stays gone as the forecast is redone, and comes back only if it gets worse (a swing that comes within 20 ft becoming one that reaches the hazard, say). Deleting a hazard warning hides every warning about that hazard. **Show hidden** at the bottom brings them back, and a new anchoring starts afresh."),
         .heading("Swings and anchor resets"),
         .text("Each hour the app works out which way the boat lies from the wind's push on the windage and the current's push on the hull together. When that turns by 90° or more, the boat swings round and the anchor has to turn and reset, so it's flagged with the cause: the wind going round, or the flood or ebb taking over in light wind. Current comes from the nearest NOAA current station (see the Water tab). Without one, a high or low in light wind (under 6 knots) is flagged instead, since the boat will likely swing with the current."),
         .heading("Notices"),
@@ -126,7 +134,7 @@ enum UserGuideContent {
     static let settingAnchor = GuideTopic(id: "anchor", title: "Setting and moving the anchor", icon: "arrow.down.to.line", blocks: [
         .heading("Dropping it"),
         .text("Tap **Drop Anchor Here** and choose when: **Anchor going down now** puts the mark half a boat length ahead of the phone, since the phone is amidships and the anchor goes over the bow. **Boat has settled on the rode** puts it a whole scope distance ahead (your rode out stretched across the bottom, plus half the boat), upwind, since a settled boat lies downwind of its anchor. Either way the app uses the average of the last \(GuideFacts.averagingSeconds) seconds of GPS positions, so one stray reading can't put the anchor in the wrong place."),
-        .text("Which way is \"ahead\"? For **going down**, toward where the bow pointed: the direction you came in on over the last minute, if you moved at least 15 m (about 50 ft); otherwise into the forecast wind, if there's 5 knots or more. For **settled**, into the wind only, since the last minute's movement is the boat falling back. If there's too little wind (under 5 knots) to tell which way a settled anchor lies, the mark could be a whole scope distance out, so **the circle alarm isn't armed until the swing fit** finds the anchor, about 20 minutes on: the status reads **Finding anchor** and the Anchor tile **Not armed**. The GPS and battery alarms still work, and placing the anchor yourself arms it straight away. If it can't tell, it leaves the anchor at the phone and widens the dotted circle instead. A note in the Alarm radius section of the Anchor tab says which it used."),
+        .text("Which way is \"ahead\"? For **going down**, toward where the bow pointed: the direction you came in on over the last minute, if you moved at least 15 m (about 50 ft); otherwise into the forecast wind, if there's 5 knots or more. For **settled**, into the wind only, since the last minute's movement is the boat falling back. If there's too little wind (under 5 knots) to tell which way a settled anchor lies, the mark could be a whole scope distance out, so **the circle alarm isn't armed until the swing fit** finds the anchor, about 20 minutes on: the status reads **Finding anchor** and the Anchor tile **Not armed**. The GPS and battery alarms still work, and placing the anchor yourself arms it straight away. If it can't tell, it leaves the anchor at the phone and widens the dotted circle instead. A note in the Anchor section of the Anchor tab says which it used."),
         .bullets([
             "If GPS accuracy is worse than about 26 ft, an orange warning appears and the button reads **Drop Anchor Anyway**. Waiting a minute usually helps.",
             "If accuracy is worse than about 165 ft, the button is disabled. Move the phone near a window, or outside.",
@@ -139,15 +147,23 @@ enum UserGuideContent {
         ]),
         .text("Moving the anchor resets the Max distance and gives the alarm a fresh start."),
         .heading("Finding the anchor from the swing"),
-        .text("After about 20 minutes at anchor, the app fits a circle to the edge of your swing to work out where the anchor really is. It shows a purple ring on the chart and a line in the Alarm radius section of the Anchor tab: either the swing agrees with your mark, or it says how far off the mark is with **Move there** to correct it. The **first** fit after a drop (within 90 minutes) moves the mark there by itself if it's clearly off, and says so in a purple banner with **Undo**. It only does this once, and never if you've moved the anchor yourself: after that a moving swing is a sign of dragging, so it raises the drag warning rather than moving the circle. You can also **long-press the purple ring** on the chart, or tap it and choose **Move anchor here**, to move the anchor there. See **How Anchoring works it out** for the details."),
+        .text("After about 20 minutes at anchor, the app fits a circle to the edge of your swing to work out where the anchor really is. It shows a purple ring on the chart and a line in the Anchor section of the Anchor tab: either the swing agrees with your mark, or it says how far off the mark is with **Move there** to correct it. The **first** fit after a drop (within 90 minutes) moves the mark there by itself if it's clearly off, and says so in a purple banner with **Undo**. It only does this once, and never if you've moved the anchor yourself: after that a moving swing is a sign of dragging, so it raises the drag warning rather than moving the circle. You can also **long-press the purple ring** on the chart, or tap it and choose **Move anchor here**, to move the anchor there. See **How Anchoring works it out** for the details."),
         .heading("Raising it"),
-        .text("**Raise**, on the Anchor tab, ends the watch: it clears the anchor, the track and any alarm, and switches the audio and lock-screen card off."),
+        .text("**Raise**, on the Anchor tab or by tapping the status, ends the watch: it clears the anchor, the track and any alarm, and switches the audio and lock-screen card off. Either asks first, and offers **Retrieve Anchor** as well."),
+        .heading("Retrieving it"),
+        .text("**Retrieve Anchor** ends the watch the same way, then opens a screen for the helm: a big arrow from the **bow** to the anchor, how far it is, and what to do: **Dead ahead**, **Steer 15° to starboard**, **Behind you: turn round**. The bow is taken as half a boat length ahead of the phone."),
+        .bullets([
+            "Moving at half a knot or more, the arrow is relative to your course over the ground: straight up means steer straight on.",
+            "Slower than that, GPS can't tell which way you're heading, so the arrow points to the anchor with north up and the bearing is given (Anchor lies NE, 045°).",
+            "Within about half the depth (at least 13 ft), it turns green: **Over the anchor**, the rode is up and down. Break it out and bring it up.",
+            "**Anchor's up** closes it. The Apple Watch shows the distance and steering too.",
+        ]),
         .tip("Your anchor and radius are saved, so closing the app or restarting the phone doesn't lose the watch. If you reopen the app while at a different place, tap Raise first."),
     ])
 
     static let alarmCircle = GuideTopic(id: "circle", title: "The alarm circle, rode and scope", icon: "circle.dashed", blocks: [
         .heading("Choosing the radius"),
-        .text("Drag the **Alarm radius** slider on the **Anchor** tab. The circle should be big enough for the boat to swing freely on its rode, plus some room for GPS error."),
+        .text("Drag the **Alarm radius** slider on the **Anchor** tab, under Rode out. The circle should be big enough for the boat to swing freely on its rode, plus some room for GPS error."),
         .heading("The Water tab"),
         .bullets([
             "Enter the **water depth** at the anchorage with the − and + buttons, or type it.",
@@ -156,7 +172,7 @@ enum UserGuideContent {
             "**Rode to pay out** = ratio × (depth + tide + bow height).",
             "**Suggested alarm radius** = the **scope distance** (how far your rode out reaches across the bottom when taut, at the lowest water in the next 24 hours), plus half the boat's length (the phone is assumed amidships), plus a **20 ft** margin. It's set automatically when you drop the anchor, and follows if you change **Rode out**, until you move the radius slider yourself; **Use suggested radius** goes back to it.",
         ]),
-        .text("Bow height and boat length live in **Settings → Boat Profile**, and also in the **Scope calculator** (the link in the Alarm radius section of the Anchor tab) along with the safety margin. Nereus is set to 47 ft, or 50 ft with the swim deck lowered."),
+        .text("Bow height and boat length live in **Settings → Boat Profile**, and also in the **Scope calculator** (the link in the Anchor section of the Anchor tab) along with the safety margin. Nereus is set to 47 ft, or 50 ft with the swim deck lowered."),
         .text("If you enter the rode you carry in the Boat Profile, the scope screens warn when the scope calls for more than you have."),
         .tip("If the circle is too small for your GPS accuracy, the Watch check says so. A circle less than about 2½ times the GPS error invites false alarms."),
     ])
@@ -212,6 +228,15 @@ enum UserGuideContent {
     ])
 
     // MARK: Charts and weather
+
+    static let appleWatch = GuideTopic(id: "applewatch", title: "Apple Watch", icon: "applewatch", blocks: [
+        .text("Anchor Watch installs on a paired Apple Watch along with the phone app (if it doesn't, turn it on in the iPhone's Watch app under Available Apps)."),
+        .heading("What it shows"),
+        .text("The status in its colour (Holding, Moving away, Dragging, Outside circle, Alarm or Finding anchor), the distance from the anchor, the alarm radius, which way the anchor lies, the wind and when it last heard from the phone. The phone sends an update when anything changes, and at least every 30 seconds while it's within range; the line turns orange after two minutes without one."),
+        .heading("Alarms"),
+        .text("When the phone's alarm goes off, the watch turns red, shows what's wrong and taps your wrist every two seconds while the watch app is open. **Silence** on the watch silences the phone too."),
+        .warning("The phone does the watching and sounds the siren. The watch only shows what the phone sends: keep the phone aboard, charged and within Bluetooth range."),
+    ])
 
     static let charts = GuideTopic(id: "charts", title: "Charts and zooming", icon: "map", blocks: [
         .text("Tap the **map** button to choose a chart:"),
@@ -419,5 +444,83 @@ struct GuideTopicView: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+/// One page to scan: what each part of the app does, and what it works out. The User Guide has the detail.
+struct QuickGuideView: View {
+    private struct Item: Identifiable {
+        let id = UUID()
+        let title: String
+        let text: String
+    }
+
+    private let watch = [
+        Item(title: "Status", text: "Top right: Holding, Check, Moving away, Dragging, Outside circle, Alarm or Finding anchor. Tap it to drop or raise the anchor."),
+        Item(title: "Tiles", text: "Wind and direction, depth at high tide, scope, anchor, tide, and distance from the anchor."),
+        Item(title: "Next 24 hours", text: "The first thing forecast to go wrong, with a countdown. Tap for the full list; swipe left to delete or lock one."),
+        Item(title: "Chart", text: "Alarm circle (green), swing circle and forecast swing arc (cyan), track, anchor, original drop mark, and the swing's estimate of the anchor (purple)."),
+        Item(title: "Hazards", text: "Long-press empty chart to mark a rock, shoal, dock or boat; long-press one and drag to move it. The Tide tile becomes Clearance: the gap from your stern's swing to the nearest one. Tap a hazard to edit or remove it."),
+        Item(title: "Moving the anchor", text: "Long-press the anchor and drag. Yellow line: distance and bearing from the boat. White line: how far it moved. Tap ✕ to close a label, slide it to move it. Arrows fine-tune 5 ft a tap."),
+        Item(title: "Barometer", text: "A fall of 3 hPa in 3 hours warns of wind; 6 hPa, a gale. Notified once each."),
+        Item(title: "Alarms", text: "Outside the circle, GPS lost or too poor, low battery. Loud even on silent, and on the lock screen."),
+        Item(title: "Night mode", text: "The moon button: a dim black and red screen with the distance and a small radar. Tap to exit."),
+        Item(title: "Apple Watch", text: "Status, distance, radius and wind on the wrist; taps your wrist on an alarm, and Silence works from there."),
+    ]
+
+    private let tabs = [
+        Item(title: "Anchor", text: "Verdict and safe gust limit, the rode drawn at low, now or high tide, depth, rode and radius sliders, suggestions, and the anchor buttons."),
+        Item(title: "Water", text: "Depth now, a 24-hour depth chart against your keel, warnings for thin water or short scope, and tidal current."),
+        Item(title: "Weather", text: "24 hours of wind and gusts against the gust your setup holds, wind changes, the barometer, and nearby station readings."),
+        Item(title: "Settings", text: "Boat profile, anchorage log, gust warning, track, units, these guides, and Testing (GPS source, external GPS quality, simulator)."),
+    ]
+
+    private let dropping = [
+        Item(title: "Drop", text: "Say whether the anchor is going down now, or the boat has settled back on the rode."),
+        Item(title: "Radius", text: "Set for you: how far the rode reaches, plus half the boat, plus 20 ft. It follows the rode until you move it."),
+        Item(title: "Swing fit", text: "After about 20 minutes of swinging, the app finds where the anchor really is and corrects the mark once."),
+        Item(title: "Retrieve", text: "Raise offers Retrieve Anchor: an arrow and distance from the bow to the anchor, and which way to steer, until it's over the anchor."),
+        Item(title: "Log", text: "Raising the anchor saves the stay. Anchor near a logged spot and it offers that visit's rode and bottom. Swipe a stay left to delete or lock it."),
+        Item(title: "Drag watch", text: "A steady move away, or the swing itself shifting, raises a warning before the alarm."),
+    ]
+
+    private let maths = [
+        Item(title: "Where you are", text: "Distance and bearing to the anchor; averaged GPS at the drop; the anchor placed ahead of the bow; outside the circle only by more than the GPS error."),
+        Item(title: "Swing and drag", text: "A circle fitted to the edge of the swing finds the anchor; a line through successive fits, or a steadily growing distance, shows dragging."),
+        Item(title: "Rode and scope", text: "Rode to pay out = scope × (depth + tide + bow height). Reach when taut = √(rode² − (depth + bow)²). Live scope as the tide moves."),
+        Item(title: "Loads", text: "Wind on the front or side windage, current on the hull, extra for yawing and waves (less with a snubber)."),
+        Item(title: "Chain and holding", text: "Chain lying on the bottom, the pull angle at the anchor, when it lifts off, and the anchor's rough holding for its type and the bottom."),
+        Item(title: "Safe gust limit", text: "The gust at which the chain lifts the anchor or the pull nears its holding: worked out again for each hour's depth and current."),
+        Item(title: "Tide and current", text: "Depth through the day from the nearest tide station; current from the nearest current station; depth at the next high."),
+        Item(title: "Looking ahead", text: "Thin water under the keel, short scope at high water, gusts beyond your limit, swings of 90° or more where the anchor must reset, and swings that bring the stern near a marked hazard."),
+        Item(title: "Clearance", text: "Distance from anchor to hazard, less its keep-off distance, less the stern's reach: the rode taut at low water plus the boat's length."),
+    ]
+
+    var body: some View {
+        List {
+            section("Watch screen", watch)
+            section("Tabs", tabs)
+            section("Dropping and watching", dropping)
+            section("What it works out", maths)
+            Section {
+                NavigationLink("Full User Guide") { UserGuideView() }
+            } footer: {
+                Text("These are estimates to help your judgement, not guarantees. Keep a lookout.")
+            }
+        }
+        .navigationTitle("Quick Guide")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func section(_ title: String, _ items: [Item]) -> some View {
+        Section(title) {
+            ForEach(items) { item in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.title).font(.subheadline.bold())
+                    Text(item.text).font(.subheadline).foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 2)
+            }
+        }
     }
 }

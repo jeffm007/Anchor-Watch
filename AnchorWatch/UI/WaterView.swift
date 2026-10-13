@@ -236,7 +236,7 @@ struct WindOutlookSections: View {
                 Text("Blue is the wind, orange the gusts, red dashed the gust your setup holds at each hour's depth (\(engine.units.format(engine.rodeOut)) of rode in \(engine.anchorBottom.rawValue.lowercased())). Arrows show which way it blows.")
             }
         }
-        let wind = engine.outlook.filter { $0.kind == .gusts || $0.kind == .windShift || $0.kind == .swing }
+        let wind = engine.visibleOutlook.filter { $0.kind == .gusts || $0.kind == .windShift || $0.kind == .swing }
         Section("Wind outlook") {
             if wind.isEmpty {
                 Label(hours.isEmpty ? "Waiting for the wind forecast…" : "No gusts beyond your setup and no big swings in the next 24 hours.",
@@ -256,3 +256,45 @@ struct WindOutlookSections: View {
         }
     }
 }
+
+/// The phone's barometer on the Weather tab: now, the last three hours' change, and six hours of history.
+struct BarometerSection: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+
+    var body: some View {
+        let history = engine.pressureHistory.filter { Date().timeIntervalSince($0.time) <= 6 * 3600 }
+        Section {
+            if let latest = history.last {
+                LabeledContent("Now", value: String(format: "%.1f hPa", latest.hPa))
+                if let change = engine.pressureChange {
+                    LabeledContent("Last 3 hours") {
+                        Text(String(format: "%+.1f hPa", change))
+                            .foregroundStyle(engine.pressureLevel == .fallingFast ? .red : engine.pressureLevel == .fallingQuickly ? .orange : .secondary)
+                    }
+                } else {
+                    LabeledContent("Last 3 hours", value: "Building up history…")
+                }
+                if history.count > 2 {
+                    let low = history.map(\.hPa).min()!, high = history.map(\.hPa).max()!
+                    Chart(history, id: \.time) { r in
+                        LineMark(x: .value("Time", r.time), y: .value("hPa", r.hPa)).foregroundStyle(.teal)
+                    }
+                    .chartYScale(domain: (low - 1)...(high + 1))
+                    .chartXAxis {
+                        AxisMarks(values: .stride(by: .hour, count: 1)) { _ in
+                            AxisGridLine()
+                            AxisValueLabel(format: .dateTime.hour())
+                        }
+                    }
+                    .frame(height: 120)
+                }
+            } else {
+                Text(Barometer.isAvailable ? "Waiting for the first reading…" : "This device has no barometer.")
+                    .foregroundStyle(.secondary)
+            }
+        } header: { Text("Barometer") } footer: {
+            Text("The phone's own pressure sensor. A fall of \(Int(PressureTrend.quickFall)) hPa in 3 hours usually means wind is coming; \(Int(PressureTrend.rapidFall)) or more, a gale. You'll get a notification when it crosses either.")
+        }
+    }
+}
+

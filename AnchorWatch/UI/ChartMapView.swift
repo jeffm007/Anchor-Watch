@@ -6,6 +6,11 @@ final class BoatAnnotation: MKPointAnnotation {}
 final class CircleLabelAnnotation: MKPointAnnotation {}
 /// Where the swing fit puts the anchor.
 final class EstimateAnnotation: MKPointAnnotation {}
+/// A marked rock, shoal, dock or boat.
+final class HazardAnnotation: MKPointAnnotation {
+    var hazard: Hazard?
+}
+
 /// Faded anchor at the original drop spot once the anchor has been moved from it.
 final class OriginalAnchorAnnotation: MKPointAnnotation {}
 /// Labels on the lines from the boat to the new anchor spot and to the original one.
@@ -112,6 +117,13 @@ struct ChartMapView: UIViewRepresentable {
         private var showBoatLine = false
         private var showMovedLine = false
         private var measureVisible: Bool { showBoatLine || showMovedLine }
+        /// Marked hazards: an icon each, and a red circle for how far around it to keep off.
+        private var hazardPins: [HazardAnnotation] = []
+        private var hazardCircles: [MKCircle] = []
+        private var hazardKey: [Hazard] = []
+        /// A hazard being dragged, and the one the measuring lines are about (nil: they're about the anchor).
+        private var draggedHazard: HazardAnnotation?
+        private var measuredHazard: (id: UUID, origin: CLLocationCoordinate2D)?
         /// The anchor's view while it's being dragged: MapKit only updates the pin's coordinate on release, so the
         /// live position is read from where the view is drawn.
         /// The app's own anchor drag (MapKit's annotation drag gets cancelled whenever anything on the chart changes):
@@ -153,12 +165,14 @@ struct ChartMapView: UIViewRepresentable {
                 syncOriginalMark(map, anchor: anchor)
                 // Dev aid: `-showMeasure` shows the measuring lines, for screenshots.
                 if ProcessInfo.processInfo.arguments.contains("-showMeasure") && !measureVisible { showBoatLine = true; showMovedLine = true }
-                if measureVisible && !dragging { updateMeasure(map) }
+                if measureVisible && !dragging && draggedHazard == nil { updateMeasure(map) }
             } else {
                 map.removeAnnotation(anchorPin)
                 map.removeAnnotation(labelPin)
                 map.removeAnnotation(originalMark)
-                if measureVisible { clearMeasure(map) }
+                if measureVisible {
+                    if measuredHazard != nil && draggedHazard == nil { updateMeasure(map) } else if measuredHazard == nil { clearMeasure(map) }
+                }
                 // The track may still be recording under way; syncTrack removes it once it's empty.
                 syncEstimate(map)
                 syncDrift(map)
@@ -166,6 +180,7 @@ struct ChartMapView: UIViewRepresentable {
                 circle = nil; uncertainty = nil; tether = nil; circleKey = []; uncertaintyKey = []
                 swingCircle = nil; swingArc = nil; swingKey = []
             }
+            syncHazards(map)
             syncTrack(map)
             frame(map)
             applyZoomCommand(map)
@@ -487,6 +502,10 @@ struct ChartMapView: UIViewRepresentable {
         @objc func pressed(_ gesture: UILongPressGestureRecognizer) {
             guard let map = gesture.view as? MKMapView else { return }
             let point = gesture.location(in: map)
+            if draggedHazard != nil {
+                dragHazard(map, gesture.state, finger: point)
+                return
+            }
             if dragging {
                 dragAnchor(map, gesture.state, finger: point)
                 return
@@ -511,15 +530,29 @@ struct ChartMapView: UIViewRepresentable {
                 map.removeAnnotation(originalMark)
                 return
             }
-            guard engine.anchor != nil, let estimate = engine.anchorEstimate else { return }
-            let marker = map.convert(estimate.center, toPointTo: map)
-            let touch = gesture.location(in: map)
-            guard hypot(marker.x - touch.x, marker.y - touch.y) <= 36 else { return }
-            moveToEstimate(map)
+            if engine.anchor != nil, let estimate = engine.anchorEstimate, !engine.anchorAgreesWithSwing {
+                let marker = map.convert(estimate.center, toPointTo: map)
+                if hypot(marker.x - point.x, marker.y - point.y) <= 36 { moveToEstimate(map); return }
+            }
+            // On a hazard: drag it, as for the anchor.
+            if let pin = hazardPins.first(where: { map.view(for: $0)?.frame.insetBy(dx: -12, dy: -12).contains(point) == true }) {
+                let tip = map.convert(pin.coordinate, toPointTo: map)
+                grab = CGPoint(x: tip.x - point.x, y: tip.y - point.y)
+                draggedHazard = pin
+                dragHazard(map, .began, finger: point)
+                return
+            }
+            // Anywhere else: mark a hazard here.
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            engine.pendingHazard = .init(coordinate: map.convert(point, toCoordinateFrom: map))
         }
 
         func mapView(_ map: MKMapView, annotationView view: MKAnnotationView, calloutAccessoryControlTapped control: UIControl) {
             if view.annotation is EstimateAnnotation { moveToEstimate(map) }
+            if let pin = view.annotation as? HazardAnnotation, let id = pin.hazard?.id {
+                map.deselectAnnotation(pin, animated: true)
+                if control === view.leftCalloutAccessoryView { engine.editHazard(id) } else { engine.removeHazard(id) }
+            }
         }
 
         private func moveToEstimate(_ map: MKMapView) {
@@ -548,6 +581,7 @@ struct ChartMapView: UIViewRepresentable {
         private func dragAnchor(_ map: MKMapView, _ state: UIGestureRecognizer.State, finger: CGPoint) {
             switch state {
             case .began:
+                measuredHazard = nil            // the lines are about the anchor now
                 engine.beginAnchorDrag()
                 dragging = true
                 showBoatLine = true
@@ -572,10 +606,73 @@ struct ChartMapView: UIViewRepresentable {
             }
         }
 
+        /// Moves a hazard with the finger, its keep-off circle with it, measured from the boat and from where it was.
+        private func dragHazard(_ map: MKMapView, _ state: UIGestureRecognizer.State, finger: CGPoint) {
+            guard let pin = draggedHazard, let hazard = pin.hazard else { return }
+            switch state {
+            case .began:
+                measuredHazard = (hazard.id, pin.coordinate)
+                showBoatLine = true
+                showMovedLine = true
+                map.isScrollEnabled = false
+                map.isZoomEnabled = false
+                map.deselectAnnotation(pin, animated: false)
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                updateMeasure(map)
+            case .changed:
+                let tip = CGPoint(x: finger.x + grab.x, y: finger.y + grab.y)
+                UIView.performWithoutAnimation { pin.coordinate = map.convert(tip, toCoordinateFrom: map) }
+                if let i = hazardPins.firstIndex(where: { $0 === pin }) {
+                    map.removeOverlay(hazardCircles[i])
+                    let circle = MKCircle(center: pin.coordinate, radius: hazard.radius)
+                    circle.title = "hazard"
+                    hazardCircles[i] = circle
+                    map.addOverlay(circle, level: .aboveLabels)
+                }
+                updateMeasure(map)
+            case .ended:
+                draggedHazard = nil
+                map.isScrollEnabled = true
+                map.isZoomEnabled = true
+                engine.moveHazard(hazard.id, to: pin.coordinate)
+                updateMeasure(map)
+            default:
+                draggedHazard = nil
+                map.isScrollEnabled = true
+                map.isZoomEnabled = true
+                pin.coordinate = hazard.coordinate
+                hazardKey = []                  // redraw from the saved hazards
+                syncHazards(map)
+                updateMeasure(map)
+            }
+        }
+
         private func finishDrag(_ map: MKMapView) {
             dragging = false
             map.isScrollEnabled = true
             map.isZoomEnabled = true
+        }
+
+        private func syncHazards(_ map: MKMapView) {
+            guard engine.hazards != hazardKey else { return }
+            hazardKey = engine.hazards
+            map.removeAnnotations(hazardPins)
+            map.removeOverlays(hazardCircles)
+            hazardPins = engine.hazards.map { hazard in
+                let pin = HazardAnnotation()
+                pin.hazard = hazard
+                pin.coordinate = hazard.coordinate
+                pin.title = hazard.label
+                pin.subtitle = "Keep \(engine.units.format(hazard.radius)) off"
+                return pin
+            }
+            hazardCircles = engine.hazards.map { hazard in
+                let circle = MKCircle(center: hazard.coordinate, radius: hazard.radius)
+                circle.title = "hazard"
+                return circle
+            }
+            map.addAnnotations(hazardPins)
+            map.addOverlays(hazardCircles, level: .aboveLabels)
         }
 
         /// The faded mark at the original drop spot, shown once the anchor has moved from it.
@@ -590,6 +687,24 @@ struct ChartMapView: UIViewRepresentable {
         }
 
         private func updateMeasure(_ map: MKMapView) {
+            if let measured = measuredHazard {
+                guard let hazard = engine.hazards.first(where: { $0.id == measured.id }) else { clearMeasure(map); measuredHazard = nil; return }
+                let at = draggedHazard?.coordinate ?? hazard.coordinate
+                if showBoatLine, let boat = engine.fix?.coordinate {
+                    measureLine = replaceLine(map, measureLine, from: boat, to: at, title: "measure")
+                    place(map, measurePin, at: midpoint(boat, at), text: hazard.label + " " + fromBoat(boat, to: at))
+                }
+                guard showMovedLine else { return }
+                if Geo.distance(measured.origin, at) >= 0.5 {
+                    movedLine = replaceLine(map, movedLine, from: measured.origin, to: at, title: "moved")
+                    place(map, originalPin, at: midpoint(measured.origin, at), text: engine.units.format(Geo.distance(measured.origin, at)))
+                } else {
+                    if let movedLine { map.removeOverlay(movedLine) }
+                    movedLine = nil
+                    map.removeAnnotation(originalPin)
+                }
+                return
+            }
             let anchor = dragging ? anchorPin.coordinate : (engine.anchor ?? anchorPin.coordinate)
             if showBoatLine, let boat = engine.fix?.coordinate {
                 measureLine = replaceLine(map, measureLine, from: boat, to: anchor, title: "measure")
@@ -706,6 +821,24 @@ struct ChartMapView: UIViewRepresentable {
                 view.displayPriority = .required
                 view.collisionMode = .none
                 return view
+            case let pin as HazardAnnotation:
+                let view = MKAnnotationView(annotation: annotation, reuseIdentifier: "hazard")
+                view.image = HazardIcon.image(pin.hazard?.kind ?? .other)
+                view.canShowCallout = true
+                let remove = UIButton(type: .system)
+                remove.setTitle("Remove", for: .normal)
+                remove.setTitleColor(.systemRed, for: .normal)
+                remove.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
+                remove.sizeToFit()
+                view.rightCalloutAccessoryView = remove
+                let edit = UIButton(type: .system)
+                edit.setTitle("Edit", for: .normal)
+                edit.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
+                edit.sizeToFit()
+                view.leftCalloutAccessoryView = edit
+                view.displayPriority = .required
+                view.collisionMode = .none
+                return view
             case is OriginalAnchorAnnotation:
                 let view = MKAnnotationView(annotation: annotation, reuseIdentifier: "original")
                 view.image = AnchorIcon.image
@@ -779,6 +912,12 @@ struct ChartMapView: UIViewRepresentable {
             switch overlay {
             case let tile as MKTileOverlay:
                 return MKTileOverlayRenderer(tileOverlay: tile)
+            case let circle as MKCircle where circle.title == "hazard":
+                let r = MKCircleRenderer(circle: circle)
+                r.strokeColor = UIColor.systemRed.withAlphaComponent(0.8)
+                r.fillColor = UIColor.systemRed.withAlphaComponent(0.18)
+                r.lineWidth = 1.5
+                return r
             case let circle as MKCircle where circle.title == "swing":
                 let r = MKCircleRenderer(circle: circle)
                 r.strokeColor = UIColor.systemCyan.withAlphaComponent(0.7)
@@ -989,6 +1128,32 @@ final class MeasureLabelView: MKAnnotationView {
             picture.frame = CGRect(origin: .zero, size: image.size)
             frame.size = image.size
         }
+    }
+}
+
+/// Round red badge with a symbol for the kind of hazard.
+enum HazardIcon {
+    private static var cache: [Hazard.Kind: UIImage] = [:]
+
+    static func image(_ kind: Hazard.Kind) -> UIImage {
+        if let cached = cache[kind] { return cached }
+        let symbol = switch kind {
+        case .rock: "exclamationmark.triangle.fill"
+        case .shoal: "water.waves"
+        case .dock: "rectangle.split.3x1.fill"
+        case .boat: "sailboat.fill"
+        case .other: "exclamationmark"
+        }
+        let size = CGSize(width: 28, height: 28)
+        let image = UIGraphicsImageRenderer(size: size).image { _ in
+            UIColor.white.setFill(); UIBezierPath(ovalIn: CGRect(origin: .zero, size: size)).fill()
+            UIColor.systemRed.setFill(); UIBezierPath(ovalIn: CGRect(x: 2, y: 2, width: 24, height: 24)).fill()
+            let glyph = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .bold))?
+                .withTintColor(.white, renderingMode: .alwaysOriginal)
+            glyph?.draw(in: CGRect(x: 7, y: 7, width: 14, height: 14))
+        }
+        cache[kind] = image
+        return image
     }
 }
 

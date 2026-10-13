@@ -26,6 +26,8 @@
 	<string>Anchor Watch keeps tracking the boat while the screen is off so it can sound the drag alarm.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Anchor Watch uses your location to track the boat relative to the anchor.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Anchor Watch reads the phone's barometer to warn when the pressure falls fast, a sign of wind coming.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSSupportsLiveActivitiesFrequentUpdates</key>

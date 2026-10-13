@@ -617,7 +617,26 @@ final class AnchorWatchEngine: ObservableObject {
     }
 
     /// The first thing in the outlook worth worrying about.
-    var nextRisk: OutlookItem? { Outlook.nextRisk(outlook) }
+    var nextRisk: OutlookItem? { Outlook.nextRisk(visibleOutlook) }
+
+    /// Warnings swiped away in the Next 24 hours list. Cleared on a new anchoring.
+    @Published private(set) var hiddenOutlook: [HiddenOutlook] = []
+    var visibleOutlook: [OutlookItem] { outlook.filter { item in !hiddenOutlook.contains { $0.covers(item) } } }
+    var hiddenOutlookCount: Int { outlook.count - visibleOutlook.count }
+    func hideOutlook(_ item: OutlookItem) {
+        guard !isLocked(item) else { return }
+        hiddenOutlook.append(HiddenOutlook(item))
+    }
+    func showHiddenOutlook() { hiddenOutlook = [] }
+
+    /// Warnings locked so they can't be deleted. Cleared on a new anchoring.
+    @Published private(set) var lockedOutlook: [HiddenOutlook] = []
+    func isLocked(_ item: OutlookItem) -> Bool { lockedOutlook.contains { $0.matches(item) } }
+    func lockOutlook(_ item: OutlookItem) {
+        guard !isLocked(item) else { return }
+        lockedOutlook.append(HiddenOutlook(item))
+    }
+    func unlockOutlook(_ item: OutlookItem) { lockedOutlook.removeAll { $0.matches(item) } }
 
     private func refreshOutlookIfDue() {
         let hasData = tide != nil || windHere != nil
@@ -629,7 +648,8 @@ final class AnchorWatchEngine: ObservableObject {
                                     current: currents == nil ? nil : { [weak self] in self?.currentHere(at: $0) })
         hourlyHolding = hourly
         outlook = Outlook.items(boat, scope: scope, rodeOut: rodeOut, depths: depths, hourly: hourly,
-                                tideTurns: tide?.events ?? [], currentEvents: scaledCurrentEvents, units: units)
+                                tideTurns: tide?.events ?? [], currentEvents: scaledCurrentEvents,
+                                anchor: anchor, hazards: hazards, units: units)
     }
 
     // MARK: Tidal current (NOAA predictions for the nearest current station)
@@ -771,6 +791,8 @@ final class AnchorWatchEngine: ObservableObject {
 
     private let simulator = SimulatedLocationSource()
     private let gps: GPSLocationSource?
+    /// The Apple Watch app's line to the phone (not in tests).
+    private let watchLink: WatchLink?
     private let player: AlarmPlaying
     private let liveActivity: LiveActivityControlling
     private let defaults: UserDefaults
@@ -785,6 +807,7 @@ final class AnchorWatchEngine: ObservableObject {
         self.liveActivity = liveActivity ?? LiveActivityController()
         self.defaults = defaults
         self.gps = useGPSHardware ? GPSLocationSource() : nil
+        self.watchLink = useGPSHardware ? WatchLink() : nil
         load()
         loading = false
     }
@@ -824,6 +847,15 @@ final class AnchorWatchEngine: ObservableObject {
         if !demo { player.prepare() }
         #endif
         syncSimulatorRode()
+        startBarometer()
+        // Dev aid: `-demoPressure` fills in three hours of falling pressure, as no simulator has a barometer.
+        if launchArgs.contains("-demoPressure") {
+            pressureHistory = []
+            let now = Date()
+            for minute in stride(from: 180, through: 0, by: -1) {
+                record(pressure: 1013 - 4.5 * Double(180 - minute) / 180, at: now.addingTimeInterval(-Double(minute) * 60))
+            }
+        }
         simulator.onFix = { [weak self] in self?.ingest($0) }
         gps?.onFix = { [weak self] in self?.ingest($0) }
         gps?.onReading = { [weak self] fix in
@@ -836,6 +868,23 @@ final class AnchorWatchEngine: ObservableObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
                 if self?.anchor != nil { self?.raiseAnchor() }
                 self?.dropAnchor(.settled)
+                // Dev aid: `-demoHazard` marks a rock just outside the swing, for screenshots.
+                if let self, launchArgs.contains("-demoHazard"), self.hazards.isEmpty, let anchor = self.anchor {
+                    self.addHazard(Hazard(kind: .rock, at: Geo.destination(from: anchor, bearing: 45, meters: self.sternReach + 20),
+                                          name: "Demo rock"))
+                }
+                // Dev aid: `-showHazardSheet` opens the mark-a-hazard sheet, for screenshots.
+                if let self, launchArgs.contains("-showHazardSheet"), let anchor = self.anchor {
+                    self.pendingHazard = .init(coordinate: Geo.destination(from: anchor, bearing: 120, meters: 90))
+                }
+                // Dev aid: `-showHazardEdit` opens the first hazard's edit sheet (use with `-demoHazard`).
+                if let self, launchArgs.contains("-showHazardEdit"), let first = self.hazards.first {
+                    self.editHazard(first.id)
+                }
+                // Dev aid: `-showRetrieve` starts retrieving a few seconds after the drop, for screenshots.
+                if launchArgs.contains("-showRetrieve") {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 4) { self?.startRetrieval() }
+                }
             }
         }
         if armed { player.arm() }
@@ -888,6 +937,7 @@ final class AnchorWatchEngine: ObservableObject {
         refreshPermissionsIfDue()
         refreshWindHereIfDue()
         syncSimulatedTide()
+        publishToWatch()
         refreshTideIfDue()
         refreshCurrentsIfDue()
         refreshOutlookIfDue()
@@ -929,6 +979,9 @@ final class AnchorWatchEngine: ObservableObject {
 
     func dropAnchor(_ moment: DropMoment = .goingDown) {
         guard let fix, let position = averagedPosition, let accuracy = averagedAccuracy else { return }
+        retrieveTarget = nil
+        hiddenOutlook = []
+        lockedOutlook = []
         // Settled: the anchor is a whole scope distance upwind. The last minute's movement is the boat falling
         // back, not the way the bow points, so only the wind gives the direction.
         let offset = moment == .settled ? settledOffset : ScopeCalculator.gpsFromBow(scope)
@@ -1070,6 +1123,181 @@ final class AnchorWatchEngine: ObservableObject {
         return Geo.distance(anchor, estimate.center) <= estimate.semiMajor
     }
 
+    // MARK: Apple Watch
+
+    /// What the watch shows, sent when it changes (WatchLink decides).
+    private func publishToWatch() {
+        guard let watchLink else { return }
+        if watchLink.onSilence == nil { watchLink.onSilence = { [weak self] in self?.silence() } }
+        let (state, tone): (String, String) = switch watchState {
+        case .notAnchored: ("Not anchored", "gray")
+        case .awaitingFix: ("Finding anchor", "purple")
+        case .alarm: ("Alarm", "red")
+        case .outside: ("Outside circle", "red")
+        case .dragging: ("Dragging", "red")
+        case .movingAway: ("Moving away", "orange")
+        case .holding: ("Holding", "green")
+        }
+        var status = ["state": state, "tone": tone,
+                      "distance": anchor == nil ? "--" : (distance.map(units.format) ?? "--"),
+                      "radius": anchor == nil ? "" : "Alarm at \(units.format(radius))"]
+        if let anchor, let fix {
+            status["detail"] = "Anchor lies \(Compass.name(Geo.bearing(from: fix.coordinate, to: anchor)))"
+        } else {
+            status["detail"] = anchor == nil ? "No anchor set" : "Waiting for GPS"
+        }
+        if let w = windNow { status["wind"] = "Wind \(Int(w.speed.rounded())) kt \(Compass.name(w.direction)), gusts \(Int(w.gust.rounded()))" }
+        if let alarm { status["alarm"] = alarm.message }
+        if let guide = retrievalGuide {
+            status["state"] = "Retrieving"
+            status["tone"] = guide.overAnchor ? "green" : "purple"
+            status["distance"] = units.format(guide.distance)
+            status["radius"] = "bow to anchor"
+            status["detail"] = guide.steer
+        }
+        watchLink.publish(status)
+    }
+
+    // MARK: Anchorage log
+
+    /// Past anchorages, newest first. Saved to a file; tests point `logURL` somewhere of their own.
+    @Published private(set) var anchorages: [AnchorageEntry] = []
+    var logURL: URL? { didSet { anchorages = AnchorageLog.load(from: logURL) } }
+
+    func setAnchorageLocked(_ id: UUID, _ locked: Bool) {
+        guard var entry = anchorages.first(where: { $0.id == id }) else { return }
+        entry.isLocked = locked
+        updateAnchorage(entry)
+    }
+
+    func updateAnchorage(_ entry: AnchorageEntry) {
+        guard let i = anchorages.firstIndex(where: { $0.id == entry.id }) else { return }
+        anchorages[i] = entry
+        AnchorageLog.save(anchorages, to: logURL)
+    }
+
+    /// Locked entries are kept.
+    func deleteAnchorage(_ id: UUID) {
+        anchorages.removeAll { $0.id == id && !$0.isLocked }
+        AnchorageLog.save(anchorages, to: logURL)
+    }
+
+    /// An earlier stay at this spot, while anchored.
+    var previousVisit: AnchorageEntry? {
+        guard let anchor else { return nil }
+        return AnchorageLog.previousVisit(near: anchor, in: anchorages, before: anchorDropped ?? Date())
+    }
+
+    /// Uses the earlier visit's rode and bottom.
+    func applyPreviousVisit() {
+        guard let visit = previousVisit else { return }
+        rodeOutSet = visit.rodeOut
+        if let bottom = AnchorConditions.Bottom(rawValue: visit.bottom) { anchorBottom = bottom }
+    }
+
+    /// Called as the anchor is raised: a stay of ten minutes or more goes in the log, named from the map.
+    private func logStay() {
+        guard let anchor, let anchorDropped,
+              Date().timeIntervalSince(anchorDropped) * max(simTimeScale, 1) >= AnchorageLog.minimumStay else { return }
+        let entry = AnchorageEntry(
+            name: "Anchorage, " + anchorDropped.formatted(.dateTime.day().month(.abbreviated)),
+            latitude: anchor.latitude, longitude: anchor.longitude, dropped: anchorDropped, raised: Date(),
+            depth: scope.depth, rodeOut: rodeOut, radius: radius, maxDistance: maxDistance, bottom: anchorBottom.rawValue,
+            track: AnchorageLog.thin(track.map(\.coordinate)))
+        anchorages.insert(entry, at: 0)
+        AnchorageLog.save(anchorages, to: logURL)
+        let id = entry.id
+        CLGeocoder().reverseGeocodeLocation(CLLocation(latitude: anchor.latitude, longitude: anchor.longitude)) { [weak self] places, _ in
+            guard let place = places?.first, let name = place.name ?? place.locality else { return }
+            Task { @MainActor in
+                guard let self, var named = self.anchorages.first(where: { $0.id == id }) else { return }
+                named.name = name
+                self.updateAnchorage(named)
+            }
+        }
+    }
+
+    // MARK: Barometer
+
+    /// The last 12 hours of barometer readings, about one a minute. Saved, so a restart keeps the trend.
+    @Published private(set) var pressureHistory: [PressureReading] = []
+    private let barometer = Barometer()
+    private var lastPressureAlert = PressureTrend.Level.steady
+
+    /// Change over the last three hours (hPa), once there's that much history.
+    var pressureChange: Double? { PressureTrend.change(pressureHistory) }
+    var pressureLevel: PressureTrend.Level { PressureTrend.level(pressureChange) }
+
+    private func startBarometer() {
+        barometer.onReading = { [weak self] hPa in self?.record(pressure: hPa) }
+        barometer.start()
+    }
+
+    /// Keeps one reading a minute, trims to 12 hours, and notifies once when the fall crosses a threshold.
+    func record(pressure hPa: Double, at time: Date = Date()) {
+        if let last = pressureHistory.last, time.timeIntervalSince(last.time) < 60 { return }
+        pressureHistory.append(PressureReading(time: time, hPa: hPa))
+        pressureHistory.removeAll { time.timeIntervalSince($0.time) > 12 * 3600 }
+        defaults.set(try? JSONEncoder().encode(pressureHistory), forKey: "anchorwatch.pressure")
+        let level = pressureLevel
+        if level > lastPressureAlert, let change = pressureChange {
+            let content = UNMutableNotificationContent()
+            content.title = level == .fallingFast ? "Barometer falling very fast" : "Barometer falling quickly"
+            content.body = String(format: "%.1f hPa in 3 hours. ", change)
+                + (level == .fallingFast ? "Gale risk: check the anchor and the forecast." : "Wind likely: check the anchor.")
+            content.sound = .default
+            content.interruptionLevel = .timeSensitive
+            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        }
+        lastPressureAlert = level
+    }
+
+    // MARK: Hazards
+
+    /// Rocks, shoals, docks and boats marked on the chart. Kept between anchorages.
+    @Published private(set) var hazards: [Hazard] = [] {
+        didSet {
+            defaults.set(try? JSONEncoder().encode(hazards), forKey: "anchorwatch.hazards")
+            lastOutlook = .distantPast
+        }
+    }
+    /// A long-press on empty chart: where a new hazard would go, while its details are chosen.
+    @Published var pendingHazard: PendingHazard?
+    struct PendingHazard: Identifiable {
+        let id = UUID()
+        let coordinate: CLLocationCoordinate2D
+        /// Set when editing a hazard already marked.
+        var hazard: Hazard? = nil
+    }
+
+    func addHazard(_ hazard: Hazard) { hazards.append(hazard) }
+    /// Kind, keep-off distance or name changed.
+    func updateHazard(_ hazard: Hazard) {
+        guard let i = hazards.firstIndex(where: { $0.id == hazard.id }) else { return }
+        hazards[i] = hazard
+    }
+    func editHazard(_ id: UUID) {
+        guard let hazard = hazards.first(where: { $0.id == id }) else { return }
+        pendingHazard = .init(coordinate: hazard.coordinate, hazard: hazard)
+    }
+    func removeHazard(_ id: UUID) { hazards.removeAll { $0.id == id } }
+
+    /// Dragged to a new spot on the chart.
+    func moveHazard(_ id: UUID, to coordinate: CLLocationCoordinate2D) {
+        guard let i = hazards.firstIndex(where: { $0.id == id }) else { return }
+        hazards[i].latitude = coordinate.latitude
+        hazards[i].longitude = coordinate.longitude
+    }
+
+    /// How far the stern reaches at full swing: the rode taut at the lowest water, plus the whole boat.
+    var sternReach: Double { scopeReach + scope.boatLength }
+
+    /// The nearest hazard to the swing and the gap to it (negative when the swing reaches into it).
+    var nearestHazard: (hazard: Hazard, clearance: Double)? {
+        guard let anchor else { return nil }
+        return Clearance.nearest(anchor: anchor, sternReach: sternReach, hazards: hazards)
+    }
+
     /// The arrows on the chart that nudge the anchor a step at a time; shown after a drag or from the Anchor tab.
     @Published var showNudgePad = false
     /// One nudge: 5 ft, or 1 m in metric.
@@ -1113,7 +1341,33 @@ final class AnchorWatchEngine: ObservableObject {
                                      approachFrom: from, lyingTo: anchor, windFrom: wind?.direction, windKnots: wind?.speed)
     }
 
+    // MARK: Retrieving
+
+    /// While raising: where the anchor lies, so the helm can steer up to it. Nil when not retrieving.
+    @Published private(set) var retrieveTarget: CLLocationCoordinate2D?
+    private var retrieveDepth = 0.0
+
+    /// Bow to anchor, and which way to steer, from the latest fix.
+    var retrievalGuide: RetrievalGuide? {
+        guard let retrieveTarget, let fix else { return nil }
+        return .make(phone: fix, anchor: retrieveTarget, bowOffset: ScopeCalculator.gpsFromBow(scope), depth: retrieveDepth)
+    }
+
+    /// Ends the watch as Raise does, but keeps the anchor's position to steer back to it.
+    func startRetrieval() {
+        guard let anchor else { return }
+        let depth = liveDepth
+        raiseAnchor()
+        retrieveTarget = anchor
+        retrieveDepth = depth
+    }
+
+    func endRetrieval() { retrieveTarget = nil }
+
     func raiseAnchor() {
+        logStay()
+        hiddenOutlook = []
+        lockedOutlook = []
         anchor = nil
         anchorUncertainty = nil
         anchorPlacement = nil
@@ -1316,6 +1570,15 @@ final class AnchorWatchEngine: ObservableObject {
         fadeSideButtons = defaults.bool(forKey: "anchorwatch.fadeSideButtons")
         trackWhenUnanchored = defaults.bool(forKey: "anchorwatch.trackUnanchored")
         rodeOutSet = defaults.object(forKey: "anchorwatch.rodeOut") as? Double
+        // Tests get an empty log of their own rather than the phone's.
+        anchorages = defaults === UserDefaults.standard ? AnchorageLog.load() : []
+        if let data = defaults.data(forKey: "anchorwatch.pressure"), let saved = try? JSONDecoder().decode([PressureReading].self, from: data) {
+            pressureHistory = saved
+            lastPressureAlert = pressureLevel
+        }
+        if let data = defaults.data(forKey: "anchorwatch.hazards"), let saved = try? JSONDecoder().decode([Hazard].self, from: data) {
+            hazards = saved
+        }
         if defaults.object(forKey: "anchorwatch.radiusFollows") != nil { radiusFollowsRode = defaults.bool(forKey: "anchorwatch.radiusFollows") }
         if defaults.object(forKey: "anchorwatch.currentFactor") != nil { currentFactor = defaults.double(forKey: "anchorwatch.currentFactor") }
         if let raw = defaults.string(forKey: "anchorwatch.bottom"), let bottom = AnchorConditions.Bottom(rawValue: raw) { anchorBottom = bottom }

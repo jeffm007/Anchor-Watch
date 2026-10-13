@@ -1,4 +1,55 @@
+import CoreLocation
 import Foundation
+
+/// Something to keep clear of, marked on the chart: a rock, a shoal edge, a dock, another boat.
+/// `radius` is how far around the mark to stay off (metres).
+struct Hazard: Codable, Equatable, Identifiable {
+    enum Kind: String, Codable, CaseIterable, Identifiable {
+        case rock = "Rock", shoal = "Shoal", dock = "Dock or pier", boat = "Another boat", other = "Other"
+        var id: String { rawValue }
+        /// A sensible size to start from.
+        var defaultRadius: Double {
+            switch self {
+            case .rock: 8
+            case .shoal: 15
+            case .dock: 5
+            case .boat: 30          // its own swing on its rode
+            case .other: 10
+            }
+        }
+    }
+
+    var id = UUID()
+    var kind: Kind
+    var latitude: Double
+    var longitude: Double
+    var radius: Double
+    var name = ""
+
+    var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: latitude, longitude: longitude) }
+    var label: String { name.isEmpty ? kind.rawValue : name }
+
+    init(kind: Kind, at coordinate: CLLocationCoordinate2D, radius: Double? = nil, name: String = "") {
+        self.kind = kind
+        latitude = coordinate.latitude
+        longitude = coordinate.longitude
+        self.radius = radius ?? kind.defaultRadius
+        self.name = name
+    }
+}
+
+/// How close the boat can come to the hazards. Metres; negative means the swing reaches into one.
+enum Clearance {
+    /// Gap between the stern at full swing (anywhere round the anchor) and the edge of `hazard`.
+    static func clearance(anchor: CLLocationCoordinate2D, sternReach: Double, hazard: Hazard) -> Double {
+        Geo.distance(anchor, hazard.coordinate) - hazard.radius - sternReach
+    }
+
+    /// The hazard with the least clearance, and that clearance.
+    static func nearest(anchor: CLLocationCoordinate2D, sternReach: Double, hazards: [Hazard]) -> (hazard: Hazard, clearance: Double)? {
+        hazards.map { ($0, clearance(anchor: anchor, sternReach: sternReach, hazard: $0)) }.min { $0.1 < $1.1 }
+    }
+}
 
 /// One thing coming up at the anchorage in the next 24 hours.
 struct OutlookItem: Equatable, Identifiable {
@@ -6,7 +57,7 @@ struct OutlookItem: Equatable, Identifiable {
         case info, caution, danger
         static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
     }
-    enum Kind: String { case shallow, scope, gusts, swing, windShift, tideTurn, slack }
+    enum Kind: String { case shallow, scope, gusts, swing, windShift, tideTurn, slack, hazard }
 
     let kind: Kind
     let severity: Severity
@@ -15,7 +66,38 @@ struct OutlookItem: Equatable, Identifiable {
     let end: Date?
     let title: String
     let detail: String
-    var id: String { "\(kind.rawValue)-\(Int(start.timeIntervalSince1970))" }
+    /// What it's about, when there can be several of a kind: the hazard's id.
+    var subject = ""
+    var id: String { "\(kind.rawValue)-\(subject)-\(Int(start.timeIntervalSince1970))" }
+}
+
+/// An outlook warning swiped away or locked. It keeps matching as the forecast is redone each minute,
+/// even though the warning's times shift. A hidden one shows again if it gets worse.
+struct HiddenOutlook: Equatable {
+    let kind: OutlookItem.Kind
+    let subject: String
+    let start: Date
+    let end: Date
+    let severity: OutlookItem.Severity
+
+    init(_ item: OutlookItem) {
+        kind = item.kind
+        subject = item.subject
+        start = item.start
+        end = item.end ?? item.start
+        severity = item.severity
+    }
+
+    /// Hidden: the same warning, no worse than when it was swiped away.
+    func covers(_ item: OutlookItem) -> Bool { item.severity <= severity && matches(item) }
+
+    /// The same warning, however bad it has become.
+    func matches(_ item: OutlookItem) -> Bool {
+        guard item.kind == kind, item.subject == subject else { return false }
+        // A hazard: every warning about it. Anything else: the same stretch, give or take an hour.
+        if kind == .hazard { return true }
+        return item.start <= end.addingTimeInterval(3600) && (item.end ?? item.start) >= start.addingTimeInterval(-3600)
+    }
 }
 
 /// One forecast hour with the safe gust limit worked out at that hour's depth.
@@ -100,7 +182,7 @@ enum Outlook {
     /// scaled to the anchorage; without them the highs and lows stand in for when the current turns.
     static func items(_ b: BoatProfile, scope s: ScopeSettings, rodeOut: Double,
                       depths: [(time: Date, depth: Double)], hourly: [HourlyHolding], tideTurns: [TideEvent],
-                      currentEvents: [CurrentEvent]? = nil,
+                      currentEvents: [CurrentEvent]? = nil, anchor: CLLocationCoordinate2D? = nil, hazards: [Hazard] = [],
                       units: Units, now: Date = Date(), hours: Double = 24) -> [OutlookItem] {
         var items: [OutlookItem] = []
         let end = now.addingTimeInterval(hours * 3600)
@@ -210,7 +292,46 @@ enum Outlook {
             }
         }
 
+        // Where the wind and current will put the stern, hour by hour, against the marked hazards.
+        if let anchor, !hazards.isEmpty {
+            items += hazardItems(anchor: anchor, hazards: hazards, hourly: hourly, rodeOut: rodeOut,
+                                 bowHeight: s.bowHeight, boatLength: s.boatLength, minPush: minPush(b), units: units)
+        }
+
         return items.sorted { $0.start < $1.start }
+    }
+
+    /// Close to a hazard: under this clearance (metres) is a caution; touching it is a danger.
+    static let hazardMargin = 10.0
+
+    /// Stretches when the stern, lying where the wind and current put it, comes within `hazardMargin` of a hazard.
+    static func hazardItems(anchor: CLLocationCoordinate2D, hazards: [Hazard], hourly: [HourlyHolding], rodeOut: Double,
+                            bowHeight: Double, boatLength: Double, minPush: Double, units: Units) -> [OutlookItem] {
+        var items: [OutlookItem] = []
+        for hazard in hazards {
+            var run: [(time: Date, gap: Double)] = []
+            func close() {
+                guard let first = run.first, let last = run.last else { return }
+                let least = run.map(\.gap).min()!
+                items.append(OutlookItem(
+                    kind: .hazard, severity: least <= 0 ? .danger : .caution, start: first.time,
+                    end: run.count > 1 ? last.time : nil,
+                    title: least <= 0 ? "Swing reaches the \(hazard.label.lowercased())"
+                                      : "Swing within \(units.format(least)) of the \(hazard.label.lowercased())",
+                    detail: "Where the wind and current are forecast to put the stern. Let out less rode, or re-anchor further off.",
+                    subject: hazard.id.uuidString))
+                run = []
+            }
+            for h in hourly where h.push >= minPush {
+                let height = h.depth + bowHeight
+                let reach = (rodeOut > height ? (rodeOut * rodeOut - height * height).squareRoot() : 0) + boatLength
+                let stern = Geo.destination(from: anchor, bearing: h.lie, meters: reach)
+                let gap = Geo.distance(stern, hazard.coordinate) - hazard.radius
+                if gap < hazardMargin { run.append((h.time, gap)) } else { close() }
+            }
+            close()
+        }
+        return items
     }
 
     /// The smallest arc holding every bearing: where it starts and how wide it runs clockwise, in degrees.

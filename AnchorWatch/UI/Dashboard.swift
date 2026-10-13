@@ -1,3 +1,4 @@
+import CoreLocation
 import SwiftUI
 
 /// The main screen's top half: boat name and status, then six tiles answering "am I OK?" at a glance.
@@ -24,10 +25,11 @@ struct DashboardHeader: View {
                     if engine.alarm != nil {
                         Button("Silence Alarm") { engine.silence() }
                     }
+                    Button("Retrieve Anchor") { engine.startRetrieval() }
                     Button("Raise Anchor", role: .destructive) { engine.raiseAnchor() }
                     Button("Cancel", role: .cancel) {}
                 } message: {
-                    Text("Raising ends the watch: the circle, track and alarm all stop.")
+                    Text("Raising ends the watch: the circle, track and alarm all stop. Retrieve ends it too, and then shows the way from the bow to the anchor.")
                 }
                 .sheet(isPresented: $dropping) { DropAnchorSheet() }
         }
@@ -57,7 +59,8 @@ struct DashboardHeader: View {
         case .dragging: ("Dragging", "exclamationmark.triangle.fill", .red)
         case .movingAway: ("Moving away", "exclamationmark.triangle.fill", .orange)
         case .holding:
-            engine.holdingWarning != nil || engine.watchProblems.contains(where: { $0.state == .critical })
+            engine.holdingWarning != nil || engine.pressureLevel == .fallingFast
+                || engine.watchProblems.contains(where: { $0.state == .critical })
                 ? ("Check", "exclamationmark.triangle", .orange) : ("Holding", "checkmark.circle", .green)
         }
         return HStack(spacing: 4) {
@@ -89,7 +92,8 @@ struct DashboardTiles: View {
                 }
                 GridRow {
                     tap(anchor, openAnchoring)
-                    tap(tide(now: context.date), openDepth)
+                    // With hazards marked, the Tide tile gives way to Clearance (the tide is in Depth at High Tide).
+                    if engine.anchor != nil && !engine.hazards.isEmpty { clearance } else { tap(tide(now: context.date), openDepth) }
                     distance
                 }
             }
@@ -158,6 +162,18 @@ struct DashboardTiles: View {
             let toward = engine.fix.flatMap { fix in engine.anchor.map { Compass.name(Geo.bearing(from: fix.coordinate, to: $0)) } }
             return "No drag" + (toward.map { " · lies \($0)" } ?? "")
         }
+    }
+
+    /// Gap from the stern at full swing to the nearest marked hazard.
+    private var clearance: some View {
+        guard let nearest = engine.nearestHazard, let anchor = engine.anchor else {
+            return DashboardTile(title: "Clearance", value: "--", detail: "No hazards marked")
+        }
+        let gap = nearest.clearance
+        let toward = Compass.name(Geo.bearing(from: anchor, to: nearest.hazard.coordinate))
+        let color: Color = gap <= 0 ? .red : gap < Outlook.hazardMargin * 3 ? .orange : .primary
+        return DashboardTile(title: "Clearance", value: gap <= 0 ? "Overlap" : units.format(gap),
+                             detail: "\(nearest.hazard.label) · \(toward)", color: color)
     }
 
     private func tide(now: Date) -> some View {
@@ -240,6 +256,20 @@ struct NoticesCard: View {
                                    color: problem.state == .critical ? .red : .orange,
                                    title: problem.title, detail: "The watch check has the details", action: openWatchCheck))
             }
+        }
+        if let visit = engine.previousVisit {
+            let units = engine.units
+            list.append(Notice(id: "visit-\(visit.id)", icon: "clock.arrow.circlepath", color: .blue,
+                               title: "Anchored here before",
+                               detail: "\(visit.dropped.formatted(.dateTime.day().month(.abbreviated).year())) · \(units.format(visit.rodeOut)) out in \(visit.bottom.lowercased()) · \(visit.held.rawValue.lowercased()). › uses that rode and bottom.",
+                               action: { engine.applyPreviousVisit() }))
+        }
+        if engine.pressureLevel > .steady, let change = engine.pressureChange {
+            let fast = engine.pressureLevel == .fallingFast
+            list.append(Notice(id: "pressure-\(engine.pressureLevel.rawValue)", icon: "barometer", color: fast ? .red : .orange,
+                               title: fast ? "Barometer falling very fast" : "Barometer falling quickly",
+                               detail: String(format: "%.1f hPa in 3 hours: ", change) + (fast ? "gale risk." : "wind likely."),
+                               action: openConditions))
         }
         for alert in engine.nwsAlerts {
             list.append(Notice(id: "nws-\(alert.id)", icon: "exclamationmark.triangle", color: alert.severity.color,
@@ -326,8 +356,9 @@ struct OutlookBanner: View {
                 return ("clock", .secondary, "Next 24 hours", "Waiting for the tide and wind forecasts…")
             }
             guard let risk = engine.nextRisk else {
-                let next = engine.outlook.first { $0.start > now }
-                return ("checkmark.circle.fill", .green, "Clear for the next 24 hours",
+                let next = engine.visibleOutlook.first { $0.start > now }
+                return ("checkmark.circle.fill", .green,
+                        engine.hiddenOutlookCount > 0 ? "Nothing else in the next 24 hours" : "Clear for the next 24 hours",
                         next.map { "Next: \($0.title.lowercased()) at \($0.start.formatted(date: .omitted, time: .shortened))" }
                             ?? "Nothing in the tide or wind forecast to worry about.")
             }
@@ -367,19 +398,42 @@ struct OutlookList: View {
             List {
                 if engine.outlook.isEmpty {
                     Text("Nothing yet: the outlook needs the tide or wind forecast.").foregroundStyle(.secondary)
+                } else if engine.visibleOutlook.isEmpty {
+                    Text("Nothing else coming up.").foregroundStyle(.secondary)
                 }
-                ForEach(engine.outlook) { item in
+                ForEach(engine.visibleOutlook) { item in
                     HStack(alignment: .top, spacing: 12) {
                         Image(systemName: Self.icon(item.kind)).foregroundStyle(Self.color(item.severity)).frame(width: 24)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(Self.span(item)).font(.caption.bold()).foregroundStyle(.secondary)
+                            HStack(spacing: 4) {
+                                Text(Self.span(item)).font(.caption.bold()).foregroundStyle(.secondary)
+                                if engine.isLocked(item) {
+                                    Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary)
+                                        .accessibilityLabel("Locked")
+                                }
+                            }
                             Text(item.title).font(.subheadline.bold())
                             Text(item.detail).font(.caption).foregroundStyle(.secondary)
                         }
                     }
+                    .swipeActions(edge: .trailing) {
+                        if engine.isLocked(item) {
+                            Button { engine.unlockOutlook(item) } label: { Label("Unlock", systemImage: "lock.open") }
+                                .tint(.gray)
+                        } else {
+                            Button(role: .destructive) { withAnimation { engine.hideOutlook(item) } } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                            Button { engine.lockOutlook(item) } label: { Label("Lock", systemImage: "lock") }
+                                .tint(.blue)
+                        }
+                    }
+                }
+                if engine.hiddenOutlookCount > 0 {
+                    Button("Show \(engine.hiddenOutlookCount) hidden") { withAnimation { engine.showHiddenOutlook() } }
                 }
                 Section {
-                    Text("Worked out from the tide predictions, the wind forecast and your boat, rode (\(engine.units.format(engine.rodeOut)) assumed out) and bottom. The safe gust limit is recalculated for each hour's depth. Forecasts can be wrong; keep a lookout.")
+                    Text("Swipe left to delete a warning (it comes back only if it gets worse) or lock it so it can't be deleted. Worked out from the tide predictions, the wind forecast and your boat, rode (\(engine.units.format(engine.rodeOut)) assumed out) and bottom. The safe gust limit is recalculated for each hour's depth. Forecasts can be wrong; keep a lookout.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -411,6 +465,7 @@ struct OutlookList: View {
         case .windShift: "arrow.triangle.turn.up.right.circle"
         case .tideTurn: "water.waves"
         case .slack: "arrow.left.arrow.right"
+        case .hazard: "exclamationmark.triangle"
         }
     }
 
@@ -521,3 +576,268 @@ struct DropAnchorSheet: View {
     }
 }
 
+
+/// Marking a hazard where the chart was long-pressed: what it is, how far to keep off, and a name.
+struct HazardSheet: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+    @Environment(\.dismiss) private var dismiss
+    let coordinate: CLLocationCoordinate2D
+    /// The hazard being edited; nil when marking a new one.
+    let existing: Hazard?
+    @State private var kind: Hazard.Kind
+    @State private var radius: Double
+    @State private var name: String
+
+    init(coordinate: CLLocationCoordinate2D, existing: Hazard? = nil) {
+        self.coordinate = coordinate
+        self.existing = existing
+        _kind = State(initialValue: existing?.kind ?? .rock)
+        _radius = State(initialValue: existing?.radius ?? Hazard.Kind.rock.defaultRadius)
+        _name = State(initialValue: existing?.name ?? "")
+    }
+
+    private var units: Units { engine.units }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(existing == nil ? "Mark a hazard" : "Edit hazard").font(.title2.bold())
+            Picker("Kind", selection: $kind) {
+                ForEach(Hazard.Kind.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.menu)
+            .onChange(of: kind) { _, k in radius = k.defaultRadius }
+            VStack(alignment: .leading, spacing: 4) {
+                LabeledContent("Keep off by", value: units.format(radius))
+                Slider(value: $radius, in: 2...80, step: 1)
+                Text(kind == .boat ? "Another boat swings on its own rode: allow for its swing." : "How far around the mark to stay clear.")
+                    .font(.footnote).foregroundStyle(.white.opacity(0.7))
+            }
+            TextField("Name (optional)", text: $name)
+                .textFieldStyle(.roundedBorder)
+            if let anchor = engine.anchor {
+                let gap = Clearance.clearance(anchor: anchor, sternReach: engine.sternReach,
+                                              hazard: Hazard(kind: kind, at: coordinate, radius: radius))
+                Label(gap <= 0 ? "Your swing reaches it." : "Your stern's swing clears it by \(units.format(gap)).",
+                      systemImage: gap <= 0 ? "exclamationmark.triangle.fill" : "checkmark.circle")
+                    .foregroundStyle(gap <= 0 ? .red : gap < Outlook.hazardMargin * 3 ? .orange : .green)
+            }
+            HStack(spacing: 12) {
+                Button { dismiss() } label: {
+                    Text("Cancel").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 12)
+                }
+                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                Button {
+                    if var hazard = existing {
+                        hazard.kind = kind
+                        hazard.radius = radius
+                        hazard.name = name
+                        engine.updateHazard(hazard)
+                    } else {
+                        engine.addHazard(Hazard(kind: kind, at: coordinate, radius: radius, name: name))
+                    }
+                    dismiss()
+                } label: {
+                    Text(existing == nil ? "Mark it" : "Save").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 12)
+                }
+                .background(Color.red.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
+            }
+            .buttonStyle(.plain)
+            if let existing {
+                Button(role: .destructive) {
+                    engine.removeHazard(existing.id)
+                    dismiss()
+                } label: {
+                    Text("Remove this hazard").font(.subheadline.weight(.semibold)).foregroundStyle(.red)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(20)
+        .foregroundStyle(.white)
+        .presentationDetents([.medium, .large])
+        .presentationBackground(Color(white: 0.17))
+        .preferredColorScheme(.dark)
+    }
+}
+
+/// Night watch: black and dim red, just what matters from the berth, so it doesn't spoil night vision.
+struct NightModeView: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+    @Environment(\.dismiss) private var dismiss
+    @State private var showExit = false
+    @State private var savedBrightness: CGFloat?
+
+    private let red = Color(red: 0.85, green: 0.1, blue: 0.08)
+    private var units: Units { engine.units }
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            ZStack {
+                Color.black.ignoresSafeArea()
+                VStack(spacing: 14) {
+                    Text(status.uppercased()).font(.title2.weight(.heavy)).tracking(2)
+                    VStack(spacing: 0) {
+                        Text(engine.distance.map(units.format) ?? "--")
+                            .font(.system(size: 76, weight: .bold, design: .rounded)).monospacedDigit()
+                            .minimumScaleFactor(0.5).lineLimit(1)
+                        Text("from the anchor · alarm at \(units.format(engine.radius))").font(.subheadline)
+                    }
+                    NightRadar(red: red).frame(maxWidth: 320, maxHeight: 320).aspectRatio(1, contentMode: .fit)
+                    HStack(spacing: 16) {
+                        if let w = engine.windNow { Text("\(Int(w.speed.rounded())) kt \(Compass.name(w.direction))") }
+                        if let next = engine.nextTide { Text("\(next.isHigh ? "High" : "Low") \(next.time.formatted(date: .omitted, time: .shortened))") }
+                        Text(context.date.formatted(date: .omitted, time: .shortened))
+                        if let fix = engine.fix { Text("±\(units.format(fix.accuracy))") }
+                    }
+                    .font(.footnote.monospacedDigit())
+                    if let alarm = engine.alarm {
+                        Text(alarm.message).font(.headline).multilineTextAlignment(.center)
+                        Button { engine.silence() } label: {
+                            Text("SILENCE").font(.title3.bold()).frame(maxWidth: .infinity).padding(.vertical, 16)
+                        }
+                        .foregroundStyle(.black)
+                        .background(red, in: RoundedRectangle(cornerRadius: 14))
+                    }
+                    if showExit {
+                        Button { dismiss() } label: {
+                            Text("Exit night mode").font(.headline).padding(.horizontal, 24).padding(.vertical, 10)
+                        }
+                        .overlay(Capsule().stroke(red, lineWidth: 1))
+                    }
+                }
+                .foregroundStyle(red)
+                .padding(20)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation { showExit = true }
+                Task { try? await Task.sleep(for: .seconds(5)); withAnimation { showExit = false } }
+            }
+        }
+        .statusBarHidden()
+        .onAppear {
+            // Dim the screen right down, and put it back afterwards.
+            if let screen = (UIApplication.shared.connectedScenes.first as? UIWindowScene)?.screen {
+                savedBrightness = screen.brightness
+                screen.brightness = 0.05
+            }
+        }
+        .onDisappear {
+            if let savedBrightness, let screen = (UIApplication.shared.connectedScenes.first as? UIWindowScene)?.screen {
+                screen.brightness = savedBrightness
+            }
+        }
+    }
+
+    private var status: String {
+        switch engine.watchState {
+        case .notAnchored: "Not anchored"
+        case .awaitingFix: "Finding anchor"
+        case .alarm: "Alarm"
+        case .outside: "Outside circle"
+        case .dragging: "Dragging"
+        case .movingAway: "Moving away"
+        case .holding: "Holding"
+        }
+    }
+}
+
+/// North-up sketch of the anchorage in red: alarm and swing circles, the anchor, the boat and the last half hour.
+struct NightRadar: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+    let red: Color
+
+    var body: some View {
+        Canvas { ctx, size in
+            guard let anchor = engine.anchor else { return }
+            let c = CGPoint(x: size.width / 2, y: size.height / 2)
+            let scale = (min(size.width, size.height) / 2 - 6) / max(engine.radius, engine.swingRadius, 1)
+            func p(_ coord: CLLocationCoordinate2D) -> CGPoint {
+                let o = GPSQuality.offset(coord, from: anchor)
+                return CGPoint(x: c.x + o.east * scale, y: c.y - o.north * scale)
+            }
+            func ring(_ r: Double) -> Path { Path(ellipseIn: CGRect(x: c.x - r * scale, y: c.y - r * scale, width: 2 * r * scale, height: 2 * r * scale)) }
+            ctx.stroke(ring(engine.radius), with: .color(red), lineWidth: 2)
+            ctx.stroke(ring(engine.swingRadius), with: .color(red.opacity(0.5)), style: StrokeStyle(lineWidth: 1, dash: [5, 5]))
+            let recent = engine.track.filter { Date().timeIntervalSince($0.timestamp) * max(engine.simTimeScale, 1) <= 1800 }
+            if recent.count > 1 {
+                var trail = Path()
+                trail.addLines(recent.map { p($0.coordinate) })
+                ctx.stroke(trail, with: .color(red.opacity(0.6)), lineWidth: 1.5)
+            }
+            ctx.draw(Text(anchorGlyph).font(.title3).foregroundStyle(red), at: c)
+            if let fix = engine.fix {
+                let b = p(fix.coordinate)
+                ctx.fill(Path(ellipseIn: CGRect(x: b.x - 6, y: b.y - 6, width: 12, height: 12)), with: .color(red))
+            }
+            ctx.draw(Text("N").font(.caption.bold()).foregroundStyle(red.opacity(0.7)), at: CGPoint(x: c.x, y: 8))
+        }
+    }
+}
+
+/// While raising: a big arrow from the bow to the anchor, the distance, and which way to steer.
+struct RetrieveView: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+    @Environment(\.dismiss) private var dismiss
+
+    private var units: Units { engine.units }
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Text("RETRIEVING THE ANCHOR").font(.headline.weight(.heavy)).tracking(2).foregroundStyle(.secondary)
+                .padding(.top, 24)
+            Spacer()
+            if let guide = engine.retrievalGuide {
+                let color: Color = guide.overAnchor ? .green : .white
+                Group {
+                    if guide.overAnchor {
+                        Image(systemName: "arrow.down.to.line")
+                    } else {
+                        Image(systemName: "arrow.up")
+                            .rotationEffect(.degrees(guide.relative ?? guide.bearing))
+                            .animation(.easeOut(duration: 0.5), value: guide.relative ?? guide.bearing)
+                    }
+                }
+                .font(.system(size: 150, weight: .bold))
+                .foregroundStyle(color)
+                .frame(width: 240, height: 240)
+                .background(Circle().stroke(Color.white.opacity(0.15), lineWidth: 2))
+                .overlay(alignment: .top) {
+                    // North-up when the boat isn't moving fast enough to know its course.
+                    if guide.relative == nil && !guide.overAnchor {
+                        Text("N").font(.caption.bold()).foregroundStyle(.secondary).offset(y: -22)
+                    }
+                }
+                Text(units.format(guide.distance))
+                    .font(.system(size: 64, weight: .bold, design: .rounded)).monospacedDigit()
+                    .foregroundStyle(color)
+                Text("bow to anchor" + (engine.fix.map { " · GPS ±\(units.format($0.accuracy))" } ?? ""))
+                    .font(.subheadline).foregroundStyle(.secondary)
+                Text(guide.steer).font(.title2.bold()).foregroundStyle(color).multilineTextAlignment(.center)
+                Text(guide.overAnchor ? "Break it out and bring it up."
+                     : guide.relative == nil ? "North up. Get under way slowly for a steering arrow."
+                     : "Arrow relative to your course over the ground.")
+                    .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            } else {
+                ProgressView()
+                Text("Waiting for GPS").foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button {
+                engine.endRetrieval()
+                dismiss()
+            } label: {
+                Text("Anchor's up").font(.title3.bold()).frame(maxWidth: .infinity).padding(.vertical, 16)
+            }
+            .buttonStyle(.plain)
+            .background(Color.green.opacity(0.75), in: RoundedRectangle(cornerRadius: 14))
+            .padding(.bottom, 12)
+        }
+        .padding(.horizontal, 20)
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(white: 0.08).ignoresSafeArea())
+        .preferredColorScheme(.dark)
+    }
+}

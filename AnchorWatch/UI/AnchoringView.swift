@@ -95,6 +95,12 @@ struct AnchoringView: View {
                                                     set: { conditions.rodeOut = $0; engine.rodeOutSet = $0 })),
                          0...max(10, rodeMax * units.perMeter), step: units == .feet ? 5 : 1,
                          format: "%.0f " + units.symbol)
+                    // Once anchored, the alarm radius sits with the depth and rode that set its default.
+                    if engine.anchor != nil {
+                        knob("Alarm radius", length(Binding(get: { engine.radius }, set: { engine.setRadiusByHand($0) })),
+                             (10 * units.perMeter)...(300 * units.perMeter), step: units == .feet ? 5 : 1,
+                             format: "%.0f " + units.symbol)
+                    }
                     Picker("Tide", selection: $tide) {
                         ForEach(TideChoice.allCases) { Text($0.rawValue).tag($0) }
                     }.pickerStyle(.segmented)
@@ -110,8 +116,14 @@ struct AnchoringView: View {
                     LabeledContent("Snubber", value: boat.hasSnubber ? units.format(boat.snubberLength) : "None")
                 }
 
+                Section("Suggestions") {
+                    ForEach(AnchorMath.suggestions(boat, scope: tideScope, conditions, r, units: units, tideTurn: engine.nextTide?.time), id: \.self) { tip in
+                        Label(tip, systemImage: "lightbulb").font(.subheadline)
+                    }
+                }
+
                 if engine.anchor != nil {
-                    Section("Alarm radius") {
+                    Section("Anchor") {
                         AnchorRadiusControls(onMove: { engine.tab = .watch })
                     }
                 }
@@ -143,12 +155,6 @@ struct AnchoringView: View {
                 } footer: {
                     if showConditions {
                         Text("The wind sets how the chain lies; gusts drive the limits.")
-                    }
-                }
-
-                Section("Suggestions") {
-                    ForEach(AnchorMath.suggestions(boat, scope: tideScope, conditions, r, units: units, tideTurn: engine.nextTide?.time), id: \.self) { tip in
-                        Label(tip, systemImage: "lightbulb").font(.subheadline)
                     }
                 }
 

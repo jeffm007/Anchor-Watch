@@ -9,7 +9,7 @@ settings:
     SWIFT_VERSION: "5.0"
     TARGETED_DEVICE_FAMILY: "1"
     MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: "16"
+    CURRENT_PROJECT_VERSION: "17"
     DEVELOPMENT_TEAM: FD52K7B8M3
     CODE_SIGN_STYLE: Automatic
 targets:
@@ -19,6 +19,7 @@ targets:
     sources: [AnchorWatch, AnchorWatchShared]
     dependencies:
       - target: AnchorWatchWidgets
+      - target: AnchorWatchWatch
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.jeffmitchell.anchorwatch
@@ -42,6 +43,7 @@ targets:
         NSSupportsLiveActivitiesFrequentUpdates: true
         NSLocationWhenInUseUsageDescription: Anchor Watch uses your location to track the boat relative to the anchor.
         NSLocationAlwaysAndWhenInUseUsageDescription: Anchor Watch keeps tracking the boat while the screen is off so it can sound the drag alarm.
+        NSMotionUsageDescription: Anchor Watch reads the phone's barometer to warn when the pressure falls fast, a sign of wind coming.
   AnchorWatchWidgets:
     type: app-extension
     platform: iOS
@@ -59,6 +61,22 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
+  AnchorWatchWatch:
+    type: application
+    platform: watchOS
+    deploymentTarget: "10.0"
+    sources: [AnchorWatchWatch]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jeffmitchell.anchorwatch.watchkitapp
+        TARGETED_DEVICE_FAMILY: "4"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Anchor Watch
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+        INFOPLIST_KEY_WKCompanionAppBundleIdentifier: com.jeffmitchell.anchorwatch
+        INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp: NO
+        SKIP_INSTALL: YES
   AnchorWatchTests:
     type: bundle.unit-test
     platform: iOS

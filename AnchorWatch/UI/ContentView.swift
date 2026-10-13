@@ -20,6 +20,9 @@ struct RootView: View {
                 .tag(AnchorWatchEngine.Tab.weather)
         }
         .preferredColorScheme(.dark)
+        // Retrieving can start from the Watch or the Anchor tab.
+        .fullScreenCover(isPresented: Binding(get: { engine.retrieveTarget != nil },
+                                              set: { if !$0 { engine.endRetrieval() } })) { RetrieveView() }
         .onAppear {
             // Dev aids for screenshots: open a page at launch.
             let args = ProcessInfo.processInfo.arguments
@@ -105,6 +108,10 @@ struct ContentView: View {
     @State private var showAlerts = false
     // `-showGuide` opens the user guide, `-guideTopic <id>` one topic of it, at launch, for screenshots.
     @State private var showGuide = ProcessInfo.processInfo.arguments.contains("-showGuide")
+    // `-night` opens night mode at launch, for screenshots.
+    @State private var showNight = ProcessInfo.processInfo.arguments.contains("-night")
+    // `-showQuickGuide` opens the quick guide at launch, for screenshots.
+    @State private var showQuickGuide = ProcessInfo.processInfo.arguments.contains("-showQuickGuide")
     @State private var guideTopic: GuideTopic? = {
         let args = ProcessInfo.processInfo.arguments
         guard let i = args.firstIndex(of: "-guideTopic"), args.indices.contains(i + 1) else { return nil }
@@ -140,6 +147,11 @@ struct ContentView: View {
         .sheet(isPresented: $showSettings) { SettingsView() }
         .sheet(isPresented: $showAlerts) { AlertsView() }
         .sheet(isPresented: $showWatchCheck) { WatchCheckView() }
+        .sheet(item: $engine.pendingHazard) { pending in HazardSheet(coordinate: pending.coordinate, existing: pending.hazard) }
+        .fullScreenCover(isPresented: $showNight) { NightModeView() }
+        .sheet(isPresented: $showQuickGuide) {
+            NavigationStack { QuickGuideView().toolbar { Button("Done") { showQuickGuide = false } } }
+        }
         .sheet(isPresented: $showGuide) {
             NavigationStack { UserGuideView().toolbar { Button("Done") { showGuide = false } } }
         }
@@ -201,6 +213,7 @@ struct ContentView: View {
                     RoundIcon(icon: "wind", active: engine.windOverlayOn)
                 }
                 RoundButton(icon: "scope") { engine.recenter() }
+                RoundButton(icon: "moon.fill") { showNight = true }
                 RoundButton(icon: "plus") { engine.zoom(by: 0.5) }
                 RoundButton(icon: "minus") { engine.zoom(by: 2) }
             }
@@ -306,12 +319,11 @@ struct AnchorRadiusControls: View {
     @EnvironmentObject var engine: AnchorWatchEngine
     let onMove: () -> Void
     @State private var showScope = false
+    @State private var raising = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                LabeledContent("Alarm radius", value: engine.units.format(engine.radius))
-                Slider(value: radiusBinding, in: 10...300, step: 5)
                 Button { showScope = true } label: {
                     Label("Scope calculator · suggests \(engine.units.format(engine.suggestedRadius))", systemImage: "ruler")
                 }.font(.footnote)
@@ -330,8 +342,15 @@ struct AnchorRadiusControls: View {
                     Button { engine.showNudgePad = true; onMove() } label: {
                         Label("Fine-tune", systemImage: "arrow.up.and.down.and.arrow.left.and.right").frame(maxWidth: .infinity)
                     }
-                    Button(role: .destructive) { engine.raiseAnchor() } label: {
+                    Button(role: .destructive) { raising = true } label: {
                         Label("Raise", systemImage: "arrow.up.to.line").frame(maxWidth: .infinity)
+                    }
+                    .confirmationDialog("Raise the anchor", isPresented: $raising, titleVisibility: .visible) {
+                        Button("Retrieve Anchor") { engine.startRetrieval() }
+                        Button("Raise Anchor", role: .destructive) { engine.raiseAnchor() }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("Both end the watch. Retrieve then shows the way from the bow to the anchor.")
                     }
                 }
             }
@@ -390,9 +409,6 @@ struct AnchorRadiusControls: View {
     }
 
     /// Slider works in metres; steps are 5 m regardless of display units.
-    private var radiusBinding: Binding<Double> {
-        Binding(get: { engine.radius }, set: { engine.setRadiusByHand($0) })
-    }
 }
 
 struct SettingsView: View {
@@ -403,6 +419,12 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
+                    NavigationLink {
+                        QuickGuideView()
+                    } label: {
+                        Label("Quick Guide", systemImage: "list.bullet.rectangle")
+                    }
+                    .accessibilityIdentifier("quickGuide")
                     NavigationLink {
                         UserGuideView()
                     } label: {
@@ -415,6 +437,12 @@ struct SettingsView: View {
                         Label("Boat Profile", systemImage: "sailboat")
                     }
                     .accessibilityIdentifier("boatProfile")
+                    NavigationLink {
+                        AnchorageLogView()
+                    } label: {
+                        Label("Anchorage Log", systemImage: "book.closed")
+                    }
+                    .accessibilityIdentifier("anchorageLog")
                 }
                 Section {
                     Stepper(value: $engine.gustLimit, in: 10...50, step: 5) {
@@ -756,6 +784,7 @@ struct ConditionsView: View {
                     }
                 }
                 WindOutlookSections()
+                BarometerSection()
                 if !engine.observations.isEmpty {
                     Section {
                         Button { engine.fitStations(); engine.tab = .watch } label: {

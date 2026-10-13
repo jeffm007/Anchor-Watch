@@ -1814,3 +1814,258 @@ final class AnchorPhysicsTests: XCTestCase {
     }
 }
 
+final class HazardTests: XCTestCase {
+    private let anchor = CLLocationCoordinate2D(latitude: 48.6, longitude: -123.15)
+    private let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    func testClearanceIsTheGapFromTheSternsFullSwingToTheEdge() {
+        let rock = Hazard(kind: .rock, at: Geo.destination(from: anchor, bearing: 45, meters: 100), radius: 8)
+        XCTAssertEqual(Clearance.clearance(anchor: anchor, sternReach: 70, hazard: rock), 22, accuracy: 0.01)
+        XCTAssertLessThan(Clearance.clearance(anchor: anchor, sternReach: 95, hazard: rock), 0, "swing reaches it")
+        let far = Hazard(kind: .dock, at: Geo.destination(from: anchor, bearing: 200, meters: 300))
+        XCTAssertEqual(Clearance.nearest(anchor: anchor, sternReach: 70, hazards: [far, rock])?.hazard, rock)
+    }
+
+    func testOutlookFlagsTheHazardTheWindPushesTheBoatToward() {
+        // A steady northerly: the boat lies south of the anchor, ~60 m with 60 m of rode in 6 m of water.
+        let b = BoatProfile()
+        let scope = ScopeSettings(depth: 6, bowHeight: 1.2, boatLength: 14.3, scopeRatio: 5, margin: 5)
+        let depths: [(time: Date, depth: Double)] = (0...144).map { (now.addingTimeInterval(Double($0) * 600), 6.0) }
+        let forecast = (0...24).map { WindSample(time: now.addingTimeInterval(Double($0) * 3600), speed: 15, direction: 0, gust: 18) }
+        let hourly = Outlook.hourly(b, scope: scope, bottom: .mud, rodeOut: 60, depths: depths, forecast: forecast, now: now)
+        let south = Hazard(kind: .rock, at: Geo.destination(from: anchor, bearing: 180, meters: 78), radius: 5)
+        let north = Hazard(kind: .rock, at: Geo.destination(from: anchor, bearing: 0, meters: 78), radius: 5)
+        let items = Outlook.items(b, scope: scope, rodeOut: 60, depths: depths, hourly: hourly, tideTurns: [],
+                                  anchor: anchor, hazards: [south, north], units: .feet, now: now)
+        let hazardItems = items.filter { $0.kind == .hazard }
+        XCTAssertEqual(hazardItems.count, 1, "only the rock downwind")
+        XCTAssertEqual(hazardItems.first?.severity, .danger)
+    }
+
+    @MainActor func testHazardsAreSavedAndRemoved() {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false)
+        let rock = Hazard(kind: .rock, at: anchor, name: "Pole Pass rock")
+        e.addHazard(rock)
+        let again = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false)
+        XCTAssertEqual(again.hazards, [rock])
+        let moved = Geo.destination(from: anchor, bearing: 90, meters: 25)
+        again.moveHazard(rock.id, to: moved)
+        XCTAssertEqual(again.hazards[0].coordinate, moved)
+        XCTAssertEqual(again.hazards[0].name, "Pole Pass rock", "keeps everything else")
+        again.removeHazard(rock.id)
+        XCTAssertTrue(again.hazards.isEmpty)
+    }
+
+    @MainActor func testEditingAHazardKeepsItsPlace() {
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false)
+        let rock = Hazard(kind: .rock, at: anchor)
+        e.addHazard(rock)
+        e.editHazard(rock.id)
+        XCTAssertEqual(e.pendingHazard?.hazard, rock, "the sheet opens filled in")
+        var changed = rock
+        changed.kind = .shoal
+        changed.radius = 25
+        changed.name = "Sand spit"
+        e.updateHazard(changed)
+        XCTAssertEqual(e.hazards, [changed])
+        XCTAssertEqual(e.hazards[0].coordinate, rock.coordinate)
+    }
+}
+
+final class PressureTests: XCTestCase {
+    private let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func readings(fall: Double, hours: Double = 3) -> [PressureReading] {
+        stride(from: hours * 60, through: 0, by: -10).map { m in
+            PressureReading(time: now.addingTimeInterval(-m * 60), hPa: 1013 - fall * (hours * 60 - m) / (hours * 60))
+        }
+    }
+
+    func testThreeHourChangeAndLevels() {
+        XCTAssertEqual(PressureTrend.change(readings(fall: 4), now: now)!, -4, accuracy: 0.01)
+        XCTAssertEqual(PressureTrend.level(-1.5), .steady)
+        XCTAssertEqual(PressureTrend.level(-4), .fallingQuickly)
+        XCTAssertEqual(PressureTrend.level(-7), .fallingFast)
+        XCTAssertEqual(PressureTrend.level(+5), .steady, "a rise isn't a warning")
+    }
+
+    func testNeedsMostOfThreeHoursOfHistory() {
+        XCTAssertNil(PressureTrend.change(readings(fall: 4, hours: 1), now: now))
+    }
+
+    @MainActor func testEngineKeepsAReadingAMinute() {
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false)
+        e.record(pressure: 1013, at: now)
+        e.record(pressure: 1012.9, at: now.addingTimeInterval(20))          // too soon: dropped
+        e.record(pressure: 1012.8, at: now.addingTimeInterval(61))
+        XCTAssertEqual(e.pressureHistory.map(\.hPa), [1013, 1012.8])
+    }
+}
+
+final class AnchorageLogTests: XCTestCase {
+    private let spot = CLLocationCoordinate2D(latitude: 48.6, longitude: -123.15)
+
+    private func entry(_ at: CLLocationCoordinate2D, daysAgo: Double) -> AnchorageEntry {
+        let dropped = Date().addingTimeInterval(-daysAgo * 86_400)
+        return AnchorageEntry(name: "Test", latitude: at.latitude, longitude: at.longitude, dropped: dropped,
+                              raised: dropped.addingTimeInterval(3600), depth: 8, rodeOut: 50, radius: 60, maxDistance: 45,
+                              bottom: "Mud")
+    }
+
+    func testPreviousVisitIsTheLatestNearbyOne() {
+        let old = entry(spot, daysAgo: 30), recent = entry(Geo.destination(from: spot, bearing: 90, meters: 80), daysAgo: 5)
+        let elsewhere = entry(Geo.destination(from: spot, bearing: 0, meters: 2_000), daysAgo: 1)
+        XCTAssertEqual(AnchorageLog.previousVisit(near: spot, in: [old, recent, elsewhere], before: Date())?.id, recent.id)
+        XCTAssertNil(AnchorageLog.previousVisit(near: spot, in: [elsewhere], before: Date()))
+    }
+
+    func testLongTracksAreThinnedKeepingTheEnds() {
+        let points = (0..<5_000).map { Geo.destination(from: spot, bearing: 90, meters: Double($0) * 0.1) }
+        let thinned = AnchorageLog.thin(points)
+        XCTAssertEqual(thinned.count, 400)
+        XCTAssertEqual(thinned.last![1], points.last!.longitude, accuracy: 1e-9)
+    }
+
+    @MainActor func testRaisingAfterTenMinutesLogsTheStay() throws {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        // An anchor dropped 20 minutes ago, as the app saves it.
+        let dropped = Date().addingTimeInterval(-1_200).timeIntervalSinceReferenceDate
+        defaults.set(#"{"latitude":48.6,"longitude":-123.15,"radius":40,"dropped":\#(dropped)}"#.data(using: .utf8), forKey: "anchorwatch.saved")
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false)
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        e.logURL = file
+        XCTAssertNotNil(e.anchor)
+        e.raiseAnchor()
+        XCTAssertEqual(e.anchorages.count, 1)
+        XCTAssertEqual(e.anchorages[0].radius, 40)
+        XCTAssertEqual(AnchorageLog.load(from: file).count, 1, "saved to the file")
+    }
+
+    @MainActor func testALockedAnchorageCantBeDeleted() throws {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let dropped = Date().addingTimeInterval(-1_200).timeIntervalSinceReferenceDate
+        defaults.set(#"{"latitude":48.6,"longitude":-123.15,"radius":40,"dropped":\#(dropped)}"#.data(using: .utf8), forKey: "anchorwatch.saved")
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false)
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        e.logURL = file
+        e.raiseAnchor()
+        let id = try XCTUnwrap(e.anchorages.first?.id)
+        e.setAnchorageLocked(id, true)
+        e.deleteAnchorage(id)
+        XCTAssertEqual(e.anchorages.count, 1, "locked: kept")
+        XCTAssertTrue(AnchorageLog.load(from: file)[0].isLocked, "the lock is saved")
+        e.setAnchorageLocked(id, false)
+        e.deleteAnchorage(id)
+        XCTAssertTrue(e.anchorages.isEmpty)
+    }
+
+    func testLogsSavedBeforeLockingStillLoad() throws {
+        var json = String(data: try JSONEncoder().encode([entry(spot, daysAgo: 1)]), encoding: .utf8)!
+        json = json.replacingOccurrences(of: #","locked":false"#, with: "").replacingOccurrences(of: #""locked":false,"#, with: "")
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        try json.data(using: .utf8)!.write(to: file)
+        let loaded = AnchorageLog.load(from: file)
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertFalse(loaded[0].isLocked)
+    }
+}
+
+
+final class RetrievalTests: XCTestCase {
+    private let anchor = CLLocationCoordinate2D(latitude: 48.75, longitude: -123.3)
+
+    /// GPS `meters` from the anchor on `from` bearing, heading `course` at `knots`.
+    private func fix(_ meters: Double, from bearing: Double, course: Double?, knots: Double) -> Fix {
+        Fix(coordinate: Geo.destination(from: anchor, bearing: bearing, meters: meters), accuracy: 3,
+            course: course, speed: knots * 0.5144, timestamp: Date())
+    }
+
+    func testBowIsAheadOfTheGPSAndAnchorDeadAhead() {
+        // 60 m south of the anchor, heading north: the bow (7 m ahead) is 53 m off, dead ahead.
+        let g = RetrievalGuide.make(phone: fix(60, from: 180, course: 0, knots: 1), anchor: anchor, bowOffset: 7, depth: 10)
+        XCTAssertEqual(g.distance, 53, accuracy: 0.5)
+        XCTAssertEqual(g.relative!, 0, accuracy: 1)
+        XCTAssertEqual(g.steer, "Dead ahead")
+        XCTAssertFalse(g.overAnchor)
+    }
+
+    func testSteersToPortOrStarboard() {
+        // South of the anchor heading 030: the anchor is to port.
+        let port = RetrievalGuide.make(phone: fix(100, from: 180, course: 30, knots: 1), anchor: anchor, bowOffset: 7, depth: 10)
+        XCTAssertLessThan(port.relative!, -20)
+        XCTAssertTrue(port.steer.hasSuffix("to port"), port.steer)
+        let starboard = RetrievalGuide.make(phone: fix(100, from: 180, course: 330, knots: 1), anchor: anchor, bowOffset: 7, depth: 10)
+        XCTAssertTrue(starboard.steer.hasSuffix("to starboard"), starboard.steer)
+        let behind = RetrievalGuide.make(phone: fix(100, from: 180, course: 180, knots: 1), anchor: anchor, bowOffset: 7, depth: 10)
+        XCTAssertEqual(behind.steer, "Behind you: turn round")
+    }
+
+    func testBarelyMovingGivesACompassBearingNotAnArrow() {
+        let g = RetrievalGuide.make(phone: fix(50, from: 225, course: 300, knots: 0.2), anchor: anchor, bowOffset: 7, depth: 10)
+        XCTAssertNil(g.relative, "course is noise at 0.2 kn")
+        XCTAssertEqual(g.bearing, 45, accuracy: 1)
+        XCTAssertEqual(g.distance, 43, accuracy: 0.5, "bow lies toward the anchor")
+        XCTAssertTrue(g.steer.hasPrefix("Anchor lies NE"), g.steer)
+    }
+
+    func testOverTheAnchorWhenTheRodeIsUpAndDown() {
+        // 12 m deep: within 6 m of the anchor counts as over it.
+        let g = RetrievalGuide.make(phone: fix(12, from: 180, course: 0, knots: 0.6), anchor: anchor, bowOffset: 7, depth: 12)
+        XCTAssertTrue(g.overAnchor)
+        XCTAssertEqual(g.steer, "Over the anchor: rode up and down")
+    }
+
+    @MainActor func testRetrievingEndsTheWatchButKeepsTheAnchorSpot() {
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false)
+        for _ in 0..<3 { e.ingest(Fix(coordinate: anchor, accuracy: 3, course: nil, speed: nil, timestamp: Date())) }
+        e.dropAnchor()
+        let spot = try! XCTUnwrap(e.anchor)
+        e.startRetrieval()
+        XCTAssertNil(e.anchor, "the watch has ended")
+        XCTAssertEqual(e.retrieveTarget, spot)
+        XCTAssertNotNil(e.retrievalGuide)
+        e.endRetrieval()
+        XCTAssertNil(e.retrieveTarget)
+    }
+}
+
+final class HiddenOutlookTests: XCTestCase {
+    private let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func item(_ kind: OutlookItem.Kind, _ severity: OutlookItem.Severity, hours: Double, to end: Double? = nil,
+                      subject: String = "") -> OutlookItem {
+        OutlookItem(kind: kind, severity: severity, start: t0.addingTimeInterval(hours * 3600),
+                    end: end.map { t0.addingTimeInterval($0 * 3600) }, title: "", detail: "", subject: subject)
+    }
+
+    func testStaysHiddenAsTheStretchShiftsButNotALaterOne() {
+        let hidden = HiddenOutlook(item(.gusts, .caution, hours: 3, to: 6))
+        XCTAssertTrue(hidden.covers(item(.gusts, .caution, hours: 4, to: 6)), "same stretch, redone an hour later")
+        XCTAssertFalse(hidden.covers(item(.gusts, .caution, hours: 15, to: 17)), "a separate blow later")
+        XCTAssertFalse(hidden.covers(item(.shallow, .caution, hours: 3, to: 6)), "a different warning")
+    }
+
+    func testComesBackWhenItGetsWorse() {
+        let hidden = HiddenOutlook(item(.hazard, .caution, hours: 2, subject: "boat"))
+        XCTAssertTrue(hidden.covers(item(.hazard, .caution, hours: 9, subject: "boat")), "any warning about that hazard")
+        XCTAssertFalse(hidden.covers(item(.hazard, .danger, hours: 2, subject: "boat")), "the swing now reaches it")
+        XCTAssertFalse(hidden.covers(item(.hazard, .caution, hours: 2, subject: "rock")), "another hazard")
+    }
+}
+
+final class LockedOutlookTests: XCTestCase {
+    @MainActor func testALockedWarningCantBeDeleted() {
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false)
+        let item = OutlookItem(kind: .hazard, severity: .caution, start: Date(), end: nil, title: "", detail: "", subject: "boat")
+        e.lockOutlook(item)
+        XCTAssertTrue(e.isLocked(item))
+        e.hideOutlook(item)
+        XCTAssertTrue(e.hiddenOutlook.isEmpty, "locked: delete does nothing")
+        let worse = OutlookItem(kind: .hazard, severity: .danger, start: Date(), end: nil, title: "", detail: "", subject: "boat")
+        XCTAssertTrue(e.isLocked(worse), "stays locked as it changes")
+        e.unlockOutlook(item)
+        e.hideOutlook(item)
+        XCTAssertEqual(e.hiddenOutlook.count, 1)
+    }
+}
