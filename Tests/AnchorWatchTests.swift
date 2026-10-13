@@ -2069,3 +2069,17 @@ final class LockedOutlookTests: XCTestCase {
         XCTAssertEqual(e.hiddenOutlook.count, 1)
     }
 }
+
+final class WatchChartTests: XCTestCase {
+    @MainActor func testChartIsMetresEastAndNorthOfTheAnchorAndThinned() {
+        let anchor = CLLocationCoordinate2D(latitude: 48.6, longitude: -123.15)
+        let track = (0..<500).map { Geo.destination(from: anchor, bearing: Double($0) * 0.5, meters: 40) }
+        let chart = WatchLink.chart(anchor: anchor, radius: 61.6, boat: Geo.destination(from: anchor, bearing: 90, meters: 30),
+                                    track: track)
+        XCTAssertEqual(chart["radiusM"], "62")
+        XCTAssertEqual(chart["boat"], "30,0", "due east")
+        let points = chart["track"]!.split(separator: " ")
+        XCTAssertLessThanOrEqual(points.count, 90)
+        XCTAssertEqual(points.first, "0,40", "due north")
+    }
+}

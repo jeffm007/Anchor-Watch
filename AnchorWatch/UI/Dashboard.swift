@@ -717,6 +717,7 @@ struct NightModeView: View {
         }
         .statusBarHidden()
         .onAppear {
+            engine.nightMode = true
             // Dim the screen right down, and put it back afterwards.
             if let screen = (UIApplication.shared.connectedScenes.first as? UIWindowScene)?.screen {
                 savedBrightness = screen.brightness
@@ -724,6 +725,7 @@ struct NightModeView: View {
             }
         }
         .onDisappear {
+            engine.nightMode = false
             if let savedBrightness, let screen = (UIApplication.shared.connectedScenes.first as? UIWindowScene)?.screen {
                 screen.brightness = savedBrightness
             }

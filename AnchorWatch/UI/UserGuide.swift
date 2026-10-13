@@ -233,6 +233,10 @@ enum UserGuideContent {
         .text("Anchor Watch installs on a paired Apple Watch along with the phone app (if it doesn't, turn it on in the iPhone's Watch app under Available Apps)."),
         .heading("What it shows"),
         .text("The status in its colour (Holding, Moving away, Dragging, Outside circle, Alarm or Finding anchor), the distance from the anchor, the alarm radius, which way the anchor lies, the wind and when it last heard from the phone. The phone sends an update when anything changes, and at least every 30 seconds while it's within range; the line turns orange after two minutes without one."),
+        .heading("Chart"),
+        .text("**Turn the crown or swipe up** for the chart: the anchor in the middle, the alarm circle, the recent track and the boat, north up. It zooms out if the boat goes outside the circle. The track updates about every 10 seconds."),
+        .heading("Night colours"),
+        .text("When the phone goes into **Night mode**, the watch turns red on black too, and back again when you leave it. The **moon** button on either watch screen (at the bottom of the status, beside the distance on the chart) switches it there; a **sun** turns it off."),
         .heading("Alarms"),
         .text("When the phone's alarm goes off, the watch turns red, shows what's wrong and taps your wrist every two seconds while the watch app is open. **Silence** on the watch silences the phone too."),
         .warning("The phone does the watching and sounds the siren. The watch only shows what the phone sends: keep the phone aboard, charged and within Bluetooth range."),
@@ -465,7 +469,7 @@ struct QuickGuideView: View {
         Item(title: "Barometer", text: "A fall of 3 hPa in 3 hours warns of wind; 6 hPa, a gale. Notified once each."),
         Item(title: "Alarms", text: "Outside the circle, GPS lost or too poor, low battery. Loud even on silent, and on the lock screen."),
         Item(title: "Night mode", text: "The moon button: a dim black and red screen with the distance and a small radar. Tap to exit."),
-        Item(title: "Apple Watch", text: "Status, distance, radius and wind on the wrist; taps your wrist on an alarm, and Silence works from there."),
+        Item(title: "Apple Watch", text: "Status, distance, radius and wind on the wrist; turn the crown for the anchor, circle and track. Taps your wrist on an alarm, and Silence works from there. Red at night, with the phone or the moon button."),
     ]
 
     private let tabs = [

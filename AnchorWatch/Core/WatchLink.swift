@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 import WatchConnectivity
 
@@ -22,8 +23,12 @@ final class WatchLink: NSObject, WCSessionDelegate {
         let session = WCSession.default
         guard WCSession.isSupported(), session.activationState == .activated, session.isPaired, session.isWatchAppInstalled else { return }
         let alarmUp = status["alarm"] != nil
-        let changed = status != lastSent
-        guard changed || Date().timeIntervalSince(lastSentAt) >= 30 || alarmUp != alarmWasUp else { return }
+        // The chart changes with every fix: send it at most every 10 seconds unless something else changed.
+        let chartKeys: Set<String> = ["track", "boat"]
+        let changed = status.filter { !chartKeys.contains($0.key) } != lastSent.filter { !chartKeys.contains($0.key) }
+        let chartChanged = status != lastSent
+        let age = Date().timeIntervalSince(lastSentAt)
+        guard changed || age >= 30 || (chartChanged && age >= 10) || alarmUp != alarmWasUp else { return }
         var context: [String: Any] = status
         context["updated"] = Date().timeIntervalSince1970
         try? session.updateApplicationContext(context)
@@ -32,6 +37,21 @@ final class WatchLink: NSObject, WCSessionDelegate {
         lastSent = status
         lastSentAt = Date()
         alarmWasUp = alarmUp
+    }
+
+    /// The chart for the watch, in whole metres east and north of the anchor: the alarm radius, the boat,
+    /// and the track thinned to `points` ("x,y x,y …").
+    static func chart(anchor: CLLocationCoordinate2D, radius: Double, boat: CLLocationCoordinate2D?,
+                      track: [CLLocationCoordinate2D], points: Int = 80) -> [String: String] {
+        func xy(_ c: CLLocationCoordinate2D) -> String {
+            let d = Geo.distance(anchor, c), b = Geo.bearing(from: anchor, to: c) * .pi / 180
+            return "\(Int((d * sin(b)).rounded())),\(Int((d * cos(b)).rounded()))"
+        }
+        let step = max(1, track.count / points)
+        let thinned = stride(from: 0, to: track.count, by: step).map { track[$0] } + (track.last.map { [$0] } ?? [])
+        var chart = ["radiusM": "\(Int(radius.rounded()))", "track": thinned.map(xy).joined(separator: " ")]
+        if let boat { chart["boat"] = xy(boat) }
+        return chart
     }
 
     nonisolated func session(_ session: WCSession, activationDidCompleteWith state: WCSessionActivationState, error: Error?) {}

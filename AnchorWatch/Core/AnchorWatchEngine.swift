@@ -1126,6 +1126,9 @@ final class AnchorWatchEngine: ObservableObject {
     // MARK: Apple Watch
 
     /// What the watch shows, sent when it changes (WatchLink decides).
+    /// The phone is in night mode; the watch follows it.
+    var nightMode = false
+
     private func publishToWatch() {
         guard let watchLink else { return }
         if watchLink.onSilence == nil { watchLink.onSilence = { [weak self] in self?.silence() } }
@@ -1148,6 +1151,11 @@ final class AnchorWatchEngine: ObservableObject {
         }
         if let w = windNow { status["wind"] = "Wind \(Int(w.speed.rounded())) kt \(Compass.name(w.direction)), gusts \(Int(w.gust.rounded()))" }
         if let alarm { status["alarm"] = alarm.message }
+        status["night"] = nightMode ? "1" : "0"
+        if let anchor {
+            status.merge(WatchLink.chart(anchor: anchor, radius: radius, boat: fix?.coordinate,
+                                         track: track.suffix(720).map(\.coordinate))) { $1 }
+        }
         if let guide = retrievalGuide {
             status["state"] = "Retrieving"
             status["tone"] = guide.overAnchor ? "green" : "purple"

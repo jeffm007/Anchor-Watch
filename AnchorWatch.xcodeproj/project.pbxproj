@@ -23,9 +23,12 @@
 		558ABB443A2DC84412EEB12E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5CBC271D43FD64AD6968EF0F /* Assets.xcassets */; };
 		5E3993A7349864B4694FA601 /* Readiness.swift in Sources */ = {isa = PBXBuildFile; fileRef = E02E019B7B9B68186FBD5B25 /* Readiness.swift */; };
 		669049C9F0800FFBE30B1190 /* UserGuide.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4821E4C3BD764289EE7A5E67 /* UserGuide.swift */; };
+		6703A28ECBE57BB4AAD0A62C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B02D26A41C1A0E9775D33DCA /* Assets.xcassets */; };
 		7EE1A87E5F01EA56EA1BE4D5 /* AnchorWatchEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C4E75D9A6D690C00CE25221 /* AnchorWatchEngine.swift */; };
+		85B753E8090DB172E95FF922 /* AnchorWatchWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 213110E39EBA4AFBE2C5F9F7 /* AnchorWatchWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		90F5AAB21EF15B9B6A6CFE34 /* AnchorActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19186A028FEFB8D2C5ABA945 /* AnchorActivity.swift */; };
 		91D9FC2D073834574154F4C4 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21BFBA88AE0B50E6E9C07BC9 /* ContentView.swift */; };
+		92C18D517B87BB13FC91D335 /* Retrieval.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8042BD3549063EE7B6947580 /* Retrieval.swift */; };
 		9B1F0C2B3D4E5F6071829304 /* GPSQualityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A1F0C2B3D4E5F6071829304 /* GPSQualityView.swift */; };
 		9D2F0D3B4E5F607182930415 /* Dashboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C2F0D3B4E5F607182930415 /* Dashboard.swift */; };
 		9F3A0E4C5F6071829304A516 /* WaterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E3A0E4C5F6071829304A516 /* WaterView.swift */; };
@@ -44,15 +47,12 @@
 		BD6AEC2BB300D775F0B3B9C6 /* LocationSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 227DDA1B10737D49F8445A4F /* LocationSource.swift */; };
 		C60B095B35E4EE3D58578657 /* AlertService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46714C3CA4280837AF4C84A3 /* AlertService.swift */; };
 		C76E3282930415263748E95A /* Barometer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C66E3282930415263748E95A /* Barometer.swift */; };
+		D6B671F291694E4BC420E6E2 /* AnchorWatchWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3EA9BEFC1867B9885B867A6 /* AnchorWatchWatchApp.swift */; };
 		D97F4393A41526374859FA6B /* AnchorageLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = D87F4393A41526374859FA6B /* AnchorageLog.swift */; };
+		E6AF3D172073746EF41475AC /* WatchLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAFFFDEC7904D731E2FE40D0 /* WatchLink.swift */; };
 		EB804504B52637485960AB7C /* AnchorageLogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA804504B52637485960AB7C /* AnchorageLogView.swift */; };
 		F7F03BADEDA086FC583C513B /* ChartMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 327C9AD8EF18FF2A6CA929DD /* ChartMapView.swift */; };
 		FC2DE08B2DF4CCF97AB61094 /* AlarmPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 705EED813313B8D0B67999F1 /* AlarmPlayer.swift */; };
-		E6AF3D172073746EF41475AC /* WatchLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAFFFDEC7904D731E2FE40D0 /* WatchLink.swift */; };
-		92C18D517B87BB13FC91D335 /* Retrieval.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8042BD3549063EE7B6947580 /* Retrieval.swift */; };
-		D6B671F291694E4BC420E6E2 /* AnchorWatchWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3EA9BEFC1867B9885B867A6 /* AnchorWatchWatchApp.swift */; };
-		6703A28ECBE57BB4AAD0A62C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B02D26A41C1A0E9775D33DCA /* Assets.xcassets */; };
-		85B753E8090DB172E95FF922 /* AnchorWatchWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 213110E39EBA4AFBE2C5F9F7 /* AnchorWatchWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -63,19 +63,19 @@
 			remoteGlobalIDString = BAB3051FFA5BA66B6598FA5E;
 			remoteInfo = AnchorWatch;
 		};
-		BE68078E768340660DEA3AF4 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 30DFF4D143DFF0B445536A40 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = 0B8791C7A94F643F6193E367;
-			remoteInfo = AnchorWatchWidgets;
-		};
 		95588EA319DFB6CA0B97E5CC /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 30DFF4D143DFF0B445536A40 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = C5E9127779B225BCFBD8E2BC;
 			remoteInfo = AnchorWatchWatch;
+		};
+		BE68078E768340660DEA3AF4 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 30DFF4D143DFF0B445536A40 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 0B8791C7A94F643F6193E367;
+			remoteInfo = AnchorWatchWidgets;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -109,6 +109,7 @@
 		155D9E41B3F2AF484AB3143F /* LiveActivityController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityController.swift; sourceTree = "<group>"; };
 		16802792B90A9D0C484ED686 /* TideService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TideService.swift; sourceTree = "<group>"; };
 		19186A028FEFB8D2C5ABA945 /* AnchorActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorActivity.swift; sourceTree = "<group>"; };
+		213110E39EBA4AFBE2C5F9F7 /* AnchorWatchWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AnchorWatchWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		21BFBA88AE0B50E6E9C07BC9 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		227DDA1B10737D49F8445A4F /* LocationSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSource.swift; sourceTree = "<group>"; };
 		2A6B0E5A3769F1E8C5452E5B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -123,6 +124,7 @@
 		5CBC271D43FD64AD6968EF0F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		6253B72B37EAECC36C629520 /* ObservationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObservationService.swift; sourceTree = "<group>"; };
 		705EED813313B8D0B67999F1 /* AlarmPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlarmPlayer.swift; sourceTree = "<group>"; };
+		8042BD3549063EE7B6947580 /* Retrieval.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Retrieval.swift; sourceTree = "<group>"; };
 		8F5F5217712C0CC191332E6B /* AnchorWatchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorWatchTests.swift; sourceTree = "<group>"; };
 		9528E204F2DFF023639CD8AF /* AnchorWatchTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AnchorWatchTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		96F3FF089F11507C073DCE25 /* AnchorWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AnchorWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -141,20 +143,18 @@
 		A6B2C3D4E5F6A7B8C9D0E1F2 /* AnchorEstimate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorEstimate.swift; sourceTree = "<group>"; };
 		A7B2C3D4E5F6A7B8C9D0E1F2 /* AnchorDrift.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorDrift.swift; sourceTree = "<group>"; };
 		AD5BCEE030753079CB5A646E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		B02D26A41C1A0E9775D33DCA /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B45D2171829304152637D849 /* AnchorPhysics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorPhysics.swift; sourceTree = "<group>"; };
 		B554637FC10A7BDCFB171EA2 /* ScopeCalculator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScopeCalculator.swift; sourceTree = "<group>"; };
 		C33A4095E0E5048A68AF7BF9 /* ChartLayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartLayer.swift; sourceTree = "<group>"; };
+		C3EA9BEFC1867B9885B867A6 /* AnchorWatchWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorWatchWatchApp.swift; sourceTree = "<group>"; };
 		C66E3282930415263748E95A /* Barometer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Barometer.swift; sourceTree = "<group>"; };
 		D87F4393A41526374859FA6B /* AnchorageLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorageLog.swift; sourceTree = "<group>"; };
+		DAFFFDEC7904D731E2FE40D0 /* WatchLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchLink.swift; sourceTree = "<group>"; };
 		E02E019B7B9B68186FBD5B25 /* Readiness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Readiness.swift; sourceTree = "<group>"; };
 		E367FC84FFFD453E35855706 /* WindService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindService.swift; sourceTree = "<group>"; };
 		EA804504B52637485960AB7C /* AnchorageLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorageLogView.swift; sourceTree = "<group>"; };
 		FA4B61D973A1B644C580A7B8 /* AnchorWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorWatchApp.swift; sourceTree = "<group>"; };
-		DAFFFDEC7904D731E2FE40D0 /* WatchLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchLink.swift; sourceTree = "<group>"; };
-		8042BD3549063EE7B6947580 /* Retrieval.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Retrieval.swift; sourceTree = "<group>"; };
-		C3EA9BEFC1867B9885B867A6 /* AnchorWatchWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorWatchWatchApp.swift; sourceTree = "<group>"; };
-		B02D26A41C1A0E9775D33DCA /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		213110E39EBA4AFBE2C5F9F7 /* AnchorWatchWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AnchorWatchWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -240,6 +240,15 @@
 			path = AnchorWatch;
 			sourceTree = "<group>";
 		};
+		CB4C7E04A2A197AEC0B52F3F /* AnchorWatchWatch */ = {
+			isa = PBXGroup;
+			children = (
+				C3EA9BEFC1867B9885B867A6 /* AnchorWatchWatchApp.swift */,
+				B02D26A41C1A0E9775D33DCA /* Assets.xcassets */,
+			);
+			path = AnchorWatchWatch;
+			sourceTree = "<group>";
+		};
 		E0F4B3DA6BDBF7A529D1C3DC /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -275,15 +284,6 @@
 				4821E4C3BD764289EE7A5E67 /* UserGuide.swift */,
 			);
 			path = UI;
-			sourceTree = "<group>";
-		};
-		CB4C7E04A2A197AEC0B52F3F /* AnchorWatchWatch */ = {
-			isa = PBXGroup;
-			children = (
-				C3EA9BEFC1867B9885B867A6 /* AnchorWatchWatchApp.swift */,
-				B02D26A41C1A0E9775D33DCA /* Assets.xcassets */,
-			);
-			path = AnchorWatchWatch;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -373,10 +373,6 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 2700;
 				TargetAttributes = {
-					C5E9127779B225BCFBD8E2BC = {
-						DevelopmentTeam = FD52K7B8M3;
-						ProvisioningStyle = Automatic;
-					};
 					0B8791C7A94F643F6193E367 = {
 						DevelopmentTeam = FD52K7B8M3;
 						ProvisioningStyle = Automatic;
@@ -386,6 +382,10 @@
 						ProvisioningStyle = Automatic;
 					};
 					BAB3051FFA5BA66B6598FA5E = {
+						DevelopmentTeam = FD52K7B8M3;
+						ProvisioningStyle = Automatic;
+					};
+					C5E9127779B225BCFBD8E2BC = {
 						DevelopmentTeam = FD52K7B8M3;
 						ProvisioningStyle = Automatic;
 					};
@@ -414,20 +414,20 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		76DECDB233BFE85B66B475B1 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6703A28ECBE57BB4AAD0A62C /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		DF636054244E70EAF9078011 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				558ABB443A2DC84412EEB12E /* Assets.xcassets in Resources */,
 				3E783633E64A539FE481BF06 /* PrivacyInfo.xcprivacy in Resources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		76DECDB233BFE85B66B475B1 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				6703A28ECBE57BB4AAD0A62C /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -478,6 +478,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		C6D1F4850A9F63E4D8B0F53F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D6B671F291694E4BC420E6E2 /* AnchorWatchWatchApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		DB2A3613B3B9A25518221C03 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -495,14 +503,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		C6D1F4850A9F63E4D8B0F53F /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				D6B671F291694E4BC420E6E2 /* AnchorWatchWatchApp.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -511,15 +511,15 @@
 			target = 0B8791C7A94F643F6193E367 /* AnchorWatchWidgets */;
 			targetProxy = BE68078E768340660DEA3AF4 /* PBXContainerItemProxy */;
 		};
-		7C9C91219F23CB2DFAEF07F2 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = BAB3051FFA5BA66B6598FA5E /* AnchorWatch */;
-			targetProxy = 13175D6F220C60C03E4DA9C2 /* PBXContainerItemProxy */;
-		};
 		6CBB9EDEA80054FF5F141D51 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = C5E9127779B225BCFBD8E2BC /* AnchorWatchWatch */;
 			targetProxy = 95588EA319DFB6CA0B97E5CC /* PBXContainerItemProxy */;
+		};
+		7C9C91219F23CB2DFAEF07F2 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BAB3051FFA5BA66B6598FA5E /* AnchorWatch */;
+			targetProxy = 13175D6F220C60C03E4DA9C2 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -559,7 +559,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 17;
+				CURRENT_PROJECT_VERSION = 18;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = FD52K7B8M3;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -584,6 +584,29 @@
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		0A06F7E21CFAA314BC0C8BBB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Anchor Watch";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.jeffmitchell.anchorwatch;
+				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = NO;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.jeffmitchell.anchorwatch.watchkitapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
 			};
 			name = Release;
 		};
@@ -638,7 +661,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 17;
+				CURRENT_PROJECT_VERSION = 18;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = FD52K7B8M3;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -778,29 +801,6 @@
 			};
 			name = Debug;
 		};
-		0A06F7E21CFAA314BC0C8BBB /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Anchor Watch";
-				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
-				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.jeffmitchell.anchorwatch;
-				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = NO;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.jeffmitchell.anchorwatch.watchkitapp;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = watchos;
-				SKIP_INSTALL = YES;
-				TARGETED_DEVICE_FAMILY = 4;
-				WATCHOS_DEPLOYMENT_TARGET = 10.0;
-			};
-			name = Release;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -831,20 +831,20 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
-		D42AA32696ADBA47051C682C /* Build configuration list for PBXNativeTarget "AnchorWatchTests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				0CF0B883844858873D4290B2 /* Debug */,
-				B4212A1092B22A757C2514F8 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Debug;
-		};
 		BA1C4EF029ECC4D8350FA23B /* Build configuration list for PBXNativeTarget "AnchorWatchWatch" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				ECAC32DA1542E5F8C7FB00ED /* Debug */,
 				0A06F7E21CFAA314BC0C8BBB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		D42AA32696ADBA47051C682C /* Build configuration list for PBXNativeTarget "AnchorWatchTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0CF0B883844858873D4290B2 /* Debug */,
+				B4212A1092B22A757C2514F8 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
