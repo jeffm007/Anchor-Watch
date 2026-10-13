@@ -159,7 +159,6 @@ struct ContentView: View {
             NavigationStack { GuideTopicView(topic: topic).toolbar { Button("Done") { guideTopic = nil } } }
         }
         .sheet(isPresented: $showBoat) { NavigationStack { BoatProfileView() } }
-        .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
     }
 
     /// The real chart in a rounded panel, with the anchor controls fading over its lower edge.

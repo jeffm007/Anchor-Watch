@@ -902,8 +902,28 @@ final class AnchorWatchEngine: ObservableObject {
         }
     }
 
+    /// The drop sheet is open: the GPS goes to full accuracy so the drop gets a precise position.
+    @Published var preparingDrop = false {
+        didSet { saveBattery() }
+    }
+
+    /// Full GPS accuracy while anchored, retrieving, about to drop, placing the anchor, or with Track on.
+    var wantsPreciseGPS: Bool {
+        anchor != nil || retrieveTarget != nil || preparingDrop || placingAnchor || trackWhenUnanchored
+    }
+
+    /// The screen stays on only while anchored or retrieving; otherwise it sleeps as usual.
+    var keepsScreenOn: Bool { anchor != nil || retrieveTarget != nil }
+
+    /// With nothing to watch, let the screen sleep and ease off the GPS.
+    private func saveBattery() {
+        gps?.precise = wantsPreciseGPS
+        if UIApplication.shared.isIdleTimerDisabled != keepsScreenOn { UIApplication.shared.isIdleTimerDisabled = keepsScreenOn }
+    }
+
     /// Everything that guards the anchor, once a second. No network use, so tests can call it.
     func safetyChecks() {
+        saveBattery()
         checkGPSLost()
         checkGPSPoor()
         checkBattery()

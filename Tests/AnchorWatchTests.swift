@@ -2083,3 +2083,27 @@ final class WatchChartTests: XCTestCase {
         XCTAssertEqual(points.first, "0,40", "due north")
     }
 }
+
+final class BatterySavingTests: XCTestCase {
+    @MainActor func testPreciseGPSAndScreenOnOnlyWhenNeeded() {
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false)
+        XCTAssertFalse(e.wantsPreciseGPS, "no anchor, no track")
+        XCTAssertFalse(e.keepsScreenOn)
+        e.preparingDrop = true
+        XCTAssertTrue(e.wantsPreciseGPS, "about to drop")
+        e.preparingDrop = false
+        e.trackWhenUnanchored = true
+        XCTAssertTrue(e.wantsPreciseGPS, "tracking under way")
+        XCTAssertFalse(e.keepsScreenOn, "tracking alone lets the screen sleep")
+        e.trackWhenUnanchored = false
+        let spot = CLLocationCoordinate2D(latitude: 48.6, longitude: -123.15)
+        for _ in 0..<3 { e.ingest(Fix(coordinate: spot, accuracy: 3, course: nil, speed: nil, timestamp: Date())) }
+        e.dropAnchor()
+        XCTAssertTrue(e.wantsPreciseGPS)
+        XCTAssertTrue(e.keepsScreenOn, "anchored")
+        e.startRetrieval()
+        XCTAssertTrue(e.keepsScreenOn, "retrieving")
+        e.endRetrieval()
+        XCTAssertFalse(e.keepsScreenOn)
+    }
+}

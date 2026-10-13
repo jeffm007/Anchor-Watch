@@ -14,6 +14,15 @@ final class GPSLocationSource: NSObject, LocationSource, CLLocationManagerDelega
         manager.pausesLocationUpdatesAutomatically = false
     }
 
+    /// Full navigation accuracy, or a lighter setting while nothing needs it (no anchor, no track):
+    /// still about one fix a second, but the phone works less hard for them.
+    var precise = true {
+        didSet {
+            guard precise != oldValue else { return }
+            manager.desiredAccuracy = precise ? kCLLocationAccuracyBestForNavigation : kCLLocationAccuracyNearestTenMeters
+        }
+    }
+
     /// Background GPS is what drains the battery, so it is on only while an anchor is being watched.
     /// With it off, iOS suspends the app when you leave it and stops the GPS.
     var keepsRunningInBackground = false {

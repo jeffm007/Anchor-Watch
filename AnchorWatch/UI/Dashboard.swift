@@ -545,6 +545,9 @@ struct DropAnchorSheet: View {
         .presentationDetents([.medium, .large])
         .presentationBackground(Color(white: 0.17))
         .preferredColorScheme(.dark)
+        // Full GPS accuracy while choosing, so the drop gets a precise position.
+        .onAppear { engine.preparingDrop = true }
+        .onDisappear { engine.preparingDrop = false }
     }
 
     private var gpsProblem: String? {
