@@ -25,6 +25,8 @@ struct Hazard: Codable, Equatable, Identifiable {
     var longitude: Double
     var radius: Double
     var name = ""
+    /// Hidden marks remain recoverable after raising. Missing in older saved marks means active.
+    var hidden: Bool? = nil
 
     var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: latitude, longitude: longitude) }
     var label: String { name.isEmpty ? kind.rawValue : name }

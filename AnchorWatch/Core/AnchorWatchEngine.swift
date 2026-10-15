@@ -1282,12 +1282,34 @@ final class AnchorWatchEngine: ObservableObject {
 
     // MARK: Hazards
 
-    /// Rocks, shoals, docks and boats marked on the chart. Kept between anchorages.
-    @Published private(set) var hazards: [Hazard] = [] {
+    /// Active and hidden marks share one saved collection, so raising never overwrites earlier marks.
+    @Published private var savedHazards: [Hazard] = [] {
         didSet {
-            defaults.set(try? JSONEncoder().encode(hazards), forKey: "anchorwatch.hazards")
+            defaults.set(try? JSONEncoder().encode(savedHazards), forKey: "anchorwatch.hazards")
             lastOutlook = .distantPast
+            // Cached warnings must disappear immediately, before the next forecast refresh.
+            let activeIDs = Set(hazards.map { $0.id.uuidString })
+            outlook.removeAll { $0.kind == .hazard && !activeIDs.contains($0.subject) }
+            hiddenOutlook.removeAll { $0.kind == .hazard && !activeIDs.contains($0.subject) }
+            lockedOutlook.removeAll { $0.kind == .hazard && !activeIDs.contains($0.subject) }
         }
+    }
+    var hazards: [Hazard] { savedHazards.filter { $0.hidden != true } }
+    var hiddenHazards: [Hazard] { savedHazards.filter { $0.hidden == true } }
+
+    private func hideHazards() {
+        pendingHazard = nil
+        savedHazards = savedHazards.map { mark in
+            var hidden = mark
+            hidden.hidden = true
+            return hidden
+        }
+    }
+
+    func restoreHazard(_ id: UUID) {
+        guard let i = savedHazards.firstIndex(where: { $0.id == id && $0.hidden == true }) else { return }
+        savedHazards[i].hidden = nil
+        refreshOutlookIfDue()
     }
     /// A long-press on empty chart: where a new hazard would go, while its details are chosen.
     @Published var pendingHazard: PendingHazard?
@@ -1298,23 +1320,32 @@ final class AnchorWatchEngine: ObservableObject {
         var hazard: Hazard? = nil
     }
 
-    func addHazard(_ hazard: Hazard) { hazards.append(hazard) }
+    func addHazard(_ hazard: Hazard) {
+        var active = hazard
+        active.hidden = nil
+        savedHazards.append(active)
+    }
     /// Kind, keep-off distance or name changed.
     func updateHazard(_ hazard: Hazard) {
-        guard let i = hazards.firstIndex(where: { $0.id == hazard.id }) else { return }
-        hazards[i] = hazard
+        guard let i = savedHazards.firstIndex(where: { $0.id == hazard.id && $0.hidden != true }) else { return }
+        var active = hazard
+        active.hidden = nil
+        savedHazards[i] = active
     }
     func editHazard(_ id: UUID) {
         guard let hazard = hazards.first(where: { $0.id == id }) else { return }
         pendingHazard = .init(coordinate: hazard.coordinate, hazard: hazard)
     }
-    func removeHazard(_ id: UUID) { hazards.removeAll { $0.id == id } }
+    func removeHazard(_ id: UUID) {
+        if pendingHazard?.hazard?.id == id { pendingHazard = nil }
+        savedHazards.removeAll { $0.id == id }
+    }
 
     /// Dragged to a new spot on the chart.
     func moveHazard(_ id: UUID, to coordinate: CLLocationCoordinate2D) {
-        guard let i = hazards.firstIndex(where: { $0.id == id }) else { return }
-        hazards[i].latitude = coordinate.latitude
-        hazards[i].longitude = coordinate.longitude
+        guard let i = savedHazards.firstIndex(where: { $0.id == id && $0.hidden != true }) else { return }
+        savedHazards[i].latitude = coordinate.latitude
+        savedHazards[i].longitude = coordinate.longitude
     }
 
     /// How far the stern reaches at full swing: the rode taut at the lowest water, plus the whole boat.
@@ -1394,6 +1425,7 @@ final class AnchorWatchEngine: ObservableObject {
 
     func raiseAnchor() {
         logStay()
+        hideHazards()
         hiddenOutlook = []
         lockedOutlook = []
         anchor = nil
@@ -1605,7 +1637,7 @@ final class AnchorWatchEngine: ObservableObject {
             lastPressureAlert = pressureLevel
         }
         if let data = defaults.data(forKey: "anchorwatch.hazards"), let saved = try? JSONDecoder().decode([Hazard].self, from: data) {
-            hazards = saved
+            savedHazards = saved
         }
         if defaults.object(forKey: "anchorwatch.radiusFollows") != nil { radiusFollowsRode = defaults.bool(forKey: "anchorwatch.radiusFollows") }
         if defaults.object(forKey: "anchorwatch.currentFactor") != nil { currentFactor = defaults.double(forKey: "anchorwatch.currentFactor") }

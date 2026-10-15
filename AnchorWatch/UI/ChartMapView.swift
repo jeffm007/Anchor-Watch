@@ -656,6 +656,15 @@ struct ChartMapView: UIViewRepresentable {
         private func syncHazards(_ map: MKMapView) {
             guard engine.hazards != hazardKey else { return }
             hazardKey = engine.hazards
+            if let measured = measuredHazard, !hazardKey.contains(where: { $0.id == measured.id }) {
+                clearMeasure(map)
+                measuredHazard = nil
+            }
+            if let dragged = draggedHazard?.hazard, !hazardKey.contains(where: { $0.id == dragged.id }) {
+                draggedHazard = nil
+                map.isScrollEnabled = true
+                map.isZoomEnabled = true
+            }
             map.removeAnnotations(hazardPins)
             map.removeOverlays(hazardCircles)
             hazardPins = engine.hazards.map { hazard in

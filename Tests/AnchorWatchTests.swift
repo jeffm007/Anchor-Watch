@@ -1818,6 +1818,162 @@ final class HazardTests: XCTestCase {
     private let anchor = CLLocationCoordinate2D(latitude: 48.6, longitude: -123.15)
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
+    private func lifecycleDefaults() -> UserDefaults {
+        let suite = "HazardLifecycleTests.\(UUID().uuidString)"
+        addTeardownBlock { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        return UserDefaults(suiteName: suite)!
+    }
+
+    @MainActor private func engine(_ defaults: UserDefaults) -> AnchorWatchEngine {
+        AnchorWatchEngine(player: SilentAlarm(), liveActivity: NoLiveActivity(), defaults: defaults, useGPSHardware: false)
+    }
+
+    @MainActor private func drop(_ e: AnchorWatchEngine) {
+        e.ingest(Fix(coordinate: anchor, accuracy: 3, course: nil, speed: nil, timestamp: Date()))
+        e.dropAnchor()
+        XCTAssertNotNil(e.anchor)
+    }
+
+    @MainActor func testRaiseHidesAllKindsAndDismissesEditorAcrossRestart() {
+        let defaults = lifecycleDefaults()
+        let e = engine(defaults)
+        drop(e)
+        let marks = Hazard.Kind.allCases.map { Hazard(kind: $0, at: anchor) }
+        marks.forEach(e.addHazard)
+        e.editHazard(marks[0].id)
+        XCTAssertNotNil(e.nearestHazard)
+        e.raiseAnchor()
+        XCTAssertTrue(e.hazards.isEmpty)
+        XCTAssertNil(e.pendingHazard)
+        XCTAssertNil(e.nearestHazard)
+        XCTAssertEqual(e.hiddenHazards.map(\.id), marks.map(\.id))
+        let again = engine(defaults)
+        XCTAssertTrue(again.hazards.isEmpty)
+        XCTAssertEqual(again.hiddenHazards.map(\.id), marks.map(\.id))
+        drop(again)
+        XCTAssertTrue(again.hazards.isEmpty, "dropping never restores hidden marks")
+        XCTAssertNil(again.nearestHazard)
+    }
+
+    @MainActor func testRestartWhileAnchoredKeepsActiveMarks() {
+        let defaults = lifecycleDefaults()
+        let e = engine(defaults)
+        drop(e)
+        let rock = Hazard(kind: .rock, at: anchor)
+        e.addHazard(rock)
+        let again = engine(defaults)
+        XCTAssertNotNil(again.anchor)
+        XCTAssertEqual(again.hazards, [rock])
+        XCTAssertTrue(again.hiddenHazards.isEmpty)
+    }
+
+    @MainActor func testRepeatedRaisesKeepEarlierMarksAndHideNewOnes() {
+        let defaults = lifecycleDefaults()
+        let e = engine(defaults)
+        let rock = Hazard(kind: .rock, at: anchor)
+        let boat = Hazard(kind: .boat, at: anchor)
+        e.addHazard(rock)
+        e.raiseAnchor()
+        e.raiseAnchor()
+        e.addHazard(boat)
+        XCTAssertEqual(e.hazards, [boat])
+        e.raiseAnchor()
+        XCTAssertEqual(Set(e.hiddenHazards.map(\.id)), Set([rock.id, boat.id]))
+        e.restoreHazard(rock.id)
+        e.restoreHazard(rock.id)
+        XCTAssertEqual(e.hazards, [rock], "restoring twice cannot duplicate a mark")
+        XCTAssertEqual(e.hiddenHazards.map(\.id), [boat.id])
+        e.raiseAnchor()
+        XCTAssertEqual(engine(defaults).hiddenHazards.count, 2)
+    }
+
+    @MainActor func testRestoreKeepsGeographicPositionAndRejoinsClearanceAndForecast() {
+        let defaults = lifecycleDefaults()
+        let e = engine(defaults)
+        drop(e)
+        let spot = e.anchor!
+        let rock = Hazard(kind: .rock, at: Geo.destination(from: spot, bearing: 180, meters: 78), radius: 5, name: "Rock")
+        e.addHazard(rock)
+        e.raiseAnchor()
+        e.ingest(Fix(coordinate: Geo.destination(from: anchor, bearing: 90, meters: 5), accuracy: 3, course: nil, speed: nil, timestamp: Date()))
+        e.dropAnchor()
+        XCTAssertNil(e.nearestHazard)
+        let depths: [(time: Date, depth: Double)] = (0...144).map { (now.addingTimeInterval(Double($0) * 600), 6.0) }
+        let forecast = (0...24).map { WindSample(time: now.addingTimeInterval(Double($0) * 3600), speed: 15, direction: 0, gust: 18) }
+        let hourly = Outlook.hourly(e.boat, scope: e.scope, bottom: .mud, rodeOut: 60, depths: depths, forecast: forecast, now: now)
+        func hazardWarnings() -> [OutlookItem] {
+            Outlook.items(e.boat, scope: e.scope, rodeOut: 60, depths: depths, hourly: hourly, tideTurns: [],
+                          anchor: spot, hazards: e.hazards, units: .feet, now: now).filter { $0.kind == .hazard }
+        }
+        XCTAssertTrue(hazardWarnings().isEmpty)
+        e.restoreHazard(rock.id)
+        XCTAssertEqual(e.hazards, [rock])
+        XCTAssertEqual(e.hazards.first?.coordinate, rock.coordinate, "marks do not move with the anchor")
+        XCTAssertEqual(e.nearestHazard?.hazard.id, rock.id)
+        XCTAssertEqual(hazardWarnings().map(\.subject), [rock.id.uuidString])
+        XCTAssertEqual(engine(defaults).hazards, [rock])
+    }
+
+    @MainActor func testPermanentDeletionPersistsWithoutDeletingOtherHiddenMarks() {
+        let defaults = lifecycleDefaults()
+        let e = engine(defaults)
+        let rock = Hazard(kind: .rock, at: anchor)
+        let dock = Hazard(kind: .dock, at: anchor)
+        e.addHazard(rock); e.addHazard(dock); e.raiseAnchor()
+        e.removeHazard(rock.id)
+        e.restoreHazard(rock.id)
+        let again = engine(defaults)
+        XCTAssertTrue(again.hazards.isEmpty)
+        XCTAssertEqual(again.hiddenHazards.map(\.id), [dock.id])
+    }
+
+    @MainActor func testLegacyMarksWithoutHiddenFieldRemainActive() {
+        let defaults = lifecycleDefaults()
+        let id = UUID()
+        let legacy = "[{\"id\":\"\(id)\",\"kind\":\"Rock\",\"latitude\":48.6,\"longitude\":-123.15,\"radius\":8,\"name\":\"Old rock\"}]"
+        defaults.set(Data(legacy.utf8), forKey: "anchorwatch.hazards")
+        let e = engine(defaults)
+        XCTAssertEqual(e.hazards.map(\.id), [id])
+        XCTAssertTrue(e.hiddenHazards.isEmpty)
+        e.raiseAnchor()
+        XCTAssertEqual(engine(defaults).hiddenHazards.map(\.id), [id])
+    }
+
+    @MainActor func testRetrieveAndSimulatorPlaceChangeHideMarks() {
+        let e = engine(lifecycleDefaults())
+        drop(e)
+        let rock = Hazard(kind: .rock, at: anchor)
+        e.addHazard(rock)
+        let spot = e.anchor
+        e.startRetrieval()
+        XCTAssertEqual(e.retrieveTarget, spot)
+        XCTAssertTrue(e.hazards.isEmpty)
+        XCTAssertEqual(e.hiddenHazards.map(\.id), [rock.id])
+        e.restoreHazard(rock.id)
+        e.simPlace = e.simPlace == .rocheHarbor ? .sidney : .rocheHarbor
+        XCTAssertTrue(e.hazards.isEmpty)
+        XCTAssertEqual(e.hiddenHazards.map(\.id), [rock.id])
+    }
+
+    @MainActor func testMovingAnchorAndSilencingKeepMarksAndRemovalClearsWarningMetadata() {
+        let e = engine(lifecycleDefaults())
+        drop(e)
+        let rock = Hazard(kind: .rock, at: anchor)
+        e.addHazard(rock)
+        e.moveAnchor(to: Geo.destination(from: anchor, bearing: 90, meters: 5))
+        e.silence()
+        XCTAssertEqual(e.hazards, [rock])
+        let warning = OutlookItem(kind: .hazard, severity: .caution, start: now, end: nil, title: "Rock", detail: "", subject: rock.id.uuidString)
+        let other = OutlookItem(kind: .gusts, severity: .caution, start: now, end: nil, title: "Wind", detail: "")
+        e.hideOutlook(warning); e.lockOutlook(warning)
+        e.hideOutlook(other); e.lockOutlook(other)
+        e.removeHazard(rock.id)
+        XCTAssertFalse(e.hiddenOutlook.contains { $0.subject == rock.id.uuidString })
+        XCTAssertFalse(e.isLocked(warning))
+        XCTAssertTrue(e.isLocked(other), "unrelated warning preferences stay intact")
+        XCTAssertEqual(e.hiddenOutlook.count, 1)
+    }
+
     func testClearanceIsTheGapFromTheSternsFullSwingToTheEdge() {
         let rock = Hazard(kind: .rock, at: Geo.destination(from: anchor, bearing: 45, meters: 100), radius: 8)
         XCTAssertEqual(Clearance.clearance(anchor: anchor, sternReach: 70, hazard: rock), 22, accuracy: 0.01)

@@ -106,6 +106,7 @@ struct ContentView: View {
     // `-showSettings` opens the settings sheet at launch, for screenshots.
     @State private var showSettings = ProcessInfo.processInfo.arguments.contains("-showSettings")
     @State private var showAlerts = false
+    @State private var showHiddenHazards = false
     // `-showGuide` opens the user guide, `-guideTopic <id>` one topic of it, at launch, for screenshots.
     @State private var showGuide = ProcessInfo.processInfo.arguments.contains("-showGuide")
     // `-night` opens night mode at launch, for screenshots.
@@ -134,6 +135,11 @@ struct ContentView: View {
                                openAnchoring: { engine.tab = .anchor })
                 OutlookBanner()
                 chartPanel
+                if !engine.hiddenHazards.isEmpty {
+                    Button("Hidden hazards (\(engine.hiddenHazards.count))") { showHiddenHazards = true }
+                        .font(.footnote)
+                        .accessibilityIdentifier("hiddenHazards")
+                }
                 NoticesCard(openAnchoring: { engine.tab = .anchor }, openConditions: { engine.tab = .weather },
                             openAlerts: { showAlerts = true }, openWatchCheck: { showWatchCheck = true })
                 controlRow
@@ -146,6 +152,7 @@ struct ContentView: View {
         .onChange(of: showSettings) { _, open in if !open { engine.pokeControls() } }
         .sheet(isPresented: $showSettings) { SettingsView() }
         .sheet(isPresented: $showAlerts) { AlertsView() }
+        .sheet(isPresented: $showHiddenHazards) { HiddenHazardsView() }
         .sheet(isPresented: $showWatchCheck) { WatchCheckView() }
         .sheet(item: $engine.pendingHazard) { pending in HazardSheet(coordinate: pending.coordinate, existing: pending.hazard) }
         .fullScreenCover(isPresented: $showNight) { NightModeView() }
@@ -349,7 +356,7 @@ struct AnchorRadiusControls: View {
                         Button("Raise Anchor", role: .destructive) { engine.raiseAnchor() }
                         Button("Cancel", role: .cancel) {}
                     } message: {
-                        Text("Both end the watch. Retrieve then shows the way from the bow to the anchor.")
+                        Text("Both end the watch and hide marked hazards. You can restore them from Hidden hazards. Retrieve then shows the way from the bow to the anchor.")
                     }
                 }
             }
@@ -960,6 +967,51 @@ struct WatchCheckList: View {
         case .warning: return .orange
         case .critical: return .red
         case .unknown: return .gray
+        }
+    }
+}
+
+
+/// Raised-anchor marks are kept out of the chart and warnings until explicitly restored.
+struct HiddenHazardsView: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+    @Environment(\.dismiss) private var dismiss
+    @State private var deleting: Hazard?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(engine.hiddenHazards) { hazard in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(hazard.label).font(.headline)
+                            Text("\(hazard.kind.rawValue) · Keep \(engine.units.format(hazard.radius)) off")
+                                .font(.caption).foregroundStyle(.secondary)
+                            HStack {
+                                Button("Restore") { engine.restoreHazard(hazard.id) }
+                                Spacer()
+                                Button("Delete permanently", role: .destructive) { deleting = hazard }
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    if engine.hiddenHazards.isEmpty { Text("No hidden hazards").foregroundStyle(.secondary) }
+                } footer: {
+                    Text("Hidden hazards do not appear on the chart or affect clearance and warnings. Restore keeps the original map position; you can then drag the mark to adjust it. Dropping anchor does not restore marks automatically.")
+                }
+            }
+            .navigationTitle("Hidden hazards")
+            .toolbar { Button("Done") { dismiss() } }
+            .alert("Delete hazard permanently?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { hazard in
+                Button("Delete permanently", role: .destructive) {
+                    engine.removeHazard(hazard.id)
+                    deleting = nil
+                }
+                Button("Cancel", role: .cancel) { deleting = nil }
+            } message: { hazard in
+                Text("\(hazard.label) will be deleted and cannot be restored.")
+            }
         }
     }
 }
