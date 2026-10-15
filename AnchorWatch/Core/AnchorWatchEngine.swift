@@ -193,21 +193,58 @@ final class AnchorWatchEngine: ObservableObject {
         didSet {
             saveScope()
             // A new depth reading belongs to the tide at that moment; the live depth follows the tide from there.
-            if scope.depth != oldValue.depth && !loading { depthTideRef = tideNow }
+            if scope.depth != oldValue.depth && !loading { recordDepthReading() }
+            if scope != oldValue { lastOutlook = .distantPast }
             if scope != oldValue { followRode() }
         }
     }
 
-    /// Tide height (above datum) when the depth was last set. Nil until tide data and a depth are both in hand.
-    private(set) var depthTideRef: Double? {
-        get { defaults.object(forKey: "anchorwatch.depthTideRef") as? Double }
-        set { defaults.set(newValue, forKey: "anchorwatch.depthTideRef") }
+    private(set) var depthReading: DepthReading? {
+        get { defaults.data(forKey: "anchorwatch.depthReading.v1").flatMap { try? JSONDecoder().decode(DepthReading.self, from: $0) } }
+        set { defaults.set(newValue.flatMap { try? JSONEncoder().encode($0) }, forKey: "anchorwatch.depthReading.v1") }
     }
 
-    /// Depth now: the depth as entered, moved by however much the tide has risen or fallen since.
-    var liveDepth: Double {
-        guard let ref = depthTideRef, let now = tideNow else { return scope.depth }
-        return max(0, scope.depth + now - ref)
+    private func recordDepthReading() {
+        depthReading = DepthReading(depth: scope.depth, measured: clock(),
+                                    stationID: tide.map { DepthReading.stationKey($0.station) }, tideHeight: tideNow)
+    }
+
+    /// Explicitly confirms a new sounder reading, even when its numeric value is unchanged.
+    func setDepthReading(_ depth: Double) {
+        guard depth.isFinite, depth >= 0 else { return }
+        scope.depth = depth
+        recordDepthReading()
+        lastOutlook = .distantPast
+        followRode()
+    }
+
+    func depth(at time: Date) -> Double { depthReading?.depth(at: time, tide: tide) ?? scope.depth }
+    var liveDepth: Double { depth(at: clock()) }
+
+    func plannerScope(at time: Date? = nil, fallbackRise: Double = 0) -> ScopeSettings {
+        var value = scope
+        value.depth = time.flatMap { depthReading?.depth(at: $0, tide: tide) } ?? max(0, liveDepth + fallbackRise)
+        value.tideRise = 0
+        return value
+    }
+
+    func plannerConditions(_ edited: AnchorConditions) -> AnchorConditions {
+        var value = edited
+        value.bottom = anchorBottom
+        return value
+    }
+    var depthReferenceDetail: String {
+        guard let reading = depthReading else { return "Reading time unknown. Confirm a new sounder reading to follow the tide." }
+        let time = reading.measured.formatted(date: .abbreviated, time: .shortened)
+        guard reading.depth(at: clock(), tide: tide) != nil else {
+            return "Sounder reading from \(time). Tide adjustment unavailable; showing the entered depth."
+        }
+        return "Estimated now from sounder reading at \(time), adjusted using \(tide?.station.name ?? "tide predictions")."
+    }
+
+    func applyTideSnapshot(_ snapshot: TideSnapshot) {
+        tide = snapshot
+        lastOutlook = .distantPast
     }
 
     /// Scope with the rode assumed out and the live depth: drops as the tide rises.
@@ -450,7 +487,7 @@ final class AnchorWatchEngine: ObservableObject {
         tide.flatMap { TideMath.rise(from: Date(), hours: tideWindowHours, events: $0.events) }
     }
 
-    var tideNow: Double? { tide.flatMap { TideMath.height(at: Date(), events: $0.events) } }
+    var tideNow: Double? { tide.flatMap { TideMath.height(at: clock(), events: $0.events) } }
 
     func refreshTide() async {
         guard let point = fix?.coordinate ?? anchor else {
@@ -460,8 +497,7 @@ final class AnchorWatchEngine: ObservableObject {
         tideStatus = "Finding the nearest tide station…"
         do {
             let result = try await TideService.snapshot(near: point)
-            tide = result.snapshot
-            if depthTideRef == nil { depthTideRef = tideNow }
+            applyTideSnapshot(result.snapshot)
             tideIsSaved = result.fromCache
             tideStatus = ""
         } catch {
@@ -482,14 +518,14 @@ final class AnchorWatchEngine: ObservableObject {
             if !usingSimulatedTide {
                 usingSimulatedTide = true
                 // The depth as set is the depth at the start of the simulated tide.
-                depthTideRef = TideMath.height(at: Date(), events: simulated.events)
+                tide = simulated
+                recordDepthReading()
             }
             tide = simulated
         } else if usingSimulatedTide || tide?.station.id == "simulated" {
             // Back to the real predictions.
             usingSimulatedTide = false
             tide = nil
-            depthTideRef = nil
             lastTideAttempt = .distantPast
         }
     }
@@ -558,7 +594,13 @@ final class AnchorWatchEngine: ObservableObject {
             underwater: underwater, mass: max(boat.displacement, 5_000) * 1.1,
             bowToPhone: ScopeCalculator.gpsFromBow(scope), holding: holding)
     }
-    var rodeToPayOut: Double { ScopeCalculator.rode(scope) }
+    var highWaterScope: ScopeSettings {
+        var value = scope
+        value.depth = depthAtNextHigh.depth
+        value.tideRise = 0
+        return value
+    }
+    var rodeToPayOut: Double { ScopeCalculator.rode(highWaterScope) }
 
     /// The four main pages.
     enum Tab: Hashable { case watch, anchor, water, weather }
@@ -566,13 +608,16 @@ final class AnchorWatchEngine: ObservableObject {
 
     /// Depth at the anchorage over the next 24 h, from the live depth and the tide predictions.
     var waterForecast: [(time: Date, depth: Double)] {
-        guard let events = tide?.events else { return [] }
-        return TideMath.depths(depthNow: liveDepth, events: events, from: Date())
+        guard let tide, let reading = depthReading, reading.depth(at: clock(), tide: tide) != nil else { return [] }
+        return stride(from: 0.0, through: 24 * 3600, by: 600).compactMap { offset in
+            let time = clock().addingTimeInterval(offset)
+            return reading.depth(at: time, tide: tide).map { (time: time, depth: $0) }
+        }
     }
 
     /// Seabed at the anchorage, chosen on the Anchoring page and used for the forecast check on the main screen.
     @Published var anchorBottom = AnchorConditions.Bottom.mud {
-        didSet { defaults.set(anchorBottom.rawValue, forKey: "anchorwatch.bottom") }
+        didSet { defaults.set(anchorBottom.rawValue, forKey: "anchorwatch.bottom"); lastOutlook = .distantPast }
     }
 
     /// Rode actually let out, set with the Rode out slider on the Anchor tab. Nil until then; cleared on Raise.
@@ -693,10 +738,11 @@ final class AnchorWatchEngine: ObservableObject {
     /// Depth at the next high water: today's depth plus how much the tide rises to it, and when. Without tide
     /// predictions, the rise entered on the Water tab.
     var depthAtNextHigh: (depth: Double, time: Date?) {
-        if let now = tideNow, let high = tide.flatMap({ TideMath.upcoming($0.events, after: Date(), limit: 4).first(where: \.isHigh) }) {
-            return (max(0, liveDepth + high.height - now), high.time)
+        if let high = tide.flatMap({ TideMath.upcoming($0.events, after: clock(), limit: 4).first(where: \.isHigh) }),
+           let depth = depthReading?.depth(at: high.time, tide: tide) {
+            return (depth, high.time)
         }
-        return (scope.depth + scope.tideRise, nil)
+        return (liveDepth + scope.tideRise, nil)
     }
 
     /// The next predicted high or low.
@@ -796,13 +842,15 @@ final class AnchorWatchEngine: ObservableObject {
     private let player: AlarmPlaying
     private let liveActivity: LiveActivityControlling
     private let defaults: UserDefaults
+    private let clock: () -> Date
     private var outsideCount = 0
     private var snoozedUntil: [String: Date] = [:]
     private var lastFixArrival: Date?
     private var lastUsableFix: Date?
     private var watchdog: Timer?
 
-    init(player: AlarmPlaying? = nil, liveActivity: LiveActivityControlling? = nil, defaults: UserDefaults = .standard, useGPSHardware: Bool = true) {
+    init(player: AlarmPlaying? = nil, liveActivity: LiveActivityControlling? = nil, defaults: UserDefaults = .standard, useGPSHardware: Bool = true, clock: @escaping () -> Date = Date.init) {
+        self.clock = clock
         self.player = player ?? AlarmPlayer()
         self.liveActivity = liveActivity ?? LiveActivityController()
         self.defaults = defaults

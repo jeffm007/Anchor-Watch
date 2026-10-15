@@ -16,7 +16,7 @@ struct WaterView: View {
                     DepthEntrySection()
                     if points.isEmpty {
                         Section("Next 24 hours") {
-                            Text(engine.tideStatus.isEmpty ? "Waiting for tide predictions…" : engine.tideStatus)
+                            Text(engine.tide == nil ? (engine.tideStatus.isEmpty ? "Waiting for tide predictions…" : engine.tideStatus) : engine.depthReferenceDetail)
                                 .foregroundStyle(.secondary)
                         }
                     } else {
@@ -40,7 +40,6 @@ struct WaterView: View {
         let clearanceLine = draft + AnchorMath.keelClearance
         let events = engine.tide.map { TideMath.upcoming($0.events, after: now, limit: 6) }?
             .filter { $0.time <= points.last!.time } ?? []
-        let tideNow = engine.tideNow ?? 0
         let top = (points.map(\.depth).max() ?? 0) * units.perMeter * 1.15
 
         return Section {
@@ -67,7 +66,7 @@ struct WaterView: View {
                     .foregroundStyle(.secondary)
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 2]))
                 ForEach(events, id: \.time) { e in
-                    let depth = engine.liveDepth + e.height - tideNow
+                    let depth = engine.depth(at: e.time)
                     PointMark(x: .value("Time", e.time), y: .value("Depth", depth * units.perMeter))
                         .foregroundStyle(e.isHigh ? .cyan : .orange)
                         .annotation(position: e.isHigh ? .top : .bottom) {
@@ -90,7 +89,7 @@ struct WaterView: View {
             .frame(height: 220)
             .padding(.vertical, 6)
         } header: { Text("Depth at the anchorage, next 24 hours") } footer: {
-            Text("From the depth you set and the \(engine.tide?.station.name ?? "nearest station") predictions. Red is your keel, orange dashed is \(units.format(AnchorMath.keelClearance)) under it.")
+            Text(engine.depthReferenceDetail + " From the depth you set and the \(engine.tide?.station.name ?? "nearest station") predictions. Red is your keel, orange dashed is \(units.format(AnchorMath.keelClearance)) under it.")
         }
     }
 
@@ -99,10 +98,9 @@ struct WaterView: View {
     private func outlook(_ points: [(time: Date, depth: Double)]) -> some View {
         let draft = engine.boat.draft
         // The predicted highs and lows themselves, so the times match the chart rather than the nearest sample.
-        let tideNow = engine.tideNow ?? 0
         let turns = (engine.tide.map { TideMath.upcoming($0.events, after: Date(), limit: 6) } ?? [])
             .filter { $0.time <= points.last!.time }
-            .map { (time: $0.time, depth: max(0, engine.liveDepth + $0.height - tideNow)) }
+            .map { (time: $0.time, depth: engine.depth(at: $0.time)) }
         let candidates = points + turns
         let lowest = candidates.min { $0.depth < $1.depth }!
         let highest = candidates.max { $0.depth < $1.depth }!

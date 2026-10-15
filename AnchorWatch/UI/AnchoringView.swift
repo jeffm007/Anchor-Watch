@@ -3,7 +3,11 @@ import SwiftUI
 /// Conditions knobs, a side view of the rode, and what the boat profile says about holding in them.
 struct AnchoringView: View {
     @EnvironmentObject var engine: AnchorWatchEngine
-    @State private var conditions = AnchorConditions()
+    @State private var editableConditions = AnchorConditions()
+    /// Seabed is always read from the engine, including after reusing a history entry on another tab.
+    private var conditions: AnchorConditions {
+        engine.plannerConditions(editableConditions)
+    }
     @State private var started = false
     @State private var tide = TideChoice.high
 
@@ -33,18 +37,21 @@ struct AnchoringView: View {
 
     /// The scope settings with the depth moved to the chosen tide.
     private var tideScope: ScopeSettings {
-        var s = engine.scope
-        s.tideRise = max(tideChange ?? 0, -s.depth)
-        return s
+        switch tide {
+        case .now: return engine.plannerScope()
+        case .low: return engine.plannerScope(at: tideExtremes?.low.time)
+        case .high: return engine.plannerScope(at: tideExtremes?.high.time, fallbackRise: engine.scope.tideRise)
+        }
     }
 
     /// Depth at the chosen tide, under the depth-now slider. Nil for Now, which the slider already shows.
     private var tideDepthLine: String? {
         guard tide != .now else { return nil }
         let name = tide == .low ? "low" : "high"
-        guard let change = tideChange else { return "No tide data yet: showing the depth now." }
+        guard tideChange != nil else { return "No tide data yet: showing the depth now." }
         let depth = units.formatTenths(tideScope.designDepth)
-        let shift = "\(change >= 0 ? "+" : "−")\(units.formatTenths(abs(change)))"
+        let actualChange = tideScope.designDepth - engine.liveDepth
+        let shift = "\(actualChange >= 0 ? "+" : "−")\(units.formatTenths(abs(actualChange)))"
         guard let ext = tideExtremes else { return "At high water (rise from the Water tab): \(depth) (\(shift))" }
         let when = (tide == .low ? ext.low : ext.high).time.formatted(date: .omitted, time: .shortened)
         return "At \(name) tide, \(when): \(depth) (\(shift))"
@@ -85,14 +92,16 @@ struct AnchoringView: View {
                         .frame(height: 240)
                         .listRowInsets(EdgeInsets())
                     // The depth now, the same one the Water tab sets; the tide buttons below move it to low or high water.
-                    knob("Water depth at anchorage", length($engine.scope.depth), 0...max(units == .feet ? 100 : 30, engine.scope.depth * units.perMeter),
+                    knob("New sounder reading", length(Binding(get: { engine.liveDepth }, set: { engine.setDepthReading($0) })), 0...max(units == .feet ? 100 : 30, engine.scope.depth * units.perMeter),
                          step: units == .feet ? 1 : 0.5, format: (units == .feet ? "%.0f " : "%.1f ") + units.symbol)
+                    Text(engine.depthReferenceDetail).font(.caption).foregroundStyle(.secondary)
+                    Button("Confirm current depth as a new sounder reading") { engine.setDepthReading(engine.liveDepth) }.font(.footnote)
                     if let line = tideDepthLine {
                         Text(line).font(.footnote.bold()).foregroundStyle(tideDepthColor)
                     }
                     // Setting the rode here sets it for the whole app: Watch, the outlook and the swing circle.
                     knob("Rode out", length(Binding(get: { conditions.rodeOut },
-                                                    set: { conditions.rodeOut = $0; engine.rodeOutSet = $0 })),
+                                                    set: { editableConditions.rodeOut = $0; engine.rodeOutSet = $0 })),
                          0...max(10, rodeMax * units.perMeter), step: units == .feet ? 5 : 1,
                          format: "%.0f " + units.symbol)
                     // Once anchored, the alarm radius sits with the depth and rode that set its default.
@@ -132,15 +141,15 @@ struct AnchoringView: View {
                     DisclosureGroup(isExpanded: $showConditions) {
                         knob("Wind", wind, 0...60, step: 1, format: "%.0f kt")
                         knob("Gusts", gust, 0...70, step: 1, format: "%.0f kt")
-                        knob("Current", Binding(get: { conditions.current }, set: { currentSetByHand = true; conditions.current = $0 }),
+                        knob("Current", Binding(get: { conditions.current }, set: { currentSetByHand = true; editableConditions.current = $0 }),
                              0...4, step: 0.25, format: "%.2g kt")
                         Picker("Current runs", selection: Binding(get: { conditions.currentDirection },
-                                                                  set: { currentSetByHand = true; conditions.currentDirection = $0 })) {
+                                                                  set: { currentSetByHand = true; editableConditions.currentDirection = $0 })) {
                             ForEach(AnchorConditions.CurrentDirection.allCases) { Text($0.rawValue).tag($0) }
                         }.pickerStyle(.segmented)
-                        knob("Waves", length($conditions.waveHeight), 0...(units == .feet ? 10 : 3), step: units == .feet ? 0.5 : 0.1,
+                        knob("Waves", length($editableConditions.waveHeight), 0...(units == .feet ? 10 : 3), step: units == .feet ? 0.5 : 0.1,
                              format: "%.1f " + units.symbol)
-                        Picker("Bottom", selection: $conditions.bottom) {
+                        Picker("Bottom", selection: $engine.anchorBottom) {
                             ForEach(AnchorConditions.Bottom.allCases) { Text($0.rawValue).tag($0) }
                         }
                         if engine.windHere != nil {
@@ -228,11 +237,10 @@ struct AnchoringView: View {
             .navigationTitle("Anchoring")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear(perform: start)
-            .onChange(of: conditions.bottom) { _, bottom in engine.anchorBottom = bottom }
             // The forecast often arrives after the page first opens; use it unless the wind was set by hand.
             .onChange(of: engine.windHere) { _, _ in if !windSetByHand { fillFromForecast() } }
             .onChange(of: engine.currents) { _, _ in if !currentSetByHand { fillCurrent() } }
-            .onChange(of: engine.rodeOut) { _, rode in conditions.rodeOut = rode }
+            .onChange(of: engine.rodeOut) { _, rode in editableConditions.rodeOut = rode }
         }
     }
 
@@ -280,8 +288,7 @@ struct AnchoringView: View {
     private func start() {
         guard !started else { return }
         started = true
-        conditions.rodeOut = engine.rodeOut
-        conditions.bottom = engine.anchorBottom
+        editableConditions.rodeOut = engine.rodeOut
         fillFromForecast()
         fillCurrent()
     }
@@ -289,18 +296,18 @@ struct AnchoringView: View {
     /// The predicted current now, and which way it runs against the wind.
     private func fillCurrent() {
         guard let flow = engine.currentHere(at: Date()) else { return }
-        conditions.current = (flow.speed * 4).rounded() / 4          // the slider's 0.25 kt steps
+        editableConditions.current = (flow.speed * 4).rounded() / 4          // the slider's 0.25 kt steps
         let windToward = ((engine.windNow?.direction ?? 0) + 180).truncatingRemainder(dividingBy: 360)
         let angle = Compass.difference(windToward, flow.toward)
-        conditions.currentDirection = angle <= 45 ? .with : angle >= 135 ? .against : .across
+        editableConditions.currentDirection = angle <= 45 ? .with : angle >= 135 ? .against : .across
     }
 
     private func fillFromForecast() {
         guard let series = engine.windHere else { return }
         let now = Date()
         let window = series.samples.filter { $0.time >= now.addingTimeInterval(-1800) && $0.time <= now.addingTimeInterval(12 * 3600) }
-        if let wind = window.map(\.speed).max() { conditions.wind = wind.rounded() }
-        if let gust = window.map(\.gust).max() { conditions.gust = gust.rounded() }
+        if let wind = window.map(\.speed).max() { editableConditions.wind = wind.rounded() }
+        if let gust = window.map(\.gust).max() { editableConditions.gust = gust.rounded() }
     }
 
     private func statusRow(_ r: AnchorAssessment) -> some View {
@@ -343,11 +350,11 @@ struct AnchoringView: View {
 
     /// Wind and gusts stay in step: gusts are never below the wind.
     private var wind: Binding<Double> {
-        Binding(get: { conditions.wind }, set: { windSetByHand = true; conditions.wind = $0; conditions.gust = max(conditions.gust, $0) })
+        Binding(get: { conditions.wind }, set: { windSetByHand = true; editableConditions.wind = $0; editableConditions.gust = max(conditions.gust, $0) })
     }
 
     private var gust: Binding<Double> {
-        Binding(get: { conditions.gust }, set: { windSetByHand = true; conditions.gust = $0; conditions.wind = min(conditions.wind, $0) })
+        Binding(get: { conditions.gust }, set: { windSetByHand = true; editableConditions.gust = $0; editableConditions.wind = min(conditions.wind, $0) })
     }
 
     /// A metre value shown in the user's units.
