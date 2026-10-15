@@ -33,7 +33,7 @@ struct GPSQualityView: View {
     private func live(_ samples: [(time: Date, fix: Fix)], now: Date) -> some View {
         let points = samples.map(\.fix.coordinate)
         return Section("Now") {
-            if let fix = engine.fix {
+            if let fix = engine.rawFix {
                 LabeledContent("Source", value: engine.sourceKind == .simulator ? "Simulator" : fix.external ? "External (GLO)" : "iPhone")
                 LabeledContent("Accuracy", value: "±\(units.format(fix.accuracy))")
                 LabeledContent("Altitude accuracy", value: fix.altitudeAccuracy.map { "±\(units.format($0))" } ?? "--")

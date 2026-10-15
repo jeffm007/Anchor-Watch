@@ -184,7 +184,7 @@ final class EngineTests: XCTestCase {
         for i in 0...10 {
             var f = fix(Double(i) * 4)
             f.timestamp = Date().addingTimeInterval(Double(i - 10) * 3)
-            e.ingest(f)
+            e.ingest(f, receivedAt: f.timestamp)
         }
         e.dropAnchor()
         let half = ScopeCalculator.gpsFromBow(e.scope)
@@ -221,7 +221,7 @@ final class EngineTests: XCTestCase {
         for i in 0..<240 {
             let bearing = 160 + 120 * (0.5 - 0.5 * cos(Double(i) / 240 * 4 * .pi))
             e.ingest(Fix(coordinate: Geo.destination(from: anchor, bearing: bearing, meters: 36), accuracy: 3,
-                         course: nil, speed: nil, timestamp: Date().addingTimeInterval(180 + Double(i) * 10)))
+                         course: nil, speed: nil, timestamp: Date().addingTimeInterval(180 + Double(i) * 10)), receivedAt: Date().addingTimeInterval(180 + Double(i) * 10))
         }
     }
 
@@ -350,7 +350,7 @@ final class EngineTests: XCTestCase {
         for i in 0..<240 {                              // 40 minutes swinging 120° on a 36 m circle
             let bearing = 160 + 120 * (0.5 - 0.5 * cos(Double(i) / 240 * 4 * .pi))
             e.ingest(Fix(coordinate: Geo.destination(from: anchor, bearing: bearing, meters: 36), accuracy: 3,
-                         course: nil, speed: nil, timestamp: Date().addingTimeInterval(180 + Double(i) * 10)))
+                         course: nil, speed: nil, timestamp: Date().addingTimeInterval(180 + Double(i) * 10)), receivedAt: Date().addingTimeInterval(180 + Double(i) * 10))
         }
         e.updateAnchorEstimate()
         let estimate = try! XCTUnwrap(e.anchorEstimate)
@@ -375,7 +375,7 @@ final class EngineTests: XCTestCase {
             let pivot = Geo.destination(from: pivot0, bearing: 90, meters: dragged)
             let bearing = 270 + 60 * sin(minute / 10 * 2 * .pi)   // swinging ±60° downwind (west of the anchor)
             e.ingest(Fix(coordinate: Geo.destination(from: pivot, bearing: bearing, meters: 36), accuracy: 3,
-                         course: nil, speed: nil, timestamp: Date().addingTimeInterval(Double(i) * 10)))
+                         course: nil, speed: nil, timestamp: Date().addingTimeInterval(Double(i) * 10)), receivedAt: Date().addingTimeInterval(Double(i) * 10))
             if i % 6 == 5 {
                 e.updateAnchorEstimate()
                 if minute < 25 && e.anchorDrift != nil { warnedBeforeDrag = true }
@@ -1097,7 +1097,7 @@ final class SafetyTests: XCTestCase {
         for _ in 0..<5 { e.ingest(fix(200, accuracy: 120)) }     // far away, but reported ±120 m
         XCTAssertNil(e.alarm)
         XCTAssertEqual(e.distance ?? 99, 0, accuracy: 1, "distance stays at the last good reading")
-        XCTAssertEqual(e.fix?.accuracy, 120, "but the screen still reports the poor accuracy")
+        XCTAssertEqual(e.rawFix?.accuracy, 120, "but the screen still reports the poor accuracy")
         XCTAssertTrue(e.gpsIsUnusable)
     }
 
@@ -2261,5 +2261,85 @@ final class BatterySavingTests: XCTestCase {
         XCTAssertTrue(e.keepsScreenOn, "retrieving")
         e.endRetrieval()
         XCTAssertFalse(e.keepsScreenOn)
+    }
+}
+
+
+@MainActor
+final class MonitoringFreshnessTests: XCTestCase {
+    private let point = CLLocationCoordinate2D(latitude: 38.97, longitude: -76.47)
+    private func observation(_ date: Date, meters: Double = 0, accuracy: Double = 3) -> Fix {
+        Fix(coordinate: Geo.destination(from: point, bearing: 90, meters: meters), accuracy: accuracy, course: nil, speed: nil, timestamp: date)
+    }
+    func testRestoredAnchorWithoutCallbacksReachesDeadline() {
+        var now = Date()
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let original = AnchorWatchEngine(player: SilentAlarm(), liveActivity: NoLiveActivity(), defaults: defaults, useGPSHardware: false, clock: { now })
+        original.ingest(observation(now)); original.dropAnchor()
+        let restored = AnchorWatchEngine(player: SilentAlarm(), liveActivity: NoLiveActivity(), defaults: defaults, useGPSHardware: false, clock: { now })
+        XCTAssertEqual(restored.watchState, .acquiringGPS)
+        XCTAssertEqual(restored.snapshot?.status, .caution)
+        now += 31
+        restored.safetyChecks()
+        XCTAssertEqual(restored.alarm, .gpsLost)
+        restored.silence()
+        XCTAssertEqual(restored.watchState, .gpsInterrupted)
+    }
+    func testOldFutureInvalidAndDuplicateObservationsCannotDropOrConfirmOutside() {
+        var now = Date()
+        let e = AnchorWatchEngine(player: SilentAlarm(), liveActivity: NoLiveActivity(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false, clock: { now })
+        e.ingest(observation(now - 60)); e.dropAnchor(); XCTAssertNil(e.anchor)
+        e.ingest(observation(now + 60)); e.dropAnchor(); XCTAssertNil(e.anchor)
+        e.ingest(observation(now, accuracy: -1)); e.dropAnchor(); XCTAssertNil(e.anchor)
+        e.ingest(observation(now)); e.dropAnchor(); e.radius = 30
+        now += 1
+        let outside = observation(now, meters: 80)
+        e.ingest(outside); e.ingest(outside)
+        e.ingest(observation(now - 0.5, meters: 90))
+        XCTAssertNil(e.alarm)
+        now += 1
+        e.ingest(observation(now, meters: 81))
+        XCTAssertNotNil(e.alarm)
+    }
+    func testExpiredFixAndSourceSwitchInterruptMonitoringAndPreventDrop() {
+        var now = Date()
+        let e = AnchorWatchEngine(player: SilentAlarm(), liveActivity: NoLiveActivity(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false, clock: { now })
+        e.ingest(observation(now)); e.dropAnchor()
+        now += 16
+        XCTAssertEqual(e.watchState, .gpsInterrupted)
+        XCTAssertTrue(e.gpsIsUnusable)
+        XCTAssertEqual(e.snapshot?.distanceText, "--")
+        e.sourceKind = .gps
+        XCTAssertEqual(e.watchState, .acquiringGPS)
+        now += 31; e.safetyChecks(); XCTAssertEqual(e.alarm, .gpsLost)
+        e.raiseAnchor(); e.dropAnchor(); XCTAssertNil(e.anchor)
+    }
+    func testPendingPlacementSurvivesRestartAndManualPlacementResolvesAllState() {
+        let now = Date(), defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let e = AnchorWatchEngine(player: SilentAlarm(), liveActivity: NoLiveActivity(), defaults: defaults, useGPSHardware: false, clock: { now })
+        e.ingest(observation(now)); e.dropAnchor(.settled)
+        XCTAssertEqual(e.watchState, .awaitingFix)
+        XCTAssertEqual(e.snapshot?.headline, "Finding anchor — circle alarm not armed")
+        let restored = AnchorWatchEngine(player: SilentAlarm(), liveActivity: NoLiveActivity(), defaults: defaults, useGPSHardware: false, clock: { now })
+        XCTAssertTrue(restored.awaitingSwingFix)
+        restored.ingest(observation(now))
+        XCTAssertEqual(restored.watchState, .awaitingFix)
+        restored.moveAnchor(to: point)
+        XCTAssertEqual(restored.watchState, .holding)
+        XCTAssertEqual(restored.snapshot?.status, .holding)
+    }
+    func testUnusableCallbacksCannotKeepMonitoringHealthy() {
+        var now = Date()
+        let e = AnchorWatchEngine(player: SilentAlarm(), liveActivity: NoLiveActivity(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false, clock: { now })
+        e.ingest(observation(now)); e.dropAnchor()
+        now += 61
+        e.ingest(observation(now, accuracy: 100)); e.safetyChecks()
+        XCTAssertEqual(e.alarm, .gpsPoor)
+        XCTAssertNotEqual(e.snapshot?.status, .holding)
+    }
+    func testIdenticalLiveSnapshotHasBoundedHeartbeat() {
+        let s = WatchSnapshot(distanceText: "10 m", radiusText: "30 m", fraction: 0.3, status: .holding, headline: "Holding")
+        XCTAssertFalse(LiveActivityController.shouldSend(s, after: s, elapsed: 29))
+        for minute in 1...6 { XCTAssertTrue(LiveActivityController.shouldSend(s, after: s, elapsed: Double(minute * 60))) }
     }
 }

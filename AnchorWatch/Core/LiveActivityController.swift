@@ -53,9 +53,12 @@ final class LiveActivityController: LiveActivityControlling {
         state = .running
 
         // Update on a change of status at once, otherwise at most every 5 seconds.
-        let statusChanged = last?.status != snapshot.status
-        guard snapshot != last, statusChanged || Date().timeIntervalSince(lastUpdate) >= 5 else { return }
+        guard Self.shouldSend(snapshot, after: last, elapsed: Date().timeIntervalSince(lastUpdate)) else { return }
         send(snapshot)
+    }
+
+    static func shouldSend(_ snapshot: WatchSnapshot, after last: WatchSnapshot?, elapsed: TimeInterval) -> Bool {
+        elapsed >= 30 || (snapshot != last && (snapshot.status != last?.status || snapshot.headline != last?.headline || elapsed >= 5))
     }
 
     private func content(_ s: WatchSnapshot) -> ActivityContent<AnchorWatchAttributes.ContentState> {

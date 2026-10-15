@@ -58,6 +58,15 @@ final class WatchLink: NSObject, WCSessionDelegate {
     nonisolated func sessionDidBecomeInactive(_ session: WCSession) {}
     nonisolated func sessionDidDeactivate(_ session: WCSession) { session.activate() }
 
+    nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
+        guard message["silence"] as? Bool == true else { replyHandler(["silenced": false]); return }
+        Task { @MainActor in
+            let handled = self.onSilence != nil
+            self.onSilence?()
+            replyHandler(["silenced": handled])
+        }
+    }
+
     nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
         guard message["silence"] as? Bool == true else { return }
         Task { @MainActor in self.onSilence?() }

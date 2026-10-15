@@ -82,6 +82,8 @@ final class AnchorWatchEngine: ObservableObject {
 
     // MARK: Published state
     @Published private(set) var fix: Fix?
+    /// Latest raw callback for diagnostics; navigation uses only accepted `fix` values.
+    @Published private(set) var rawFix: Fix?
     @Published private(set) var track: [Fix] = []
     @Published private(set) var anchor: CLLocationCoordinate2D?
     /// How far off the anchor point may be from GPS error alone (metres): the average accuracy of the
@@ -106,6 +108,9 @@ final class AnchorWatchEngine: ObservableObject {
         case notAnchored
         /// Settled drop with no wind to place the mark: the circle alarm waits for the swing fit.
         case awaitingFix
+        case acquiringGPS
+        case gpsInterrupted
+        case retrieving
         case alarm(AlarmReason)
         /// Outside the circle, including after the alarm was silenced.
         case outside(distance: Double)
@@ -115,8 +120,10 @@ final class AnchorWatchEngine: ObservableObject {
     }
 
     var watchState: WatchState {
-        guard anchor != nil else { return .notAnchored }
+        guard anchor != nil || retrieveTarget != nil else { return .notAnchored }
         if let alarm { return .alarm(alarm) }
+        if !hasFreshPosition { return lastUsableFix == nil && clock().timeIntervalSince(acquisitionStarted) <= gpsLostAfter ? .acquiringGPS : .gpsInterrupted }
+        if retrieveTarget != nil { return .retrieving }
         if awaitingSwingFix { return .awaitingFix }
         if let distance, distance > radius { return .outside(distance: distance) }
         if let anchorDrift { return .dragging(anchorDrift) }
@@ -158,13 +165,19 @@ final class AnchorWatchEngine: ObservableObject {
     /// Direction the bow points, degrees true. A boat on its rode lies to the anchor, so while
     /// anchored the bow points at it; GPS course is meaningless when barely moving.
     var heading: Double? {
-        if let anchor, let fix, (distance ?? 0) > 1 { return Geo.bearing(from: fix.coordinate, to: anchor) }
+        if hasFreshPosition, let anchor, let fix, (distance ?? 0) > 1 { return Geo.bearing(from: fix.coordinate, to: anchor) }
         return fix?.course
     }
 
-    var gpsIsPoor: Bool { (fix?.accuracy ?? .infinity) > goodAccuracy }
+    var gpsIsPoor: Bool { (rawFix?.accuracy ?? .infinity) > goodAccuracy }
     /// Too inaccurate to anchor with at all.
-    var gpsIsUnusable: Bool { (fix?.accuracy ?? .infinity) > usableLimit(for: fix) }
+    var gpsIsUnusable: Bool { !hasFreshPosition || (rawFix?.accuracy ?? .infinity) > usableLimit(for: rawFix) }
+    let maximumFixAge: TimeInterval = 15
+    var lastUsableFixAge: TimeInterval? { lastUsableFix.map { max(0, clock().timeIntervalSince($0)) } }
+    var hasFreshPosition: Bool { lastUsableFixAge.map { $0 <= maximumFixAge } ?? false }
+    var gpsFreshnessText: String {
+        lastUsableFixAge.map { "Last usable GPS fix \(Int($0)) seconds ago" } ?? "No fresh usable GPS fix yet"
+    }
 
     /// Average of the last few seconds of fixes, to smooth out single-fix GPS error.
     private var averagedPosition: CLLocationCoordinate2D? {
@@ -235,11 +248,19 @@ final class AnchorWatchEngine: ObservableObject {
         ReadinessInput(volume: volume, audioRoute: externalAudioRoute, batteryLevel: batteryLevel, charging: charging,
                        notificationsAllowed: notificationsAllowed,
                        locationAlways: sourceKind == .gps ? locationAlways : nil,
-                       accuracy: fix?.accuracy, radius: radius, liveActivity: armed ? liveActivityState : nil,
+                       accuracy: hasFreshPosition ? fix?.accuracy : nil, radius: radius, liveActivity: armed ? liveActivityState : nil,
                        goodAccuracy: goodAccuracy, usableAccuracy: usableLimit(for: fix))
     }
 
-    var watchChecks: [WatchCheck] { Readiness.checks(readinessInput, format: units.format) }
+    var watchChecks: [WatchCheck] {
+        var checks = Readiness.checks(readinessInput, format: units.format)
+        if !hasFreshPosition {
+            checks.removeAll { $0.id == "gps" }
+            checks.append(WatchCheck(id: "gps", title: "Fresh GPS position unavailable", detail: gpsFreshnessText,
+                                     state: armed ? .critical : .warning))
+        }
+        return checks
+    }
     var watchProblems: [WatchCheck] { watchChecks.filter(\.isProblem) }
 
     /// Sounds the siren for a few seconds. With a delay you can lock the phone or switch to another app first
@@ -801,8 +822,14 @@ final class AnchorWatchEngine: ObservableObject {
     private var lastFixArrival: Date?
     private var lastUsableFix: Date?
     private var watchdog: Timer?
+    private let clock: () -> Date
+    private var acquisitionStarted: Date
+    private var newestMeasurement: Date?
+    @Published private(set) var monitoringTick = 0
 
-    init(player: AlarmPlaying? = nil, liveActivity: LiveActivityControlling? = nil, defaults: UserDefaults = .standard, useGPSHardware: Bool = true) {
+    init(player: AlarmPlaying? = nil, liveActivity: LiveActivityControlling? = nil, defaults: UserDefaults = .standard, useGPSHardware: Bool = true, clock: @escaping () -> Date = Date.init) {
+        self.clock = clock
+        self.acquisitionStarted = clock()
         self.player = player ?? AlarmPlayer()
         self.liveActivity = liveActivity ?? LiveActivityController()
         self.defaults = defaults
@@ -923,6 +950,7 @@ final class AnchorWatchEngine: ObservableObject {
 
     /// Everything that guards the anchor, once a second. No network use, so tests can call it.
     func safetyChecks() {
+        monitoringTick &+= 1
         saveBattery()
         checkGPSLost()
         checkGPSPoor()
@@ -935,7 +963,7 @@ final class AnchorWatchEngine: ObservableObject {
 
     /// What the lock-screen Live Activity shows; nil when no anchor is set.
     var snapshot: WatchSnapshot? {
-        guard armed else { return nil }
+        guard armed || retrieveTarget != nil else { return nil }
         let fraction = radius > 0 ? (distance ?? 0) / radius : 0
         let distanceText = distance.map(units.format) ?? "--"
         if testingSiren, alarm == nil {
@@ -944,6 +972,12 @@ final class AnchorWatchEngine: ObservableObject {
         }
         if let alarm {
             return WatchSnapshot(distanceText: distanceText, radiusText: units.format(radius), fraction: fraction, status: .alarm, headline: alarm.message)
+        }
+        switch watchState {
+        case .acquiringGPS, .gpsInterrupted, .awaitingFix, .retrieving, .outside, .dragging, .movingAway:
+            return WatchSnapshot(distanceText: hasFreshPosition ? distanceText : "--", radiusText: units.format(radius),
+                                 fraction: fraction, status: .caution, headline: monitoringHeadline)
+        default: break
         }
         if let problem = watchProblems.first(where: { $0.state == .critical }) {
             return WatchSnapshot(distanceText: distanceText, radiusText: units.format(radius), fraction: fraction, status: .caution, headline: problem.title)
@@ -975,6 +1009,13 @@ final class AnchorWatchEngine: ObservableObject {
         simulator.stop()
         gps?.stop()
         lastFixArrival = nil
+        lastUsableFix = nil
+        newestMeasurement = nil
+        acquisitionStarted = clock()
+        fix = nil
+        rawFix = nil
+        recent = []; approach = []; outsideCount = 0
+        distance = nil
         switch sourceKind {
         case .simulator: simulator.restart()
         case .gps: gps?.start()
@@ -998,7 +1039,7 @@ final class AnchorWatchEngine: ObservableObject {
     }
 
     func dropAnchor(_ moment: DropMoment = .goingDown) {
-        guard let fix, let position = averagedPosition, let accuracy = averagedAccuracy else { return }
+        guard !gpsIsUnusable, let fix, let position = averagedPosition, let accuracy = averagedAccuracy else { return }
         retrieveTarget = nil
         hiddenOutlook = []
         lockedOutlook = []
@@ -1045,7 +1086,7 @@ final class AnchorWatchEngine: ObservableObject {
     }
 
     func moveAnchorToBoat() {
-        guard let position = averagedPosition, let accuracy = averagedAccuracy else { return }
+        guard !gpsIsUnusable, let position = averagedPosition, let accuracy = averagedAccuracy else { return }
         let placed = placeAtBow(position, accuracy: accuracy, lyingTo: anchor)
         dropOffset = ScopeCalculator.gpsFromBow(scope)
         moveAnchor(to: placed.coordinate)
@@ -1126,6 +1167,7 @@ final class AnchorWatchEngine: ObservableObject {
         guard !estimateAutoApplied, r.windAgrees != false, let anchor, let anchorDropped else { return }
         estimateAutoApplied = true
         awaitingSwingFix = false        // the swing has spoken: arm the circle alarm
+        save()
         let minutes = Date().timeIntervalSince(anchorDropped) * max(simTimeScale, 1) / 60
         let off = Geo.distance(anchor, r.center)
         guard minutes <= Self.autoCorrectWithinMinutes, off > max(r.semiMajor, 5) else { return }
@@ -1149,11 +1191,29 @@ final class AnchorWatchEngine: ObservableObject {
     /// The phone is in night mode; the watch follows it.
     var nightMode = false
 
+    var monitoringHeadline: String {
+        switch watchState {
+        case .notAnchored: "Not anchored"
+        case .acquiringGPS: "Acquiring GPS — circle monitoring unavailable"
+        case .gpsInterrupted: "Monitoring interrupted — fresh GPS unavailable"
+        case .awaitingFix: "Finding anchor — circle alarm not armed"
+        case .retrieving: "Retrieving"
+        case .alarm(let reason): reason.message
+        case .outside: "Outside circle"
+        case .dragging: "Dragging"
+        case .movingAway: "Moving away"
+        case .holding: "Holding"
+        }
+    }
+
     private func publishToWatch() {
         guard let watchLink else { return }
         if watchLink.onSilence == nil { watchLink.onSilence = { [weak self] in self?.silence() } }
         let (state, tone): (String, String) = switch watchState {
         case .notAnchored: ("Not anchored", "gray")
+        case .acquiringGPS: ("Acquiring GPS", "orange")
+        case .gpsInterrupted: ("Monitoring interrupted", "orange")
+        case .retrieving: ("Retrieving", "purple")
         case .awaitingFix: ("Finding anchor", "purple")
         case .alarm: ("Alarm", "red")
         case .outside: ("Outside circle", "red")
@@ -1182,6 +1242,10 @@ final class AnchorWatchEngine: ObservableObject {
             status["distance"] = units.format(guide.distance)
             status["radius"] = "bow to anchor"
             status["detail"] = guide.steer
+        }
+        if !hasFreshPosition || awaitingSwingFix {
+            status["detail"] = monitoringHeadline + ". " + gpsFreshnessText
+            if !hasFreshPosition { status["distance"] = "--"; status.removeValue(forKey: "boat") }
         }
         watchLink.publish(status)
     }
@@ -1408,7 +1472,7 @@ final class AnchorWatchEngine: ObservableObject {
 
     /// Bow to anchor, and which way to steer, from the latest fix.
     var retrievalGuide: RetrievalGuide? {
-        guard let retrieveTarget, let fix else { return nil }
+        guard hasFreshPosition, let retrieveTarget, let fix else { return nil }
         return .make(phone: fix, anchor: retrieveTarget, bowOffset: ScopeCalculator.gpsFromBow(scope), depth: retrieveDepth)
     }
 
@@ -1497,9 +1561,9 @@ final class AnchorWatchEngine: ObservableObject {
 
     // MARK: Position handling
 
-    func ingest(_ new: Fix) {
-        fix = new                       // always shown, so the screen reports poor accuracy honestly
-        let now = Date()
+    func ingest(_ new: Fix, receivedAt: Date? = nil) {
+        rawFix = new                    // rejected callbacks remain available in diagnostics
+        let now = receivedAt ?? clock()
         lastFixArrival = now
         arrivals.append(now)
         arrivals.removeAll { now.timeIntervalSince($0) > 10 }
@@ -1509,8 +1573,14 @@ final class AnchorWatchEngine: ObservableObject {
 
         // A fix this poor can't tell a boat that has drifted from one that hasn't: leave distance, track
         // and alarm to the last good ones.
+        guard CLLocationCoordinate2DIsValid(new.coordinate), new.accuracy.isFinite, new.accuracy >= 0,
+              now.timeIntervalSince(new.timestamp) >= -2,
+              now.timeIntervalSince(new.timestamp) <= maximumFixAge,
+              newestMeasurement.map({ new.timestamp > $0 }) ?? true else { return }
+        newestMeasurement = new.timestamp
         guard new.accuracy <= usableLimit(for: new) else { return }
-        lastUsableFix = now
+        lastUsableFix = new.timestamp
+        fix = new
 
         recent.append(new)
         recent.removeAll { new.timestamp.timeIntervalSince($0.timestamp) > averagingWindow }
@@ -1553,23 +1623,22 @@ final class AnchorWatchEngine: ObservableObject {
     }
 
     private func checkGPSLost() {
-        guard anchor != nil, let lastFixArrival,
-              Date().timeIntervalSince(lastFixArrival) > gpsLostAfter else { return }
+        guard armed, clock().timeIntervalSince(lastFixArrival ?? acquisitionStarted) > gpsLostAfter else { return }
         trigger(.gpsLost)
     }
 
     /// Fixes are arriving but none has been accurate enough for a minute.
     private func checkGPSPoor() {
-        guard armed, let lastFixArrival, Date().timeIntervalSince(lastFixArrival) <= gpsLostAfter else { return }
-        let since = lastUsableFix ?? anchorDropped ?? lastFixArrival
-        guard Date().timeIntervalSince(since) > gpsPoorAfter else { return }
+        guard armed, let lastFixArrival, clock().timeIntervalSince(lastFixArrival) <= gpsLostAfter else { return }
+        let since = lastUsableFix ?? acquisitionStarted
+        guard clock().timeIntervalSince(since) > gpsPoorAfter else { return }
         trigger(.gpsPoor)
     }
 
     // MARK: Alarm
 
     private func trigger(_ reason: AlarmReason) {
-        guard Date() >= (snoozedUntil[reason.kind] ?? .distantPast) else { return }
+        guard clock() >= (snoozedUntil[reason.kind] ?? .distantPast) else { return }
         if let current = alarm {
             // The siren is already going; only a more serious problem takes over the banner.
             if reason.priority > current.priority { alarm = reason; pokeControls() }
@@ -1583,7 +1652,7 @@ final class AnchorWatchEngine: ObservableObject {
     /// Stops the siren. The same kind of alarm re-arms after its snooze if the problem persists.
     func silence(snoozeAfter: Bool = true) {
         if snoozeAfter, let reason = alarm {
-            snoozedUntil[reason.kind] = Date().addingTimeInterval(reason.snooze)
+            snoozedUntil[reason.kind] = clock().addingTimeInterval(reason.snooze)
         } else if !snoozeAfter {
             snoozedUntil = [:]
         }
@@ -1599,6 +1668,7 @@ final class AnchorWatchEngine: ObservableObject {
         var latitude: Double, longitude: Double, radius: Double, dropped: Date?
         var uncertainty: Double?
         var originalLatitude: Double?, originalLongitude: Double?
+        var awaitingSwingFix: Bool?
     }
     private let key = "anchorwatch.saved"
     private let scopeKey = "anchorwatch.scope.v3"
@@ -1616,7 +1686,7 @@ final class AnchorWatchEngine: ObservableObject {
         guard let anchor else { defaults.removeObject(forKey: key); return }
         let saved = Saved(latitude: anchor.latitude, longitude: anchor.longitude, radius: radius, dropped: anchorDropped,
                           uncertainty: anchorUncertainty,
-                          originalLatitude: originalAnchor?.latitude, originalLongitude: originalAnchor?.longitude)
+                          originalLatitude: originalAnchor?.latitude, originalLongitude: originalAnchor?.longitude, awaitingSwingFix: awaitingSwingFix)
         defaults.set(try? JSONEncoder().encode(saved), forKey: key)
     }
 
@@ -1653,6 +1723,7 @@ final class AnchorWatchEngine: ObservableObject {
         radius = s.radius
         anchorDropped = s.dropped
         anchorUncertainty = s.uncertainty
+        awaitingSwingFix = s.awaitingSwingFix ?? false
         if let lat = s.originalLatitude, let lon = s.originalLongitude { originalAnchor = CLLocationCoordinate2D(latitude: lat, longitude: lon) }
     }
 }

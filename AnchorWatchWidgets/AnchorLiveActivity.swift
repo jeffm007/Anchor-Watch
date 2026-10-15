@@ -23,14 +23,14 @@ struct AnchorLiveActivity: Widget {
             LockScreenView(context: context)
         } dynamicIsland: { context in
             DynamicIsland {
-                DynamicIslandExpandedRegion(.leading) { Text("⚓").font(.title) }
+                DynamicIslandExpandedRegion(.leading) { Text(context.isStale ? "⚠️" : "⚓").font(.title) }
                 DynamicIslandExpandedRegion(.trailing) {
-                    Text(context.state.distanceText)
+                    Text(context.isStale ? "Stale" : context.state.distanceText)
                         .font(.system(.title2, design: .rounded).bold())
-                        .foregroundStyle(context.state.status.color)
+                        .foregroundStyle(context.isStale ? Color.orange : context.state.status.color)
                 }
                 DynamicIslandExpandedRegion(.center) {
-                    Text(context.state.headline).font(.caption).lineLimit(1)
+                    Text(context.isStale ? "Monitoring status stale — open Anchor Watch" : context.state.headline).font(.caption).lineLimit(1)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     VStack(spacing: 2) {
@@ -39,13 +39,13 @@ struct AnchorLiveActivity: Widget {
                     }
                 }
             } compactLeading: {
-                Text("⚓")
+                Text(context.isStale ? "⚠️" : "⚓")
             } compactTrailing: {
-                Text(context.state.distanceText)
+                Text(context.isStale ? "Stale" : context.state.distanceText)
                     .font(.caption.bold())
-                    .foregroundStyle(context.state.status.color)
+                    .foregroundStyle(context.isStale ? Color.orange : context.state.status.color)
             } minimal: {
-                Text("⚓")
+                Text(context.isStale ? "⚠️" : "⚓")
             }
         }
     }
@@ -58,19 +58,19 @@ struct LockScreenView: View {
         let state = context.state
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("⚓").font(.title3)
+                Text(context.isStale ? "⚠️" : "⚓").font(.title3)
                 Text(context.attributes.boatName).font(.headline)
                 Spacer()
-                Circle().fill(state.status.color).frame(width: 12, height: 12)
+                Circle().fill(context.isStale ? Color.orange : state.status.color).frame(width: 12, height: 12)
             }
             HStack(alignment: .firstTextBaseline) {
-                Text(state.distanceText).font(.system(size: 34, weight: .bold, design: .rounded))
+                Text(context.isStale ? "--" : state.distanceText).font(.system(size: 34, weight: .bold, design: .rounded))
                 Text("from anchor").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Text("circle \(state.radiusText)").font(.caption)
             }
             ProgressView(value: min(state.fraction, 1)).tint(state.status.color)
-            Text(state.headline).font(.footnote.bold())
+            Text(context.isStale ? "Monitoring status stale" : state.headline).font(.footnote.bold())
             if context.isStale {
                 Text("Not updating. Open Anchor Watch.").font(.footnote.bold()).foregroundStyle(.red)
             } else {

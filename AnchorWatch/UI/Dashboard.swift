@@ -38,11 +38,11 @@ struct DashboardHeader: View {
     @ViewBuilder private var subtitle: some View {
         if engine.sourceKind == .simulator {
             Text("Simulated GPS · not your real position").font(.caption.bold()).foregroundStyle(.yellow)
-        } else if let fix = engine.fix {
+        } else if let fix = engine.rawFix {
             let color: Color = engine.gpsIsUnusable ? .red : engine.gpsIsPoor ? .orange : .green
             HStack(spacing: 4) {
                 Circle().fill(color).frame(width: 7, height: 7)
-                Text("\(fix.external ? "External GPS" : "iPhone GPS") ±\(engine.units.format(fix.accuracy))")
+                Text("\(fix.external ? "External GPS" : "iPhone GPS") ±\(engine.units.format(fix.accuracy)) · \(engine.gpsFreshnessText)")
             }
             .font(.caption).foregroundStyle(.secondary)
         } else {
@@ -53,6 +53,9 @@ struct DashboardHeader: View {
     private var statusPill: some View {
         let (text, icon, color): (String, String, Color) = switch engine.watchState {
         case .notAnchored: ("Not anchored", "circle.dashed", .gray)
+        case .acquiringGPS: ("Acquiring GPS", "location", .orange)
+        case .gpsInterrupted: ("Monitoring interrupted", "location.slash", .red)
+        case .retrieving: ("Retrieving", "arrow.up", .purple)
         case .awaitingFix: ("Finding anchor", "scope", .purple)
         case .alarm: ("Alarm", "exclamationmark.octagon.fill", .red)
         case .outside: ("Outside circle", "exclamationmark.octagon.fill", .red)
@@ -125,6 +128,10 @@ struct DashboardTiles: View {
 
     private var anchor: some View {
         switch engine.watchState {
+        case .acquiringGPS, .gpsInterrupted:
+            return DashboardTile(title: "GPS", value: "Unavailable", detail: engine.gpsFreshnessText, color: .orange)
+        case .retrieving:
+            return DashboardTile(title: "Anchor", value: "Retrieving", detail: "Circle watch ended")
         case .notAnchored:
             return DashboardTile(title: "Anchor", value: "Not set", detail: "Drop it below")
         case .awaitingFix:
@@ -551,7 +558,8 @@ struct DropAnchorSheet: View {
     }
 
     private var gpsProblem: String? {
-        guard let fix = engine.fix else { return "Waiting for a GPS position before the anchor can be dropped." }
+        guard let fix = engine.rawFix else { return "Waiting for a GPS position before the anchor can be dropped." }
+        if !engine.hasFreshPosition { return engine.gpsFreshnessText + ". Wait for a fresh position before dropping." }
         if engine.gpsIsUnusable { return "GPS accuracy is only ±\(units.format(fix.accuracy)), too poor to set an anchor. Wait, or move the phone near a window." }
         if engine.gpsIsPoor { return "GPS accuracy is only ±\(units.format(fix.accuracy)), so the anchor point may be off. Waiting a minute usually helps." }
         return nil
@@ -738,6 +746,9 @@ struct NightModeView: View {
     private var status: String {
         switch engine.watchState {
         case .notAnchored: "Not anchored"
+        case .acquiringGPS: "Acquiring GPS"
+        case .gpsInterrupted: "Monitoring interrupted"
+        case .retrieving: "Retrieving"
         case .awaitingFix: "Finding anchor"
         case .alarm: "Alarm"
         case .outside: "Outside circle"

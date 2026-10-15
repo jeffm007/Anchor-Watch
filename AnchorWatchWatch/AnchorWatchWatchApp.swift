@@ -25,6 +25,7 @@ struct AnchorWatchWatchApp: App {
 /// What the phone last sent, and the line back to it.
 @MainActor
 final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
+    @Published private(set) var silenceResult: String?
     @Published private(set) var status: [String: Any] = [:]
     private var buzz: Timer?
     /// Red on black, to keep night vision. Follows the phone's night mode; the moon button sets it here.
@@ -79,9 +80,16 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
     }
 
     func silence() {
-        guard WCSession.default.isReachable else { return }
-        WCSession.default.sendMessage(["silence": true], replyHandler: nil)
+        guard WCSession.default.isReachable else { silenceResult = "iPhone unreachable — alarm not silenced"; return }
+        silenceResult = "Waiting for iPhone…"
+        WCSession.default.sendMessage(["silence": true], replyHandler: { reply in
+            Task { @MainActor in self.silenceResult = reply["silenced"] as? Bool == true ? "iPhone acknowledged Silence" : "Silence not confirmed" }
+        }, errorHandler: { _ in
+            Task { @MainActor in self.silenceResult = "Could not reach iPhone — Silence not confirmed" }
+        })
     }
+
+    func isStale(at date: Date) -> Bool { updated.map { date.timeIntervalSince($0) > 120 } ?? true }
 
     private func receive(_ context: [String: Any]) {
         status = context
@@ -92,11 +100,15 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
             phoneNight = n
         }
         // While the alarm is up and this app is open, tap the wrist every couple of seconds.
-        if alarm != nil {
+        if alarm != nil && !isStale(at: Date()) {
             if buzz == nil {
                 WKInterfaceDevice.current().play(.notification)
-                buzz = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
-                    WKInterfaceDevice.current().play(.notification)
+                buzz = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] timer in
+                    Task { @MainActor in
+                        guard let self else { timer.invalidate(); return }
+                        guard !self.isStale(at: Date()) else { timer.invalidate(); self.buzz = nil; return }
+                        WKInterfaceDevice.current().play(.notification)
+                    }
                 }
             }
         } else {
@@ -143,18 +155,19 @@ struct StatusView: View {
         TimelineView(.periodic(from: .now, by: 5)) { context in
             ScrollView {
                 VStack(spacing: 6) {
-                    Text(link.state.uppercased()).font(.headline.weight(.heavy)).foregroundStyle(color)
+                    Text((link.isStale(at: context.date) ? "Monitoring status stale" : link.state).uppercased()).font(.headline.weight(.heavy)).foregroundStyle(link.isStale(at: context.date) ? (night ? primary : .orange) : color)
                         .multilineTextAlignment(.center)
-                    Text(link.distance).font(.system(size: 40, weight: .bold, design: .rounded)).monospacedDigit()
+                    Text(link.isStale(at: context.date) ? "--" : link.distance).font(.system(size: 40, weight: .bold, design: .rounded)).monospacedDigit()
                         .minimumScaleFactor(0.5).lineLimit(1).foregroundStyle(primary)
                     if !link.radius.isEmpty { Text(link.radius).font(.footnote).foregroundStyle(secondary) }
-                    if let alarm = link.alarm {
+                    if let alarm = link.alarm, !link.isStale(at: context.date) {
                         Text(alarm).font(.footnote.bold()).foregroundStyle(night ? primary : .red).multilineTextAlignment(.center)
                         Button("Silence") { link.silence() }
                             .tint(.red)
                     } else {
-                        Text(link.detail).font(.footnote).foregroundStyle(secondary).multilineTextAlignment(.center)
+                        Text(link.isStale(at: context.date) ? "Open Anchor Watch on iPhone to check current monitoring." : link.detail).font(.footnote).foregroundStyle(secondary).multilineTextAlignment(.center)
                     }
+                    if let result = link.silenceResult { Text(result).font(.footnote).multilineTextAlignment(.center) }
                     if !link.wind.isEmpty { Text(link.wind).font(.footnote).foregroundStyle(primary) }
                     if let updated = link.updated {
                         let age = Int(context.date.timeIntervalSince(updated))
@@ -183,7 +196,9 @@ struct TrackView: View {
 
     var body: some View {
         let night = link.night
+        TimelineView(.periodic(from: .now, by: 5)) { context in
         VStack(spacing: 2) {
+            if link.isStale(at: context.date) { Text("STALE — open iPhone app").font(.caption.bold()).foregroundStyle(night ? red : .orange) }
             if let radius = link.radiusMetres {
                 Canvas { context, size in
                     let track = link.track
@@ -238,6 +253,7 @@ struct TrackView: View {
                 Text("No anchor set").foregroundStyle(night ? red.opacity(0.7) : .secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        }
         }
         .padding(.top, 8)
         .background((link.alarm != nil ? Color.red.opacity(night ? 0.18 : 0.25) : night ? Color.black : Color.clear).ignoresSafeArea())

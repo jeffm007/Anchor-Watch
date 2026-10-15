@@ -289,13 +289,13 @@ struct ControlsPanel: View {
                 Button { showScope = true } label: {
                     Label("Scope: pay out \(engine.units.format(engine.rodeToPayOut)) of rode", systemImage: "ruler")
                 }.font(.footnote)
-                if engine.fix == nil {
-                    Text("Waiting for a GPS position…").font(.footnote).foregroundStyle(.secondary)
-                } else if engine.gpsIsUnusable, let fix = engine.fix {
+                if !engine.hasFreshPosition {
+                    Text(engine.gpsFreshnessText).font(.footnote).foregroundStyle(.secondary)
+                } else if engine.gpsIsUnusable, let fix = engine.rawFix {
                     Label("GPS accuracy is only ±\(engine.units.format(fix.accuracy)), too poor to set an anchor. Wait, or move the phone near a window.",
                           systemImage: "exclamationmark.octagon.fill")
                         .font(.footnote).foregroundStyle(.red)
-                } else if engine.gpsIsPoor, let fix = engine.fix {
+                } else if engine.gpsIsPoor, let fix = engine.rawFix {
                     Label("GPS accuracy is only ±\(engine.units.format(fix.accuracy)). The anchor point may be off; waiting a minute usually helps.",
                           systemImage: "exclamationmark.triangle.fill")
                         .font(.footnote).foregroundStyle(.orange)
@@ -333,6 +333,11 @@ struct AnchorRadiusControls: View {
                 Button { showScope = true } label: {
                     Label("Scope calculator · suggests \(engine.units.format(engine.suggestedRadius))", systemImage: "ruler")
                 }.font(.footnote)
+                if engine.awaitingSwingFix {
+                    Text("Finding anchor. The circle alarm is not armed until a swing fit succeeds or you place the anchor yourself.")
+                        .font(.footnote).fixedSize(horizontal: false, vertical: true)
+                    Button("Place anchor on chart") { engine.placingAnchor = true; onMove() }.font(.footnote.bold())
+                }
                 swingFit
             }
             Grid(horizontalSpacing: 8, verticalSpacing: 8) {
