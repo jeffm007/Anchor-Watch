@@ -359,25 +359,20 @@ struct OutlookBanner: View {
 
     private func content(now: Date) -> some View {
         let (icon, color, title, detail): (String, Color, String, String) = {
-            if engine.outlook.isEmpty && engine.tide == nil && engine.windHere == nil {
-                return ("clock", .secondary, "Next 24 hours", "Waiting for the tide and wind forecasts…")
-            }
             guard let risk = engine.nextRisk else {
-                let next = engine.visibleOutlook.first { $0.start > now }
-                return ("checkmark.circle.fill", .green,
-                        engine.hiddenOutlookCount > 0 ? "Nothing else in the next 24 hours" : "Clear for the next 24 hours",
-                        next.map { "Next: \($0.title.lowercased()) at \($0.start.formatted(date: .omitted, time: .shortened))" }
-                            ?? "Nothing in the tide or wind forecast to worry about.")
+                return ("info.circle", engine.environmentCoverage.complete ? .green : .orange,
+                        engine.outlookSummaryTitle,
+                        engine.environmentCoverage.summary)
             }
             return (risk.severity == .danger ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill",
                     risk.severity == .danger ? .red : .orange,
-                    "\(countdown(to: risk.start, now: now)) · \(risk.title)", OutlookList.span(risk))
+                    "\(countdown(to: risk.start, now: now)) · \(risk.title)", OutlookList.span(risk) + " · " + engine.environmentCoverage.summary)
         }()
         return HStack(spacing: 10) {
             Image(systemName: icon).font(.title3).foregroundStyle(color)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(.subheadline.bold()).foregroundStyle(.primary).lineLimit(2)
-                Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
             Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(.secondary)
@@ -403,10 +398,16 @@ struct OutlookList: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("Data confidence") {
+                    Text(engine.environmentCoverage.summary)
+                    ForEach(engine.environmentDetails, id: \.self) { Text($0).font(.caption) }
+                    Text(engine.adviceAssumptions).font(.caption).foregroundStyle(.secondary)
+                    Button("Retry environmental data") { engine.retryEnvironment() }
+                }
                 if engine.outlook.isEmpty {
-                    Text("Nothing yet: the outlook needs the tide or wind forecast.").foregroundStyle(.secondary)
+                    Text("No issues found in the available inputs. Check coverage above; missing inputs are not an all clear.").foregroundStyle(.secondary)
                 } else if engine.visibleOutlook.isEmpty {
-                    Text("Nothing else coming up.").foregroundStyle(.secondary)
+                    Text("No visible warnings. Hidden warnings still apply; check data coverage above.").foregroundStyle(.secondary)
                 }
                 ForEach(engine.visibleOutlook) { item in
                     HStack(alignment: .top, spacing: 12) {

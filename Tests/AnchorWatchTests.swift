@@ -88,6 +88,7 @@ final class EngineTests: XCTestCase {
         XCTAssertNil(e.fix)
         let again = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false)
         XCTAssertEqual(again.simPlace, .sidney)
+        XCTAssertEqual(e.environmentLocation, e.simPlace.coordinate)
     }
 
     func testSimulatedPlacesAreDistinctAndKnown() {
@@ -2369,6 +2370,8 @@ final class DepthConsistencyTests: XCTestCase {
         XCTAssertEqual(e.highWaterScope.designDepth, 5, accuracy: 0.001)
         XCTAssertEqual(e.rodeToPayOut, ScopeCalculator.rode(e.highWaterScope), accuracy: 0.001)
         now = start + 9 * 3600
+        var refreshed = tide(); refreshed.fetched = now
+        e.applyTideSnapshot(refreshed)
         XCTAssertEqual(e.liveDepth, 4, accuracy: 0.001)
         XCTAssertEqual(e.plannerScope().designDepth, e.liveDepth)
     }
@@ -2424,5 +2427,242 @@ final class DepthConsistencyTests: XCTestCase {
         XCTAssertEqual(e.rodeOut, 50)
         let restored = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false)
         XCTAssertEqual(restored.plannerConditions(stale).bottom, .sand)
+    }
+}
+
+
+@MainActor
+final class EnvironmentalConfidenceTests: XCTestCase {
+    private let point = CLLocationCoordinate2D(latitude: 38.97, longitude: -76.47)
+    private let now = Date(timeIntervalSince1970: 1_800_000_000)
+    private func engine(_ defaults: UserDefaults? = nil, clock: (() -> Date)? = nil) -> AnchorWatchEngine {
+        let e = AnchorWatchEngine(player: SilentAlarm(), liveActivity: NoLiveActivity(), defaults: defaults ?? UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false, clock: clock ?? { self.now })
+        position(e, point)
+        e.setDepthReading(e.scope.depth)
+        return e
+    }
+    private func position(_ e: AnchorWatchEngine, _ p: CLLocationCoordinate2D) {
+        let time = (e.fix?.timestamp ?? (now - 0.001)) + 0.001
+        e.ingest(Fix(coordinate: p, accuracy: 3, course: nil, speed: nil, timestamp: time))
+    }
+    private func wind(_ p: CLLocationCoordinate2D, hours: Int = 26, gust: Double = 15, fetched: Date? = nil) -> WindSeries {
+        WindSeries(coordinate: p, samples: (0...hours).map { WindSample(time: now + Double($0) * 3600, speed: 10, direction: 90, gust: gust) }, fetched: fetched ?? now)
+    }
+    private func tide(_ p: CLLocationCoordinate2D, id: String = "A") -> TideSnapshot {
+        TideSnapshot(station: TideStation(id: id, name: id, lat: p.latitude, lng: p.longitude), events: (-1...6).map { TideEvent(time: now + Double($0) * 6 * 3600, height: $0 % 2 == 0 ? 0 : 2, isHigh: $0 % 2 != 0) }, fetched: now)
+    }
+    private func current(_ p: CLLocationCoordinate2D, id: String = "A", cached: Bool = false) -> CurrentSnapshot {
+        CurrentSnapshot(station: CurrentStation(id: id, name: id, lat: p.latitude, lng: p.longitude), events: (-1...6).map { CurrentEvent(time: now + Double($0) * 6 * 3600, velocity: 0.5, floodToward: 90, ebbToward: 270) }, fetched: now, fromCache: cached)
+    }
+    func testCoverageRequiresContinuousSamplesAndAllInputs() {
+        XCTAssertNil(EnvironmentCoverage.through([], now: now, maxGap: 5400))
+        let samples = [now, now + 3600, now + 3 * 3600, now + 24 * 3600]
+        XCTAssertEqual(EnvironmentCoverage.through(samples, now: now, maxGap: 5400), now + 3600)
+        XCTAssertFalse(EnvironmentCoverage(windThrough: now + 86400, tideThrough: nil, currentThrough: nil, now: now).complete)
+        XCTAssertTrue(EnvironmentCoverage(windThrough: now + 86400, tideThrough: now + 86400, currentThrough: now + 86400, now: now).complete)
+    }
+    func testTideOnlyAndWindOnlyRemainPartialWhileWarningsStillWork() async {
+        let e = engine()
+        e.fetchTide = { _ in (self.tide(self.point), false) }
+        await e.refreshTide()
+        XCTAssertFalse(e.environmentCoverage.complete)
+        XCTAssertTrue(e.environmentCoverage.summary.contains("wind unavailable"))
+        XCTAssertNotNil(e.environmentCoverage.tideThrough)
+        let w = engine()
+        w.fetchWind = { _ in self.wind(self.point, gust: 70) }
+        await w.refreshWind(); w.refreshOutlookIfDue()
+        XCTAssertTrue(w.environmentCoverage.summary.contains("tide/depth unavailable"))
+        XCTAssertFalse(w.outlook.isEmpty, "Partial data must still produce relevant warnings")
+        for item in w.visibleOutlook { w.hideOutlook(item) }
+        XCTAssertGreaterThan(w.hiddenOutlookCount, 0)
+        XCTAssertTrue(w.outlookSummaryTitle.contains("warnings hidden"))
+    }
+    func testFullCoveragePartialHorizonAndExpiry() async {
+        var clock = now
+        let e = engine(clock: { clock })
+        e.fetchWind = { _ in self.wind(self.point) }
+        e.fetchTide = { _ in (self.tide(self.point), false) }
+        e.fetchCurrent = { _ in self.current(self.point) }
+        await e.refreshWind(); await e.refreshTide(); await e.refreshCurrent()
+        XCTAssertTrue(e.environmentCoverage.complete)
+        e.fetchWind = { _ in self.wind(self.point, hours: 4) }
+        await e.refreshWind()
+        XCTAssertFalse(e.environmentCoverage.complete)
+        XCTAssertTrue(e.environmentCoverage.summary.contains("partial horizon"))
+        clock += 1801
+        XCTAssertNil(e.environmentCoverage.windThrough)
+        XCTAssertTrue(e.environmentRecords["wind"]!.description(at: clock).contains("Expired"))
+        e.refreshOutlookIfDue(); XCTAssertTrue(e.hourlyHolding.isEmpty)
+    }
+    func testEmptyForecastAndOfflineFailuresNeverClaimFullAssessment() async {
+        let e = engine()
+        e.fetchWind = { _ in WindSeries(coordinate: self.point, samples: [], fetched: self.now) }
+        await e.refreshWind()
+        XCTAssertNil(e.environmentCoverage.windThrough)
+        e.fetchCurrent = { _ in nil }; await e.refreshCurrent()
+        XCTAssertEqual(e.environmentRecords["current"]?.phase, .noCoverage)
+        e.fetchCurrent = { _ in throw URLError(.notConnectedToInternet) }; await e.refreshCurrent()
+        guard case .failed? = e.environmentRecords["current"]?.phase else { return XCTFail("Network failure must not say no station") }
+        e.fetchWind = { _ in throw URLError(.notConnectedToInternet) }; await e.refreshWind()
+        XCTAssertFalse(e.environmentCoverage.complete)
+        XCTAssertTrue(e.environmentDetails.contains { $0.contains("Refresh failed") })
+    }
+    func testEmptyAndExpiredTideAndCurrentDoNotContributeCoverage() async {
+        let e = engine()
+        var tides = tide(point), currents = current(point)
+        tides.events = []; currents.events = []
+        e.fetchTide = { _ in (tides, false) }; e.fetchCurrent = { _ in currents }
+        await e.refreshTide(); await e.refreshCurrent()
+        XCTAssertNil(e.environmentCoverage.tideThrough)
+        XCTAssertNil(e.environmentCoverage.currentThrough)
+        tides = tide(point); currents = current(point)
+        tides.fetched = now - 7 * 3600; currents.fetched = now - 7 * 3600
+        await e.refreshTide(); await e.refreshCurrent()
+        XCTAssertNil(e.environmentCoverage.tideThrough)
+        XCTAssertNil(e.environmentCoverage.currentThrough)
+        XCTAssertNil(e.currentHere(at: now))
+        XCTAssertTrue(e.waterForecast.isEmpty)
+    }
+    func testWindCacheSurvivesOfflineRestartAndIsBoundToLocation() async {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let e = engine(defaults)
+        e.fetchWind = { _ in self.wind(self.point) }; await e.refreshWind()
+        let restored = engine(defaults)
+        XCTAssertEqual(restored.environmentRecords["wind"]?.phase, .cached)
+        XCTAssertNotNil(restored.windHere)
+        restored.fetchWind = { _ in throw URLError(.notConnectedToInternet) }; await restored.refreshWind()
+        XCTAssertNotNil(restored.environmentCoverage.windThrough, "Fresh cached data remains available with explicit failure status")
+        XCTAssertFalse(restored.environmentCoverage.complete)
+        position(restored, Geo.destination(from: point, bearing: 90, meters: 10000))
+        XCTAssertNil(restored.windHere)
+        XCTAssertNil(restored.environmentRecords["wind"]?.fetched)
+    }
+    func testNearbyReanchorReusesDataAndTravelInvalidatesIt() async {
+        let e = engine()
+        var requests = 0
+        e.fetchWind = { p in requests += 1; return self.wind(p) }
+        await e.refreshWind()
+        let generation = e.environmentGeneration
+        e.dropAnchor(); e.raiseAnchor()
+        position(e, Geo.destination(from: point, bearing: 90, meters: 100)); e.dropAnchor()
+        XCTAssertEqual(e.environmentGeneration, generation)
+        XCTAssertNotNil(e.windHere)
+        XCTAssertEqual(requests, 1)
+        e.raiseAnchor(); position(e, Geo.destination(from: point, bearing: 90, meters: 10000)); e.dropAnchor()
+        XCTAssertGreaterThan(e.environmentGeneration, generation)
+        XCTAssertNil(e.windHere)
+        XCTAssertNil(e.tide)
+        XCTAssertTrue(e.outlook.isEmpty)
+    }
+    func testLateResponsesFromOldAnchorageCannotReplaceNewResults() async throws {
+        let e = engine(), other = Geo.destination(from: point, bearing: 90, meters: 10000)
+        var windReply: CheckedContinuation<WindSeries, Error>?
+        var tideReply: CheckedContinuation<(snapshot: TideSnapshot, fromCache: Bool), Error>?
+        var currentReply: CheckedContinuation<CurrentSnapshot?, Error>?
+        e.fetchWind = { p in
+            if Geo.distance(p, self.point) < 100 { return try await withCheckedThrowingContinuation { windReply = $0 } }
+            return self.wind(p)
+        }
+        e.fetchTide = { p in
+            if Geo.distance(p, self.point) < 100 { return try await withCheckedThrowingContinuation { tideReply = $0 } }
+            return (self.tide(p, id: "B"), false)
+        }
+        e.fetchCurrent = { p in
+            if Geo.distance(p, self.point) < 100 { return try await withCheckedThrowingContinuation { currentReply = $0 } }
+            return self.current(p, id: "B")
+        }
+        let oldWind = Task { await e.refreshWind() }
+        let oldTide = Task { await e.refreshTide() }
+        let oldCurrent = Task { await e.refreshCurrent() }
+        while windReply == nil || tideReply == nil || currentReply == nil { await Task.yield() }
+        XCTAssertEqual(e.environmentRecords["wind"]?.phase, .loading)
+        XCTAssertEqual(e.environmentRecords["tide"]?.phase, .loading)
+        XCTAssertEqual(e.environmentRecords["current"]?.phase, .loading)
+        position(e, other)
+        await e.refreshWind(); await e.refreshTide(); await e.refreshCurrent()
+        windReply!.resume(returning: wind(point)); tideReply!.resume(returning: (tide(point), false)); currentReply!.resume(returning: current(point))
+        await oldWind.value; await oldTide.value; await oldCurrent.value
+        XCTAssertEqual(e.tide?.station.id, "B")
+        XCTAssertEqual(e.currents?.station.id, "B")
+        XCTAssertLessThan(Geo.distance(try XCTUnwrap(e.windHere).coordinate, other), 1)
+        XCTAssertEqual(e.environmentRecords["tide"]?.phase, .ready)
+    }
+    func testCurrentCacheAndChangedTideStationProvenance() async {
+        let e = engine()
+        e.fetchCurrent = { _ in self.current(self.point, cached: true) }; await e.refreshCurrent()
+        XCTAssertEqual(e.environmentRecords["current"]?.phase, .cached)
+        XCTAssertTrue(e.environmentDetails.contains { $0.contains("Cached") })
+        e.fetchTide = { _ in (self.tide(self.point), false) }; await e.refreshTide()
+        var changed = tide(point, id: "B")
+        changed.events = changed.events.map { TideEvent(time: $0.time, height: $0.height + 10, isHigh: $0.isHigh) }
+        e.fetchTide = { _ in (changed, false) }; await e.refreshTide()
+        XCTAssertEqual(e.liveDepth, e.scope.depth, accuracy: 0.001, "New station must not apply a different datum to an old reference")
+    }
+    func testWrongLocationResponseIsRejected() async {
+        let e = engine()
+        e.fetchWind = { _ in self.wind(Geo.destination(from: self.point, bearing: 90, meters: 10000)) }
+        await e.refreshWind()
+        XCTAssertNil(e.windHere)
+        guard case .failed? = e.environmentRecords["wind"]?.phase else { return XCTFail("Wrong-location result must fail") }
+    }
+    func testHourlyDepthDoesNotStretchPastForecastCoverage() {
+        let scope = ScopeSettings(depth: 3, bowHeight: 1, boatLength: 12, scopeRatio: 5, margin: 3)
+        let hourly = Outlook.hourly(BoatProfile(), scope: scope, bottom: .sand, rodeOut: 30,
+                                   depths: [(now, 8)], forecast: [WindSample(time: now + 4 * 3600, speed: 10, direction: 90, gust: 15)], now: now)
+        XCTAssertEqual(hourly.first?.depth, 3, "A remote depth sample cannot cover the missing horizon")
+    }
+}
+
+@MainActor
+final class IntegratedReviewFixTests: XCTestCase {
+    private let point = CLLocationCoordinate2D(latitude: 38.97, longitude: -76.47)
+    private func tide(at time: Date, point: CLLocationCoordinate2D, id: String = "A") -> TideSnapshot {
+        TideSnapshot(station: TideStation(id: id, name: id, lat: point.latitude, lng: point.longitude),
+                     events: [TideEvent(time: time - 3600, height: 0, isHigh: false),
+                              TideEvent(time: time + 3600, height: 2, isHigh: true),
+                              TideEvent(time: time + 10800, height: 0, isHigh: false)], fetched: time)
+    }
+    func testGPSAndEnvironmentalFreshnessRemainIndependent() {
+        var now = Date()
+        let originalTime = now
+        let e = AnchorWatchEngine(player: SilentAlarm(), liveActivity: NoLiveActivity(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false, clock: { now })
+        e.ingest(Fix(coordinate: point, accuracy: 3, course: nil, speed: nil, timestamp: now))
+        e.applyTideSnapshot(tide(at: now, point: point)); e.setDepthReading(3); e.dropAnchor()
+        now += 16; e.safetyChecks()
+        XCTAssertEqual(e.watchState, .gpsInterrupted)
+        XCTAssertEqual(e.plannerScope().designDepth, e.liveDepth)
+        XCTAssertFalse(e.waterForecast.isEmpty, "GPS interruption does not expire valid environmental predictions")
+        now += 1
+        e.ingest(Fix(coordinate: point, accuracy: 3, course: nil, speed: nil, timestamp: now))
+        var expired = tide(at: originalTime, point: point); expired.fetched = now - 7 * 3600
+        e.applyTideSnapshot(expired)
+        XCTAssertEqual(e.watchState, .holding, "Forecast confidence does not suspend fresh position monitoring")
+        XCTAssertTrue(e.waterForecast.isEmpty)
+        XCTAssertEqual(e.plannerScope().designDepth, 3)
+        XCTAssertNotNil(e.depthReading, "Offline/expired predictions do not discard the sounder reading")
+    }
+    func testRestartPreservesDepthButTravelRequiresNewReading() {
+        var now = Date()
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        func engine() -> AnchorWatchEngine {
+            AnchorWatchEngine(player: SilentAlarm(), liveActivity: NoLiveActivity(), defaults: defaults, useGPSHardware: false, clock: { now })
+        }
+        let e = engine()
+        e.ingest(Fix(coordinate: point, accuracy: 3, course: nil, speed: nil, timestamp: now))
+        e.applyTideSnapshot(tide(at: now, point: point)); e.setDepthReading(3); e.dropAnchor()
+        let restored = engine()
+        restored.ingest(Fix(coordinate: point, accuracy: 3, course: nil, speed: nil, timestamp: now))
+        restored.applyTideSnapshot(tide(at: now, point: point))
+        XCTAssertNotNil(restored.depthReading)
+        XCTAssertFalse(restored.waterForecast.isEmpty)
+        restored.raiseAnchor(); now += 1
+        let other = Geo.destination(from: point, bearing: 90, meters: 10000)
+        restored.ingest(Fix(coordinate: other, accuracy: 3, course: nil, speed: nil, timestamp: now))
+        XCTAssertNil(restored.depthReading)
+        restored.applyTideSnapshot(tide(at: now, point: other, id: "B"))
+        XCTAssertTrue(restored.waterForecast.isEmpty)
+        restored.setDepthReading(5)
+        XCTAssertEqual(restored.liveDepth, 5, accuracy: 0.001)
+        XCTAssertFalse(restored.waterForecast.isEmpty)
     }
 }

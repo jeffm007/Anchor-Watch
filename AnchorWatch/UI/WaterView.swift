@@ -133,9 +133,9 @@ struct WaterView: View {
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote).foregroundStyle(scopeAtHigh < 3 ? .red : .orange)
             }
-            if shallow.isEmpty && scopeAtHigh >= 4 {
-                Label("Enough water and scope through the next 24 hours.", systemImage: "checkmark.circle")
-                    .font(.footnote).foregroundStyle(.green)
+            if draft > 0 && shallow.isEmpty && scopeAtHigh >= 4 {
+                Label("No depth or scope issue found through " + time(points.last!.time) + ". Later conditions are not assessed here.", systemImage: "info.circle")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
         } header: { Text("Outlook") } footer: {
             Text("Swings and slack water are in Next 24 hours on the Watch tab.")
@@ -166,9 +166,13 @@ struct WaterView: View {
                     Text("100%").tag(1.0); Text("50%").tag(0.5); Text("25%").tag(0.25)
                 }
             } else {
-                Text("No NOAA current station within \(Int(CurrentService.maxDistance / 1000)) km. The outlook uses the highs and lows for when the current turns.")
+                Text(engine.environmentRecords["current"]?.description(at: now) ?? "Current predictions not loaded; waiting for a location.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
+            if let record = engine.environmentRecords["current"], engine.currents != nil {
+                Text(record.description(at: now)).font(.caption).foregroundStyle(.secondary)
+            }
+            Button("Retry current data") { Task { await engine.refreshCurrent() } }
         } header: { Text("Current") } footer: {
             if engine.currents != nil {
                 Text("Stations are mostly in channels, where the current runs harder than in a sheltered anchorage, so the speeds here are scaled. Use 100% if you're anchored in the channel itself.")
@@ -236,10 +240,12 @@ struct WindOutlookSections: View {
         }
         let wind = engine.visibleOutlook.filter { $0.kind == .gusts || $0.kind == .windShift || $0.kind == .swing }
         Section("Wind outlook") {
+            Text(engine.environmentCoverage.summary).font(.caption).foregroundStyle(.secondary)
+            if engine.hiddenOutlookCount > 0 { Text("\(engine.hiddenOutlookCount) warnings hidden").font(.caption) }
             if wind.isEmpty {
-                Label(hours.isEmpty ? "Waiting for the wind forecast…" : "No gusts beyond your setup and no big swings in the next 24 hours.",
+                Label(hours.isEmpty ? "Waiting for the wind forecast…" : "No visible wind warnings in the available data.",
                       systemImage: hours.isEmpty ? "clock" : "checkmark.circle")
-                    .font(.subheadline).foregroundStyle(hours.isEmpty ? Color.secondary : Color.green)
+                    .font(.subheadline).foregroundStyle(Color.secondary)
             }
             ForEach(wind) { item in
                 HStack(alignment: .top, spacing: 12) {

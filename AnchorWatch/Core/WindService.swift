@@ -3,7 +3,7 @@ import Foundation
 import MapKit
 
 /// One hour of forecast wind. Speeds in knots; `direction` is where the wind comes FROM, degrees true.
-struct WindSample: Equatable {
+struct WindSample: Codable, Equatable {
     let time: Date
     let speed: Double
     let direction: Double
@@ -11,7 +11,7 @@ struct WindSample: Equatable {
 }
 
 /// Hourly forecast at one point.
-struct WindSeries: Equatable {
+struct WindSeries: Codable, Equatable {
     let coordinate: CLLocationCoordinate2D
     let samples: [WindSample]
     let fetched: Date
@@ -152,5 +152,23 @@ enum WindAdvice {
             result.append(WindAlert(title: "Wind shifts \(Compass.name(first.direction)) → \(Compass.name(turned.direction))", time: turned.time))
         }
         return result
+    }
+}
+
+extension WindSeries {
+    private enum CodingKeys: String, CodingKey { case latitude, longitude, samples, fetched }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        coordinate = CLLocationCoordinate2D(latitude: try c.decode(Double.self, forKey: .latitude),
+                                            longitude: try c.decode(Double.self, forKey: .longitude))
+        samples = try c.decode([WindSample].self, forKey: .samples)
+        fetched = try c.decode(Date.self, forKey: .fetched)
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(coordinate.latitude, forKey: .latitude)
+        try c.encode(coordinate.longitude, forKey: .longitude)
+        try c.encode(samples, forKey: .samples)
+        try c.encode(fetched, forKey: .fetched)
     }
 }

@@ -25,6 +25,7 @@ struct CurrentSnapshot: Codable, Equatable {
     var station: CurrentStation
     var events: [CurrentEvent]
     var fetched: Date
+    var fromCache: Bool? = nil
 }
 
 /// Pure current arithmetic and parsing, apart from the networking so it can be tested.
@@ -89,7 +90,9 @@ enum CurrentService {
         if let saved = load(CurrentSnapshot.self, "currents-\(station.id).json"),
            now.timeIntervalSince(saved.fetched) < 6 * 3600,
            (saved.events.last?.time ?? .distantPast) > now.addingTimeInterval(30 * 3600) {
-            return saved
+            var cached = saved
+            cached.fromCache = true
+            return cached
         }
         do {
             let day = DateFormatter()
@@ -100,12 +103,16 @@ enum CurrentService {
                 + "&station=\(station.id)&begin_date=\(day.string(from: now.addingTimeInterval(-24 * 3600)))&range=96"
                 + "&interval=MAX_SLACK&units=english&time_zone=gmt&format=json"
             let events = try CurrentMath.parsePredictions(try await download(url))
-            guard events.count >= 2 else { return nil }
+            guard events.count >= 2 else { throw URLError(.cannotParseResponse) }
             let fresh = CurrentSnapshot(station: station, events: events, fetched: now)
             save(fresh, "currents-\(station.id).json")
             return fresh
         } catch {
-            return load(CurrentSnapshot.self, "currents-\(station.id).json")
+            if var saved = load(CurrentSnapshot.self, "currents-\(station.id).json") {
+                saved.fromCache = true
+                return saved
+            }
+            throw error
         }
     }
 

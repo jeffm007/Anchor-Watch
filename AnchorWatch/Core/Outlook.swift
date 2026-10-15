@@ -150,7 +150,8 @@ enum Outlook {
                        now: Date = Date(), hours: Double = 24) -> [HourlyHolding] {
         let window = forecast.filter { $0.time >= now.addingTimeInterval(-1800) && $0.time <= now.addingTimeInterval(hours * 3600) }
         return window.map { sample in
-            let depth = depths.min { abs($0.time.timeIntervalSince(sample.time)) < abs($1.time.timeIntervalSince(sample.time)) }?.depth ?? s.depth
+            let nearest = depths.min { abs($0.time.timeIntervalSince(sample.time)) < abs($1.time.timeIntervalSince(sample.time)) }
+            let depth = nearest.flatMap { abs($0.time.timeIntervalSince(sample.time)) <= 900 ? $0.depth : nil } ?? s.depth
             var scope = s
             scope.depth = depth
             scope.tideRise = 0
@@ -289,8 +290,8 @@ enum Outlook {
                 items.append(OutlookItem(
                     kind: .tideTurn, severity: light ? .caution : .info, start: t.time, end: nil,
                     title: t.isHigh ? "High water" : "Low water",
-                    detail: light ? "Light wind at the turn of the tide: the boat will likely swing with the current and the anchor reset."
-                                  : "Tidal current turns; the boat may swing and the anchor reset."))
+                    detail: light ? "Light wind near high/low water. This is only a proxy for a current turn; actual timing and swing are unknown."
+                                  : "High/low water is only a proxy for a current turn; actual timing is unknown. The boat may swing."))
             }
         }
 
@@ -364,3 +365,70 @@ enum Outlook {
     }
 }
 
+
+
+/// Provenance and availability accompany environmental advice, independently of anchor monitoring.
+struct EnvironmentRecord: Equatable {
+    enum Phase: Equatable { case waiting, loading, ready, cached, noCoverage, failed(String) }
+    var source: String
+    var latitude: Double
+    var longitude: Double
+    var station: String? = nil
+    var fetched: Date? = nil
+    var validFrom: Date? = nil
+    var validUntil: Date? = nil
+    var phase: Phase = .waiting
+    var maxAge: TimeInterval
+
+    func isUsable(at now: Date) -> Bool {
+        guard let fetched, now.timeIntervalSince(fetched) >= -60, now.timeIntervalSince(fetched) <= maxAge,
+              let validFrom, let validUntil, validFrom <= now + 1800, validUntil > now else { return false }
+        return true
+    }
+    func description(at now: Date) -> String {
+        let state: String
+        switch phase {
+        case .waiting: state = "Not loaded"
+        case .loading: state = "Loading"
+        case .noCoverage: state = "No provider coverage at this location"
+        case .failed(let message): state = "Refresh failed: " + message
+        case .ready, .cached:
+            state = isUsable(at: now) ? (phase == .cached ? "Cached" : "Available") : "Expired or outside prediction coverage"
+        }
+        let age = fetched.map { " · fetched \(max(0, Int(now.timeIntervalSince($0) / 60))) min ago" } ?? ""
+        let horizon = validUntil.map { " · through " + $0.formatted(date: .abbreviated, time: .shortened) } ?? ""
+        return source + (station.map { " · " + $0 } ?? "") + String(format: " · %.4f, %.4f · ", latitude, longitude) + state + age + horizon
+    }
+}
+
+struct EnvironmentCoverage: Equatable {
+    var windThrough: Date?
+    var tideThrough: Date?
+    var currentThrough: Date?
+    var now: Date
+    var refreshUncertain = false
+
+    /// Only a contiguous set of samples counts; a distant final sample cannot conceal a gap.
+    static func through(_ times: [Date], now: Date, maxGap: TimeInterval, startTolerance: TimeInterval = 0) -> Date? {
+        let sorted = Array(Set(times)).sorted()
+        guard let first = sorted.last(where: { $0 <= now + startTolerance }), first >= now - maxGap else { return nil }
+        var end = first
+        for time in sorted where time > first {
+            guard time.timeIntervalSince(end) <= maxGap else { break }
+            end = time
+        }
+        return end > now ? end : nil
+    }
+    var complete: Bool {
+        !refreshUncertain && [windThrough, tideThrough, currentThrough].allSatisfy { ($0 ?? .distantPast) >= now + 24 * 3600 }
+    }
+    var summary: String {
+        var missing: [String] = []
+        if windThrough == nil { missing.append("wind unavailable") }
+        if tideThrough == nil { missing.append("tide/depth unavailable") }
+        if currentThrough == nil { missing.append("current unavailable") }
+        let ends = [windThrough, tideThrough, currentThrough].compactMap { $0 }
+        let until = ends.min().map { "Available inputs reviewed through " + $0.formatted(date: .abbreviated, time: .shortened) } ?? "No current forecast coverage"
+        return until + (refreshUncertain ? " · cached data or refresh not confirmed" : "") + (missing.isEmpty ? ((ends.min() ?? .distantPast) >= now + 24 * 3600 ? " · 24-hour prediction horizon" : " · partial horizon") : " · " + missing.joined(separator: "; "))
+    }
+}

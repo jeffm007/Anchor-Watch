@@ -231,12 +231,15 @@ final class AnchorWatchEngine: ObservableObject {
         followRode()
     }
 
-    func depth(at time: Date) -> Double { depthReading?.depth(at: time, tide: tide) ?? scope.depth }
+    func depth(at time: Date) -> Double {
+        guard usable("tide") || usingSimulatedTide else { return scope.depth }
+        return depthReading?.depth(at: time, tide: tide) ?? scope.depth
+    }
     var liveDepth: Double { depth(at: clock()) }
 
     func plannerScope(at time: Date? = nil, fallbackRise: Double = 0) -> ScopeSettings {
         var value = scope
-        value.depth = time.flatMap { depthReading?.depth(at: $0, tide: tide) } ?? max(0, liveDepth + fallbackRise)
+        value.depth = time.flatMap { (usable("tide") || usingSimulatedTide) ? depthReading?.depth(at: $0, tide: tide) : nil } ?? max(0, liveDepth + fallbackRise)
         value.tideRise = 0
         return value
     }
@@ -249,14 +252,18 @@ final class AnchorWatchEngine: ObservableObject {
     var depthReferenceDetail: String {
         guard let reading = depthReading else { return "Reading time unknown. Confirm a new sounder reading to follow the tide." }
         let time = reading.measured.formatted(date: .abbreviated, time: .shortened)
-        guard reading.depth(at: clock(), tide: tide) != nil else {
+        guard (usable("tide") || usingSimulatedTide), reading.depth(at: clock(), tide: tide) != nil else {
             return "Sounder reading from \(time). Tide adjustment unavailable; showing the entered depth."
         }
         return "Estimated now from sounder reading at \(time), adjusted using \(tide?.station.name ?? "tide predictions")."
     }
 
-    func applyTideSnapshot(_ snapshot: TideSnapshot) {
+    func applyTideSnapshot(_ snapshot: TideSnapshot, cached: Bool = false) {
+        if environmentLocation == nil { bindEnvironment(to: anchor ?? fix?.coordinate ?? snapshot.station.coordinate) }
         tide = snapshot
+        record("tide", phase: cached ? .cached : .ready, fetched: snapshot.fetched,
+               from: snapshot.events.map(\.time).min(), until: snapshot.events.map(\.time).max(),
+               station: snapshot.station.sourceName + " · " + snapshot.station.name + " (" + snapshot.station.id + ")")
         lastOutlook = .distantPast
     }
 
@@ -365,6 +372,127 @@ final class AnchorWatchEngine: ObservableObject {
         }
     }
 
+    // MARK: Environmental provenance and location binding
+
+    @Published private(set) var environmentRecords: [String: EnvironmentRecord] = [:]
+    private(set) var environmentLocation: CLLocationCoordinate2D?
+    private(set) var environmentGeneration = 0
+    static let environmentTravelLimit = 2_000.0
+    // Injectable provider boundaries keep location races and offline states deterministic in tests.
+    var fetchWind: (CLLocationCoordinate2D) async throws -> WindSeries = { point in
+        guard let series = try await WindService.fetch([point]).first else { throw URLError(.cannotParseResponse) }
+        return series
+    }
+    var fetchTide: (CLLocationCoordinate2D) async throws -> (snapshot: TideSnapshot, fromCache: Bool) = { try await TideService.snapshot(near: $0) }
+    var fetchCurrent: (CLLocationCoordinate2D) async throws -> CurrentSnapshot? = { try await CurrentService.snapshot(near: $0) }
+
+    /// Nearby repositioning reuses data; meaningful travel invalidates data and all older in-flight requests.
+    @discardableResult
+    func bindEnvironment(to point: CLLocationCoordinate2D) -> Int {
+        guard environmentLocation.map({ Geo.distance($0, point) > Self.environmentTravelLimit }) ?? true else { return environmentGeneration }
+        let traveled = environmentLocation != nil
+        environmentLocation = point
+        environmentGeneration += 1
+        windHere = nil; tide = nil; currents = nil
+        observations = []; observationsChecked = nil; nwsAlerts = []; nwsChecked = nil
+        windGrid = []; gridTask?.cancel()
+        outlook = []; hourlyHolding = []; hiddenOutlook = []; lockedOutlook = []
+        windFetching = false; tideFetching = false; currentFetching = false; observationsFetching = false; alertsFetching = false
+        usingSimulatedTide = false
+        lastWindAttempt = .distantPast; lastTideAttempt = .distantPast; lastCurrentAttempt = .distantPast
+        lastObservationAttempt = .distantPast; lastAlertAttempt = .distantPast; lastOutlook = .distantPast
+        if traveled { depthReading = nil }
+        environmentRecords = [
+            "wind": EnvironmentRecord(source: "Open-Meteo", latitude: point.latitude, longitude: point.longitude, maxAge: 1800),
+            "tide": EnvironmentRecord(source: "NOAA / CHS tides", latitude: point.latitude, longitude: point.longitude, maxAge: 6 * 3600),
+            "current": EnvironmentRecord(source: "NOAA currents", latitude: point.latitude, longitude: point.longitude, maxAge: 6 * 3600),
+            "observations": EnvironmentRecord(source: "NOAA observations", latitude: point.latitude, longitude: point.longitude, maxAge: 600),
+            "alerts": EnvironmentRecord(source: "NWS alerts", latitude: point.latitude, longitude: point.longitude, maxAge: 900)
+        ]
+        if let data = defaults.data(forKey: "anchorwatch.windSnapshot.v1"),
+           let saved = try? JSONDecoder().decode(WindSeries.self, from: data),
+           Geo.distance(saved.coordinate, point) <= Self.environmentTravelLimit {
+            acceptWind(saved, cached: true)
+        }
+        return environmentGeneration
+    }
+
+    private func record(_ name: String, phase: EnvironmentRecord.Phase, fetched: Date? = nil,
+                        from: Date? = nil, until: Date? = nil, station: String? = nil) {
+        guard var value = environmentRecords[name] else { return }
+        value.phase = phase
+        if phase == .noCoverage { value.fetched = nil; value.validFrom = nil; value.validUntil = nil; value.station = nil }
+        if let fetched { value.fetched = fetched; value.validFrom = from; value.validUntil = until; value.station = station }
+        environmentRecords[name] = value
+    }
+    private func acceptWind(_ series: WindSeries, cached: Bool = false) {
+        windHere = series
+        record("wind", phase: cached ? .cached : .ready, fetched: series.fetched,
+               from: series.samples.map(\.time).min(), until: series.samples.map(\.time).max())
+        if !cached { defaults.set(try? JSONEncoder().encode(series), forKey: "anchorwatch.windSnapshot.v1") }
+        lastOutlook = .distantPast
+    }
+    private func usable(_ name: String) -> Bool { environmentRecords[name]?.isUsable(at: clock()) ?? false }
+    var environmentCoverage: EnvironmentCoverage {
+        let now = clock()
+        let tideEnd = usable("tide") ? EnvironmentCoverage.through(tide?.events.map(\.time) ?? [], now: now, maxGap: 13 * 3600) : nil
+        let depthEnd = waterForecast.last?.time
+        let tideDepthEnd = tideEnd.flatMap { t in depthEnd.map { min(t, $0) } }
+        return EnvironmentCoverage(
+            windThrough: usable("wind") ? EnvironmentCoverage.through(windHere?.samples.map(\.time) ?? [], now: now, maxGap: 5400, startTolerance: 1800) : nil,
+            tideThrough: tideDepthEnd,
+            currentThrough: usable("current") ? EnvironmentCoverage.through(currents?.events.map(\.time) ?? [], now: now, maxGap: 13 * 3600) : nil,
+            now: now, refreshUncertain: ["wind", "tide", "current"].contains { environmentRecords[$0]?.phase != .ready })
+    }
+    var outlookSummaryTitle: String {
+        hiddenOutlookCount > 0 ? "\(hiddenOutlookCount) warnings hidden" : "No issues found in available data"
+    }
+    var environmentDetails: [String] {
+        ["wind", "tide", "current", "observations", "alerts"].compactMap { environmentRecords[$0]?.description(at: clock()) }
+    }
+    var adviceAssumptions: String {
+        "Advice uses the entered depth wherever tide/depth coverage is missing; missing current uses an assumed 0.5 kt and waves use an assumed 0.3 m. Swing direction omits current when it is unavailable. Boat and seabed settings are user inputs. Chart downloads do not establish complete offline chart coverage. GPS circle monitoring operates independently of forecast downloads."
+    }
+
+    func refreshWind() async {
+        guard let point = anchor ?? fix?.coordinate else { return }
+        let generation = bindEnvironment(to: point)
+        record("wind", phase: .loading)
+        do {
+            let series = try await fetchWind(point)
+            guard generation == environmentGeneration else { return }
+            guard Geo.distance(series.coordinate, point) <= Self.environmentTravelLimit else { throw URLError(.badServerResponse) }
+            acceptWind(series)
+        } catch {
+            guard generation == environmentGeneration else { return }
+            record("wind", phase: .failed(error.localizedDescription))
+        }
+    }
+
+    func refreshCurrent() async {
+        guard let point = anchor ?? fix?.coordinate else { return }
+        let generation = bindEnvironment(to: point)
+        record("current", phase: .loading)
+        do {
+            let result = try await fetchCurrent(point)
+            guard generation == environmentGeneration else { return }
+            currents = result
+            if let result {
+                record("current", phase: result.fromCache == true ? .cached : .ready, fetched: result.fetched,
+                       from: result.events.map(\.time).min(), until: result.events.map(\.time).max(), station: result.station.name + " (" + result.station.id + ")")
+            } else { record("current", phase: .noCoverage) }
+            lastOutlook = .distantPast
+        } catch {
+            guard generation == environmentGeneration else { return }
+            record("current", phase: .failed(error.localizedDescription))
+        }
+    }
+
+    func retryEnvironment() {
+        lastWindAttempt = .distantPast; lastTideAttempt = .distantPast; lastCurrentAttempt = .distantPast
+        Task { await refreshWind(); await refreshTide(); await refreshCurrent() }
+    }
+
     // MARK: Live observations (NOAA buoys and coastal stations)
     @Published private(set) var observations: [StationObservation] = []
     @Published private(set) var observationsChecked: Date?
@@ -379,11 +507,21 @@ final class AnchorWatchEngine: ObservableObject {
         guard sinceAttempt > 60, sinceSuccess > 600 else { return }
         observationsFetching = true
         lastObservationAttempt = Date()
+        let generation = environmentGeneration
+        record("observations", phase: .loading)
         Task {
-            defer { observationsFetching = false }
-            guard let stations = try? await ObservationService.fetchNearby(point) else { return }
-            observations = stations
-            observationsChecked = Date()
+            defer { if generation == environmentGeneration { observationsFetching = false } }
+            do {
+                let stations = try await ObservationService.fetchNearby(point)
+                guard generation == environmentGeneration else { return }
+                observations = stations
+                observationsChecked = clock()
+                record("observations", phase: .ready, fetched: clock(), from: stations.map(\.time).min() ?? clock(), until: (stations.map(\.time).max() ?? clock()) + 3600,
+                       station: stations.map { $0.id + " " + $0.name }.joined(separator: ", "))
+            } catch {
+                guard generation == environmentGeneration else { return }
+                record("observations", phase: .failed(error.localizedDescription))
+            }
         }
     }
 
@@ -419,12 +557,21 @@ final class AnchorWatchEngine: ObservableObject {
         guard sinceAttempt > 60, sinceSuccess > 900 else { return }
         alertsFetching = true
         lastAlertAttempt = Date()
+        let generation = environmentGeneration
+        record("alerts", phase: .loading)
         Task {
-            defer { alertsFetching = false }
-            guard let alerts = try? await AlertService.fetch(near: point) else { return }
-            nwsAlerts = alerts
-            nwsChecked = Date()
-            notifyAboutNew(alerts)
+            defer { if generation == environmentGeneration { alertsFetching = false } }
+            do {
+                let alerts = try await AlertService.fetch(near: point)
+                guard generation == environmentGeneration else { return }
+                nwsAlerts = alerts
+                nwsChecked = clock()
+                record("alerts", phase: .ready, fetched: clock(), from: clock(), until: clock() + 900)
+                notifyAboutNew(alerts)
+            } catch {
+                guard generation == environmentGeneration else { return }
+                record("alerts", phase: .failed(error.localizedDescription))
+            }
         }
     }
 
@@ -457,25 +604,29 @@ final class AnchorWatchEngine: ObservableObject {
     /// simulated boat feels), otherwise the forecast.
     var windNow: WindSample? {
         if sourceKind == .simulator, let simulated = simulator.windNow { return simulated }
-        return windHere?.sample(atHour: 0)
+        return usable("wind") ? windHere?.sample(atHour: 0, from: clock()) : nil
     }
 
+    var windForAdvice: WindSeries? { usable("wind") ? windHere : nil }
+    var alertsAreCurrent: Bool { usable("alerts") }
+
     var windAlerts: [WindAlert] {
-        guard let windHere else { return [] }
+        guard usable("wind"), let windHere else { return [] }
         return WindAdvice.alerts(windHere, gustLimit: gustLimit)
     }
 
     /// Reloads the forecast at the anchorage; called from the 1 s watchdog, so it throttles itself.
     private func refreshWindHereIfDue() {
-        guard !windFetching, let point = anchor ?? fix?.coordinate else { return }
+        guard !windFetching, anchor != nil || fix != nil else { return }
         let age = Date().timeIntervalSince(windHere?.fetched ?? .distantPast)
         let sinceAttempt = Date().timeIntervalSince(lastWindAttempt)
         guard (windHere == nil && sinceAttempt > 60) || age > 1800 && sinceAttempt > 60 else { return }
         windFetching = true
         lastWindAttempt = Date()
+        let generation = environmentGeneration
         Task {
-            defer { windFetching = false }
-            if let series = try? await WindService.fetch([point]).first { windHere = series }
+            defer { if generation == environmentGeneration { windFetching = false } }
+            await refreshWind()
         }
     }
 
@@ -505,24 +656,30 @@ final class AnchorWatchEngine: ObservableObject {
 
     /// Expected rise above the current water level within the chosen window.
     var tideRiseEstimate: Double? {
-        tide.flatMap { TideMath.rise(from: Date(), hours: tideWindowHours, events: $0.events) }
+        guard usable("tide") || usingSimulatedTide else { return nil }
+        return tide.flatMap { TideMath.rise(from: clock(), hours: tideWindowHours, events: $0.events) }
     }
 
-    var tideNow: Double? { tide.flatMap { TideMath.height(at: clock(), events: $0.events) } }
+    var tideNow: Double? { guard usable("tide") || usingSimulatedTide else { return nil }; return tide.flatMap { TideMath.height(at: clock(), events: $0.events) } }
 
     func refreshTide() async {
-        guard let point = fix?.coordinate ?? anchor else {
+        guard let point = anchor ?? fix?.coordinate else {
             tideStatus = "Waiting for a GPS position to find the nearest tide station…"
             return
         }
+        let generation = bindEnvironment(to: point)
+        record("tide", phase: .loading)
         tideStatus = "Finding the nearest tide station…"
         do {
-            let result = try await TideService.snapshot(near: point)
-            applyTideSnapshot(result.snapshot)
+            let result = try await fetchTide(point)
+            guard generation == environmentGeneration else { return }
+            applyTideSnapshot(result.snapshot, cached: result.fromCache)
             tideIsSaved = result.fromCache
             tideStatus = ""
         } catch {
+            guard generation == environmentGeneration else { return }
             tideStatus = error.localizedDescription
+            record("tide", phase: .failed(error.localizedDescription))
         }
     }
 
@@ -543,6 +700,8 @@ final class AnchorWatchEngine: ObservableObject {
                 recordDepthReading()
             }
             tide = simulated
+            record("tide", phase: .ready, fetched: simulated.fetched, from: simulated.events.first?.time,
+                   until: simulated.events.last?.time, station: "Simulated tide")
         } else if usingSimulatedTide || tide?.station.id == "simulated" {
             // Back to the real predictions.
             usingSimulatedTide = false
@@ -557,8 +716,9 @@ final class AnchorWatchEngine: ObservableObject {
         guard nextTide == nil || age > 6 * 3600 else { return }
         tideFetching = true
         lastTideAttempt = Date()
+        let generation = environmentGeneration
         Task {
-            defer { tideFetching = false }
+            defer { if generation == environmentGeneration { tideFetching = false } }
             await refreshTide()
         }
     }
@@ -629,7 +789,7 @@ final class AnchorWatchEngine: ObservableObject {
 
     /// Depth at the anchorage over the next 24 h, from the live depth and the tide predictions.
     var waterForecast: [(time: Date, depth: Double)] {
-        guard let tide, let reading = depthReading, reading.depth(at: clock(), tide: tide) != nil else { return [] }
+        guard usable("tide") || usingSimulatedTide, let tide, let reading = depthReading, reading.depth(at: clock(), tide: tide) != nil else { return [] }
         return stride(from: 0.0, through: 24 * 3600, by: 600).compactMap { offset in
             let time = clock().addingTimeInterval(offset)
             return reading.depth(at: time, tide: tide).map { (time: time, depth: $0) }
@@ -661,8 +821,8 @@ final class AnchorWatchEngine: ObservableObject {
 
     /// Forecast gusts in the next 12 h beyond what this setup can hold.
     var holdingWarning: HoldingWarning? {
-        guard let samples = windHere?.samples else { return nil }
-        return AnchorMath.forecastWarning(boat, scope: scope, bottom: anchorBottom, rodeOut: rodeOut, forecast: samples)
+        guard let samples = windForAdvice?.samples else { return nil }
+        return AnchorMath.forecastWarning(boat, scope: scope, bottom: anchorBottom, rodeOut: rodeOut, forecast: samples, now: clock())
     }
 
     /// The next 24 hours: forecast hours with the safe gust at each hour's depth, and what's coming up.
@@ -704,18 +864,19 @@ final class AnchorWatchEngine: ObservableObject {
     }
     func unlockOutlook(_ item: OutlookItem) { lockedOutlook.removeAll { $0.matches(item) } }
 
-    private func refreshOutlookIfDue() {
-        let hasData = tide != nil || windHere != nil
-        guard hasData, Date().timeIntervalSince(lastOutlook) >= 60 || (outlook.isEmpty && hourlyHolding.isEmpty) else { return }
-        lastOutlook = Date()
+    func refreshOutlookIfDue() {
+        guard clock().timeIntervalSince(lastOutlook) >= 60 || (outlook.isEmpty && hourlyHolding.isEmpty) else { return }
+        lastOutlook = clock()
         let depths = waterForecast
-        let hourly = Outlook.hourly(boat, scope: scope, bottom: anchorBottom, rodeOut: rodeOut,
-                                    depths: depths, forecast: windHere?.samples ?? [],
-                                    current: currents == nil ? nil : { [weak self] in self?.currentHere(at: $0) })
+        var adviceScope = scope
+        adviceScope.depth = liveDepth
+        let hourly = Outlook.hourly(boat, scope: adviceScope, bottom: anchorBottom, rodeOut: rodeOut,
+                                    depths: depths, forecast: usable("wind") ? windHere?.samples ?? [] : [],
+                                    current: usable("current") ? { [weak self] in self?.currentHere(at: $0) } : nil, now: clock())
         hourlyHolding = hourly
         outlook = Outlook.items(boat, scope: scope, rodeOut: rodeOut, depths: depths, hourly: hourly,
-                                tideTurns: tide?.events ?? [], currentEvents: scaledCurrentEvents,
-                                anchor: anchor, hazards: hazards, units: units)
+                                tideTurns: usable("tide") ? tide?.events ?? [] : [], currentEvents: scaledCurrentEvents,
+                                anchor: anchor, hazards: hazards, units: units, now: clock())
     }
 
     // MARK: Tidal current (NOAA predictions for the nearest current station)
@@ -730,36 +891,34 @@ final class AnchorWatchEngine: ObservableObject {
 
     /// Current at the anchorage at `time`: the station's prediction scaled by `currentFactor`.
     func currentHere(at time: Date) -> CurrentAt? {
-        guard let events = currents?.events, let flow = CurrentMath.at(time, events: events) else { return nil }
+        guard usable("current"), let events = currents?.events, let flow = CurrentMath.at(time, events: events) else { return nil }
         let flooding = flow.toward == events.first!.floodToward
         return CurrentAt(speed: flow.speed * currentFactor, toward: flow.toward, flooding: flooding)
     }
 
     /// The predicted slacks and maximums with speeds scaled to the anchorage.
     var scaledCurrentEvents: [CurrentEvent]? {
-        currents?.events.map { CurrentEvent(time: $0.time, velocity: $0.velocity * currentFactor,
+        (usable("current") ? currents?.events : nil)?.map { CurrentEvent(time: $0.time, velocity: $0.velocity * currentFactor,
                                             floodToward: $0.floodToward, ebbToward: $0.ebbToward) }
     }
 
     /// Loads current predictions once there's a position, then every six hours. No station nearby leaves it nil.
     private func refreshCurrentsIfDue() {
-        guard !currentFetching, let point = anchor ?? fix?.coordinate,
+        guard !currentFetching, anchor != nil || fix != nil,
               Date().timeIntervalSince(lastCurrentAttempt) > (currents == nil ? 600 : 6 * 3600) else { return }
         currentFetching = true
         lastCurrentAttempt = Date()
+        let generation = environmentGeneration
         Task {
-            defer { currentFetching = false }
-            if let snapshot = try? await CurrentService.snapshot(near: point) {
-                currents = snapshot
-                lastOutlook = .distantPast
-            }
+            defer { if generation == environmentGeneration { currentFetching = false } }
+            await refreshCurrent()
         }
     }
 
     /// Depth at the next high water: today's depth plus how much the tide rises to it, and when. Without tide
     /// predictions, the rise entered on the Water tab.
     var depthAtNextHigh: (depth: Double, time: Date?) {
-        if let high = tide.flatMap({ TideMath.upcoming($0.events, after: clock(), limit: 4).first(where: \.isHigh) }),
+        if (usable("tide") || usingSimulatedTide), let high = tide.flatMap({ TideMath.upcoming($0.events, after: clock(), limit: 4).first(where: \.isHigh) }),
            let depth = depthReading?.depth(at: high.time, tide: tide) {
             return (depth, high.time)
         }
@@ -767,7 +926,7 @@ final class AnchorWatchEngine: ObservableObject {
     }
 
     /// The next predicted high or low.
-    var nextTide: TideEvent? { tide.flatMap { TideMath.upcoming($0.events, after: Date(), limit: 1).first } }
+    var nextTide: TideEvent? { guard usable("tide") || usingSimulatedTide else { return nil }; return tide.flatMap { TideMath.upcoming($0.events, after: clock(), limit: 1).first } }
     /// How much more rode the scope calls for than the boat carries. Nil when there is enough, or the rode isn't entered.
     var rodeShortfall: Double? {
         let carried = BoatMath.rodeCarried(boat)
@@ -829,6 +988,7 @@ final class AnchorWatchEngine: ObservableObject {
             defaults.set(simPlace.rawValue, forKey: "anchorwatch.simPlace")
             simulator.origin = simPlace.coordinate
             raiseAnchor()
+            bindEnvironment(to: simPlace.coordinate)
             fix = nil
             track = []
             tide = nil
@@ -1033,6 +1193,7 @@ final class AnchorWatchEngine: ObservableObject {
     }
 
     private func refreshData() {
+        if let point = anchor ?? fix?.coordinate { bindEnvironment(to: point) }
         if Date().timeIntervalSince(lastEstimate) >= max(2, estimateInterval / simTimeScale) { updateAnchorEstimate() }
         refreshPermissionsIfDue()
         refreshWindHereIfDue()
@@ -1594,6 +1755,7 @@ final class AnchorWatchEngine: ObservableObject {
     }
 
     private func setAnchor(_ coordinate: CLLocationCoordinate2D) {
+        bindEnvironment(to: coordinate)
         anchor = coordinate
         player.arm()
         gps?.keepsRunningInBackground = true
@@ -1627,6 +1789,7 @@ final class AnchorWatchEngine: ObservableObject {
         guard new.accuracy <= usableLimit(for: new) else { return }
         lastUsableFix = new.timestamp
         fix = new
+        if anchor == nil { bindEnvironment(to: new.coordinate) }
 
         recent.append(new)
         recent.removeAll { new.timestamp.timeIntervalSince($0.timestamp) > averagingWindow }

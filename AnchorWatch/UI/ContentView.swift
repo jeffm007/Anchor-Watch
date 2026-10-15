@@ -726,12 +726,13 @@ struct DepthSections: View {
                 Button("Use tide data: +\(units.formatTenths(rise))") { engine.applyTideRise() }
             }
             if engine.tideIsSaved {
-                Text("Offline: showing predictions saved \(tide.fetched.formatted(.relative(presentation: .named))).")
+                Text("Cached predictions fetched \(tide.fetched.formatted(.relative(presentation: .named))).")
                     .font(.footnote).foregroundStyle(.orange)
             }
         } else if engine.tideStatus.isEmpty == false {
             Text(engine.tideStatus).font(.footnote).foregroundStyle(.secondary)
         }
+        if let record = engine.environmentRecords["tide"] { Text(record.description(at: Date())).font(.caption).foregroundStyle(.secondary) }
         Button("Refresh tide data") { Task { await engine.refreshTide() } }
             .font(.footnote)
     }
@@ -794,6 +795,11 @@ struct ConditionsView: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("Environmental data") {
+                    Text(engine.environmentCoverage.summary)
+                    ForEach(engine.environmentDetails, id: \.self) { Text($0).font(.caption) }
+                    Button("Retry environmental data") { engine.retryEnvironment() }
+                }
                 if let now = engine.windNow {
                     Section("Forecast at your position") {
                         Text("\(Compass.name(now.direction)) \(Int(now.speed.rounded())) kt, gusts \(Int(now.gust.rounded())) kt")
@@ -809,7 +815,7 @@ struct ConditionsView: View {
                     }
                 }
                 if engine.observations.isEmpty {
-                    Section { Text(engine.observationsChecked == nil ? "Looking for nearby stations…" : "No stations reporting within 200 km.")
+                    Section { Text(engine.environmentRecords["observations"]?.description(at: Date()) ?? "Nearby observations not loaded.")
                         .foregroundStyle(.secondary) }
                 }
                 ForEach(engine.observations) { obs in
@@ -887,7 +893,7 @@ struct AlertsView: View {
         NavigationStack {
             List {
                 if engine.nwsAlerts.isEmpty {
-                    Text("No active alerts for your position.").foregroundStyle(.secondary)
+                    Text(engine.alertsAreCurrent ? "No active alerts returned by the latest check for this location." : "Current alert status unavailable. Check data age or retry.").foregroundStyle(.secondary)
                 }
                 ForEach(engine.nwsAlerts) { alert in
                     VStack(alignment: .leading, spacing: 6) {
@@ -904,6 +910,7 @@ struct AlertsView: View {
                     .padding(.vertical, 4)
                 }
                 Section {
+                    if let record = engine.environmentRecords["alerts"] { Text(record.description(at: Date())) }
                     if let checked = engine.nwsChecked {
                         Text("National Weather Service · checked \(checked.formatted(.relative(presentation: .named)))")
                     } else {
