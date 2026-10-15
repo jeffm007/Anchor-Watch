@@ -143,7 +143,7 @@ struct AnchoringView: View {
                         Picker("Bottom", selection: $conditions.bottom) {
                             ForEach(AnchorConditions.Bottom.allCases) { Text($0.rawValue).tag($0) }
                         }
-                        if engine.windHere != nil {
+                        if engine.windForAdvice != nil {
                             Button("Use the forecast for the next 12 h") { fillFromForecast() }
                         }
                     } label: {
@@ -249,7 +249,7 @@ struct AnchoringView: View {
     /// Will the forecast stay under this setup's limit? The strongest gust in the next 12 hours against the safe gust.
     @ViewBuilder private func lookAhead(_ r: AnchorAssessment) -> some View {
         let now = Date()
-        let window = engine.windHere?.samples.filter { $0.time >= now.addingTimeInterval(-1800) && $0.time <= now.addingTimeInterval(12 * 3600) } ?? []
+        let window = engine.windForAdvice?.samples.filter { $0.time >= now.addingTimeInterval(-1800) && $0.time <= now.addingTimeInterval(12 * 3600) } ?? []
         if let peak = window.max(by: { $0.gust < $1.gust }), let safe = r.safeGust {
             let when = peak.time.formatted(date: .omitted, time: .shortened)
             if peak.gust > safe {
@@ -257,13 +257,14 @@ struct AnchoringView: View {
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote).foregroundStyle(.orange)
             } else {
-                Label("Next 12 h: forecast peak \(Int(peak.gust.rounded())) kt around \(when), within the \(Int(safe)) kt limit.",
+                Label("Available forecast: peak \(Int(peak.gust.rounded())) kt around \(when), within the \(Int(safe)) kt limit.",
                       systemImage: "checkmark.circle")
                     .font(.footnote).foregroundStyle(.green)
             }
-        } else if engine.windHere == nil {
-            Text("Waiting for the wind forecast to look ahead.").font(.footnote).foregroundStyle(.secondary)
+        } else {
+            Text(engine.environmentRecords["wind"]?.description(at: now) ?? "Waiting for the wind forecast to look ahead.").font(.footnote).foregroundStyle(.secondary)
         }
+        Text(engine.environmentCoverage.summary).font(.caption).foregroundStyle(.secondary)
     }
 
     /// Most rode the slider offers: everything on board, or enough for the scope if more.
@@ -296,7 +297,7 @@ struct AnchoringView: View {
     }
 
     private func fillFromForecast() {
-        guard let series = engine.windHere else { return }
+        guard let series = engine.windForAdvice else { return }
         let now = Date()
         let window = series.samples.filter { $0.time >= now.addingTimeInterval(-1800) && $0.time <= now.addingTimeInterval(12 * 3600) }
         if let wind = window.map(\.speed).max() { conditions.wind = wind.rounded() }

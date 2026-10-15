@@ -196,14 +196,14 @@ enum TideService {
     // MARK: Fetching
 
     /// Predictions for the station nearest `point`, from the cache when fresh, else from NOAA.
-    /// Falls back to older saved predictions when offline. `fromCache` is true when the network failed.
+    /// Falls back to older saved predictions when offline. `fromCache` identifies disk results, including offline fallback.
     static func snapshot(near point: CLLocationCoordinate2D, now: Date = Date()) async throws -> (snapshot: TideSnapshot, fromCache: Bool) {
         let station = try await nearestStation(to: point)
 
         if let saved = loadSnapshot(station),
            now.timeIntervalSince(saved.fetched) < 6 * 3600,
            (saved.events.last?.time ?? .distantPast) > now.addingTimeInterval(36 * 3600) {
-            return (saved, false)
+            return (saved, true)
         }
         do {
             let events = try await fetchEvents(station: station, now: now)
