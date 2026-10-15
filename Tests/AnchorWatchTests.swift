@@ -2343,3 +2343,86 @@ final class MonitoringFreshnessTests: XCTestCase {
         for minute in 1...6 { XCTAssertTrue(LiveActivityController.shouldSend(s, after: s, elapsed: Double(minute * 60))) }
     }
 }
+
+
+@MainActor
+final class DepthConsistencyTests: XCTestCase {
+    private let start = Date(timeIntervalSince1970: 1_800_000_000)
+    private func tide(_ id: String = "A", offset: Double = 0) -> TideSnapshot {
+        TideSnapshot(station: TideStation(id: id, name: id, lat: 38.97, lng: -76.47),
+                     events: [TideEvent(time: start, height: offset, isHigh: false),
+                              TideEvent(time: start + 6 * 3600, height: offset + 2, isHigh: true),
+                              TideEvent(time: start + 12 * 3600, height: offset, isHigh: false),
+                              TideEvent(time: start + 18 * 3600, height: offset + 2, isHigh: true)], fetched: start)
+    }
+    func testRisingAndFallingDepthAgreesAcrossPlannerAndWaterForecast() {
+        var now = start
+        let e = AnchorWatchEngine(player: SilentAlarm(), liveActivity: NoLiveActivity(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false, clock: { now })
+        e.applyTideSnapshot(tide()); e.setDepthReading(3)
+        now += 3 * 3600
+        XCTAssertEqual(e.liveDepth, 4, accuracy: 0.001)
+        XCTAssertEqual(e.plannerScope().designDepth, 4, accuracy: 0.001)
+        XCTAssertEqual(e.plannerScope(at: start + 6 * 3600).designDepth, 5, accuracy: 0.001)
+        XCTAssertEqual(e.plannerScope(at: start + 12 * 3600).designDepth, 3, accuracy: 0.001)
+        XCTAssertEqual(e.waterForecast.first!.depth, e.liveDepth, accuracy: 0.001)
+        XCTAssertEqual(e.depthAtNextHigh.depth, 5, accuracy: 0.001)
+        XCTAssertEqual(e.highWaterScope.designDepth, 5, accuracy: 0.001)
+        XCTAssertEqual(e.rodeToPayOut, ScopeCalculator.rode(e.highWaterScope), accuracy: 0.001)
+        now = start + 9 * 3600
+        XCTAssertEqual(e.liveDepth, 4, accuracy: 0.001)
+        XCTAssertEqual(e.plannerScope().designDepth, e.liveDepth)
+    }
+    func testReadingAndStationReferenceSurviveRestartAndManualCorrection() {
+        var now = start
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false, clock: { now })
+        e.applyTideSnapshot(tide()); e.setDepthReading(3)
+        now += 3 * 3600
+        let restored = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false, clock: { now })
+        restored.applyTideSnapshot(tide())
+        XCTAssertEqual(restored.liveDepth, 4, accuracy: 0.001)
+        XCTAssertEqual(restored.depthReading?.stationID, "noaa:A")
+        restored.setDepthReading(3) // Same number as the original reading, but a new measurement time.
+        XCTAssertEqual(restored.liveDepth, 3, accuracy: 0.001)
+        XCTAssertEqual(restored.depth(at: start + 6 * 3600), 4, accuracy: 0.001)
+    }
+    func testStationChangeUsesItsOwnDatumAtMeasurementTime() {
+        let reading = DepthReading(depth: 3, measured: start, stationID: "noaa:A", tideHeight: 0)
+        XCTAssertEqual(reading.depth(at: start + 3 * 3600, tide: tide("B", offset: 10))!, 4, accuracy: 0.001)
+        XCTAssertNil(reading.depth(at: start + 3 * 3600, tide: nil))
+        var missing = tide("B"); missing.events.removeFirst()
+        XCTAssertNil(reading.depth(at: start + 9 * 3600, tide: missing), "Must not mix the old station's height into a new datum")
+    }
+    func testLegacyUnboundDepthRequiresConfirmationAndLateTideUsesMeasurementTime() {
+        var now = start
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        defaults.set(99, forKey: "anchorwatch.depthTideRef")
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false, clock: { now })
+        e.applyTideSnapshot(tide())
+        XCTAssertNil(e.depthReading)
+        XCTAssertTrue(e.waterForecast.isEmpty)
+        XCTAssertTrue(e.depthReferenceDetail.contains("Reading time unknown"))
+        let offline = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false, clock: { now })
+        offline.setDepthReading(3)
+        now += 3 * 3600
+        offline.applyTideSnapshot(tide())
+        XCTAssertEqual(offline.liveDepth, 4, accuracy: 0.001)
+    }
+    func testHistorySeabedOverridesStalePlannerAfterTabReuse() {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let e = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false)
+        let point = CLLocationCoordinate2D(latitude: 38.97, longitude: -76.47)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let visit = AnchorageEntry(name: "Prior", latitude: point.latitude, longitude: point.longitude,
+                                   dropped: Date() - 86400, raised: Date() - 82800, depth: 3, rodeOut: 50, radius: 60, maxDistance: 40, bottom: "Sand")
+        AnchorageLog.save([visit], to: url); e.logURL = url
+        var stale = AnchorConditions(); stale.bottom = .mud
+        e.ingest(Fix(coordinate: point, accuracy: 3, course: nil, speed: nil, timestamp: Date())); e.dropAnchor()
+        e.applyPreviousVisit()
+        XCTAssertEqual(e.plannerConditions(stale).bottom, .sand)
+        XCTAssertEqual(e.rodeOut, 50)
+        let restored = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false)
+        XCTAssertEqual(restored.plannerConditions(stale).bottom, .sand)
+    }
+}

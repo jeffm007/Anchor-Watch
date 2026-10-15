@@ -617,7 +617,7 @@ struct ScopeView: View {
                 }
                 Section("Result") {
                     row("Rode to pay out", engine.rodeToPayOut)
-                    row("Horizontal reach", ScopeCalculator.horizontalReach(engine.scope))
+                    row("Horizontal reach", ScopeCalculator.horizontalReach(engine.highWaterScope))
                     row("Suggested alarm radius", engine.suggestedRadius).bold()
                     Button("Use suggested radius") { engine.applySuggestedRadius(); dismiss() }
                     if let shortfall = engine.rodeShortfall {
@@ -626,7 +626,7 @@ struct ScopeView: View {
                     }
                 }
                 Section {
-                    Text("Depth is entered by hand for now. Phase 2 will read it from the sonar. The tide rise is added to the depth so the rode covers high water.")
+                    Text("Enter a new sounder reading when you measure the depth. Estimated depth follows tide changes from that reading time and station. " + engine.depthReferenceDetail)
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
@@ -643,8 +643,11 @@ struct ScopeView: View {
     private func field(_ title: String, _ key: WritableKeyPath<ScopeSettings, Double>, step: Double) -> some View {
         let u = engine.units
         let binding = Binding(
-            get: { engine.scope[keyPath: key] * u.perMeter },
-            set: { engine.scope[keyPath: key] = max(0, $0 / u.perMeter) })
+            get: { (key == \ScopeSettings.depth ? engine.liveDepth : engine.scope[keyPath: key]) * u.perMeter },
+            set: {
+                if key == \ScopeSettings.depth { engine.setDepthReading(max(0, $0 / u.perMeter)) }
+                else { engine.scope[keyPath: key] = max(0, $0 / u.perMeter) }
+            })
         return Stepper(value: binding, in: 0...500, step: step) {
             LabeledContent(title, value: String(format: "%.1f %@", binding.wrappedValue, u.symbol))
         }
@@ -659,14 +662,14 @@ struct DepthEntrySection: View {
     private var units: Units { engine.units }
 
     private var depth: Binding<Double> {
-        Binding(get: { engine.scope.depth * units.perMeter },
-                set: { engine.scope.depth = max(0, $0 / units.perMeter) })
+        Binding(get: { engine.liveDepth * units.perMeter },
+                set: { engine.setDepthReading(max(0, $0 / units.perMeter)) })
     }
 
     private var step: Double { units == .feet ? 1 : 0.5 }
 
     var body: some View {
-        Section("Water depth at the anchorage") {
+        Section("Depth now · enter a new sounder reading") {
             HStack {
                 Button { depth.wrappedValue = max(0, depth.wrappedValue - step) } label: {
                     Image(systemName: "minus.circle.fill").font(.largeTitle)
@@ -681,6 +684,8 @@ struct DepthEntrySection: View {
                 }
             }
             .buttonStyle(.borderless)
+            Text(engine.depthReferenceDetail).font(.caption).foregroundStyle(.secondary)
+            Button("Confirm this depth as a new sounder reading") { engine.setDepthReading(engine.liveDepth) }.font(.footnote)
         }
     }
 }
@@ -753,7 +758,7 @@ struct DepthSections: View {
                 }
             }
             .buttonStyle(.borderless)
-            LabeledContent("Depth to cover at high water", value: units.format(engine.scope.designDepth))
+            LabeledContent("Depth to cover at high water", value: units.format(engine.depthAtNextHigh.depth))
         }
         Section("Scope") {
             Picker("Scope ratio", selection: $engine.scope.scopeRatio) {

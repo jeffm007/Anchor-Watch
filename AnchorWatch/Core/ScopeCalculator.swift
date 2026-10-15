@@ -60,3 +60,26 @@ enum ScopeCalculator {
         horizontalReach(s) + gpsFromBow(s) + s.margin
     }
 }
+
+
+/// A sounder reading, distinct from a forecast. Tide differences must use one station/datum.
+struct DepthReading: Codable, Equatable {
+    var depth: Double
+    var measured: Date
+    var stationID: String?
+    var tideHeight: Double?
+
+    static func stationKey(_ station: TideStation) -> String { station.source + ":" + station.id }
+
+    func referenceHeight(in snapshot: TideSnapshot) -> Double? {
+        if stationID == Self.stationKey(snapshot.station), let tideHeight { return tideHeight }
+        // A new station may be used only if it covers the original measurement time.
+        return TideMath.height(at: measured, events: snapshot.events)
+    }
+
+    func depth(at time: Date, tide: TideSnapshot?) -> Double? {
+        guard let tide, let reference = referenceHeight(in: tide),
+              let height = TideMath.height(at: time, events: tide.events) else { return nil }
+        return max(0, depth + height - reference)
+    }
+}
