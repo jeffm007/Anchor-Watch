@@ -18,6 +18,7 @@ struct WindSeries: Codable, Equatable {
 
     /// The forecast hour nearest to `now + hours`.
     func sample(atHour hours: Double, from now: Date = Date()) -> WindSample? {
+        guard now.timeIntervalSince(fetched) >= -60, now.timeIntervalSince(fetched) <= 3600 else { return nil }
         let target = now.addingTimeInterval(hours * 3600)
         return samples.min { abs($0.time.timeIntervalSince(target)) < abs($1.time.timeIntervalSince(target)) }
             .flatMap { abs($0.time.timeIntervalSince(target)) <= 3600 ? $0 : nil }

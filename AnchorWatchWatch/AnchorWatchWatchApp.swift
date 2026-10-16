@@ -70,6 +70,7 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
     var alarm: String? { status["alarm"] as? String }
     var updated: Date? { (status["updated"] as? Double).map(Date.init(timeIntervalSince1970:)) }
     /// The chart, in metres east and north of the anchor.
+    var circleActive: Bool { status["circleActive"] as? String == "1" }
     var radiusMetres: Double? { (status["radiusM"] as? String).flatMap(Double.init) }
     var boat: CGPoint? { (status["boat"] as? String).flatMap(Self.point) }
     var track: [CGPoint] { ((status["track"] as? String) ?? "").split(separator: " ").compactMap { Self.point(String($0)) } }
@@ -198,7 +199,9 @@ struct TrackView: View {
         let night = link.night
         TimelineView(.periodic(from: .now, by: 5)) { context in
         VStack(spacing: 2) {
-            if link.isStale(at: context.date) { Text("STALE — open iPhone app").font(.caption.bold()).foregroundStyle(night ? red : .orange) }
+            Text(link.isStale(at: context.date) ? "STALE — open iPhone app" : link.state)
+                .font(.caption.bold()).foregroundStyle(night ? red : link.tone == "green" ? .green : .orange)
+                .multilineTextAlignment(.center)
             if let radius = link.radiusMetres {
                 Canvas { context, size in
                     let track = link.track
@@ -211,7 +214,8 @@ struct TrackView: View {
                     let r = radius * scale
                     let circle = Path(ellipseIn: CGRect(x: mid.x - r, y: mid.y - r, width: 2 * r, height: 2 * r))
                     let alarm = link.alarm != nil
-                    context.stroke(circle, with: .color(night ? red.opacity(0.7) : alarm ? .red : .green), lineWidth: 2)
+                    context.stroke(circle, with: .color(night ? red.opacity(0.7) : alarm ? .red : (link.tone == "green" && !link.isStale(at: Date()) ? .green : .orange)),
+                                   style: StrokeStyle(lineWidth: 2, dash: link.circleActive ? [] : [5, 4]))
 
                     if track.count > 1 {
                         var line = Path()

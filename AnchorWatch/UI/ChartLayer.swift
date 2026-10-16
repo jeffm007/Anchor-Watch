@@ -1,7 +1,8 @@
 import MapKit
+import ImageIO
 
 /// Free map sources. Tile servers ask for an identifying User-Agent and
-/// reasonable use; tiles are cached on disk so a visited anchorage works offline.
+/// reasonable use; cached tiles follow the provider’s HTTP expiry policy.
 enum ChartLayer: String, CaseIterable, Identifiable {
     case seaMap = "OpenSeaMap"
     case noaa = "NOAA Charts (US)"
@@ -28,11 +29,13 @@ final class ChartTileOverlay: MKTileOverlay {
     fileprivate static let session: URLSession = {
         let config = URLSessionConfiguration.default
         config.urlCache = URLCache(memoryCapacity: 32 << 20, diskCapacity: 1 << 30)
-        config.requestCachePolicy = .returnCacheDataElseLoad
+        config.requestCachePolicy = .useProtocolCachePolicy
+        config.timeoutIntervalForRequest = 20
         config.httpAdditionalHeaders = ["User-Agent": "AnchorWatch/0.1 (iOS; personal boat project)"]
         return URLSession(configuration: config)
     }()
 
+    var onTileResult: ((URL, Error?) -> Void)?
     private let urlBuilder: ((MKTileOverlayPath) -> URL)?
 
     init(template: String, maxZoom: Int, replacesMap: Bool, urlBuilder: ((MKTileOverlayPath) -> URL)? = nil) {
@@ -50,9 +53,25 @@ final class ChartTileOverlay: MKTileOverlay {
         fetch(url(forTilePath: path), result)
     }
 
+    static func isValidTile(_ data: Data, response: URLResponse?) -> Bool {
+        guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode),
+              response.mimeType?.hasPrefix("image/") == true,
+              let source = CGImageSourceCreateWithData(data as CFData, nil) else { return false }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil) != nil
+    }
+
     final func fetch(_ url: URL, _ result: @escaping (Data?, Error?) -> Void) {
-        Self.session.dataTask(with: url) { data, _, error in
-            result(data, error)
+        let callback = onTileResult
+        Self.session.dataTask(with: url) { data, response, error in
+            let complete: (Data?, Error?) -> Void = { data, error in
+                callback?(url, error)
+                result(data, error)
+            }
+            if let error { complete(nil, error); return }
+            guard let data, Self.isValidTile(data, response: response) else {
+                complete(nil, URLError(.cannotDecodeContentData)); return
+            }
+            complete(data, nil)
         }.resume()
     }
 }

@@ -21,22 +21,53 @@ protocol AlarmPlaying: AnyObject {
     var volume: Float { get }
     /// Name of the output device when the sound would not come from the phone's own speaker.
     var externalRoute: String? { get }
+    /// Last audio setup/startup failure; cleared only after a successful startup.
+    var audioFailure: String? { get }
+}
+
+/// The C atomic flag is shared with the audio thread; reads never acquire a lock.
+final class AudioGain: @unchecked Sendable {
+    private let signal: AWAudioSignalRef
+    init() {
+        guard let signal = AWAudioSignalCreate() else { fatalError("Could not allocate audio signal") }
+        self.signal = signal
+    }
+    deinit { AWAudioSignalDestroy(signal) }
+    var level: Float {
+        get { AWAudioSignalLoad(signal) ? 0.85 : 0 }
+        set { AWAudioSignalStore(signal, newValue > 0) }
+    }
 }
 
 /// Loud two-tone siren generated in code (no audio assets), plus haptics and a
 /// local notification for when the app is in the background.
 @MainActor
 final class AlarmPlayer: AlarmPlaying {
-    /// Read by the audio thread, written on the main thread; a stale value for a few milliseconds is harmless.
-    private final class Gain { var level: Float = 0 }
-
-    private let engine = AVAudioEngine()
-    private let gain = Gain()
+    private var engine: AVAudioEngine
+    private let makeEngine: () -> AVAudioEngine
+    private let gain = AudioGain()
+    private(set) var engineGeneration = 0
+    var isSounding: Bool { gain.level > 0 }
     private var node: AVAudioSourceNode?
     private var armed = false
     private var haptics: Timer?
     private var testTask: Task<Void, Never>?
     private var observing = false
+    private var interrupted = false
+    private(set) var audioFailure: String?
+    private let sessionSetup: () throws -> Void
+    private let engineStartup: (() throws -> Void)?
+
+    /// Injectable hardware boundaries let tests exercise failures and recovery without playing audio.
+    init(sessionSetup: (() throws -> Void)? = nil,
+         engineStartup: (() throws -> Void)? = nil,
+         engineFactory: (() -> AVAudioEngine)? = nil) {
+        let factory = engineFactory ?? { AVAudioEngine() }
+        self.makeEngine = factory
+        self.engine = factory()
+        self.sessionSetup = sessionSetup ?? Self.configureAudioSession
+        self.engineStartup = engineStartup
+    }
 
     var volume: Float { AVAudioSession.sharedInstance().outputVolume }
 
@@ -48,33 +79,35 @@ final class AlarmPlayer: AlarmPlaying {
 
     func prepare() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
-        configureSession()
+        do { try sessionSetup() } catch { audioFailure = error.localizedDescription }
         guard !observing else { return }
         observing = true
         let center = NotificationCenter.default
         center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
             let ended = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) == AVAudioSession.InterruptionType.ended.rawValue
-            MainActor.assumeIsolated { if ended { self?.configureSession(); self?.ensureRunning() } }
+            MainActor.assumeIsolated { self?.handleInterruption(ended: ended) }
         }
-        center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.ensureRunning() }
+        center.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main) { [weak self] note in
+            MainActor.assumeIsolated {
+                guard let self, let changed = note.object as? AVAudioEngine, changed === self.engine else { return }
+                self.ensureRunning()
+            }
         }
         center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.rebuildEngine() }
+            MainActor.assumeIsolated { self?.handleMediaServicesReset() }
         }
     }
 
     /// `.playback` sounds even with the silent switch on; `.mixWithOthers` means keeping the session open never
     /// pauses music or a chart app's audio.
-    private func configureSession() {
+    private static func configureAudioSession() throws {
         let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
-        try? session.setActive(true)
+        try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        try session.setActive(true)
     }
 
     func arm() {
         armed = true
-        configureSession()
         startEngine()
     }
 
@@ -84,8 +117,7 @@ final class AlarmPlayer: AlarmPlaying {
     }
 
     func ensureRunning() {
-        guard (armed || gain.level > 0), !engine.isRunning else { return }
-        configureSession()
+        guard (armed || gain.level > 0), audioFailure != nil || !engine.isRunning else { return }
         startEngine()
     }
 
@@ -102,7 +134,6 @@ final class AlarmPlayer: AlarmPlaying {
 
     func test(duration: TimeInterval) {
         guard gain.level == 0 else { return }       // a real alarm is already sounding
-        configureSession()
         sound()
         testTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(duration))
@@ -134,15 +165,35 @@ final class AlarmPlayer: AlarmPlaying {
         if !armed { engine.stop() }
     }
 
+    func handleInterruption(ended: Bool) {
+        interrupted = !ended
+        if ended { ensureRunning() }
+        else { audioFailure = "Audio interrupted. The siren will retry automatically." }
+    }
+
     private func startEngine() {
-        if node == nil { buildEngine() }
-        if !engine.isRunning { try? engine.start() }
+        guard !interrupted else { return }
+        do {
+            try sessionSetup()
+            if let engineStartup {
+                try engineStartup()
+            } else {
+                if node == nil { try buildEngine() }
+                if !engine.isRunning { try engine.start() }
+            }
+            audioFailure = nil
+        } catch {
+            audioFailure = error.localizedDescription
+        }
     }
 
     /// The source node always runs; it produces silence until `gain` is raised.
-    private func buildEngine() {
+    private func buildEngine() throws {
         let sampleRate = engine.outputNode.outputFormat(forBus: 0).sampleRate
-        guard sampleRate > 0 else { return }
+        guard sampleRate > 0 else {
+            throw NSError(domain: "AnchorWatch.Audio", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "No audio output is available."])
+        }
         let gain = self.gain
         var phase = 0.0
         var t = 0.0
@@ -167,11 +218,17 @@ final class AlarmPlayer: AlarmPlaying {
     }
 
     /// After iOS resets the media services, every audio object has to be rebuilt.
-    private func rebuildEngine() {
-        if let node { engine.detach(node) }
+    func handleMediaServicesReset() {
+        // All graph objects from the previous media server are orphaned. Discard
+        // them together, preserving only our atomic siren flag and armed state.
         node = nil
-        configureSession()
-        ensureRunning()
+        engine = makeEngine()
+        engineGeneration += 1
+        interrupted = false
+        if armed || isSounding {
+            audioFailure = "Audio services reset. Restarting siren output."
+            startEngine()
+        }
     }
 
     private func notify(title: String, _ message: String) {
@@ -200,4 +257,5 @@ final class SilentAlarm: AlarmPlaying {
     func test(duration: TimeInterval) { tested += 1 }
     var volume: Float = 1
     var externalRoute: String?
+    var audioFailure: String?
 }

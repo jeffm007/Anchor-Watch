@@ -33,7 +33,11 @@ struct AnchorageEntry: Codable, Equatable, Identifiable {
     }
 
     var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: latitude, longitude: longitude) }
-    var trackCoordinates: [CLLocationCoordinate2D] { track.map { CLLocationCoordinate2D(latitude: $0[0], longitude: $0[1]) } }
+    var trackCoordinates: [CLLocationCoordinate2D] { track.compactMap { pair in
+        guard pair.count == 2 else { return nil }
+        let point = CLLocationCoordinate2D(latitude: pair[0], longitude: pair[1])
+        return CLLocationCoordinate2DIsValid(point) ? point : nil
+    } }
 }
 
 /// Saving the log, and finding earlier visits.
@@ -50,6 +54,7 @@ enum AnchorageLog {
 
     /// Every n-th point, so a long night keeps its shape in a few hundred points.
     static func thin(_ points: [CLLocationCoordinate2D], to limit: Int = 400) -> [[Double]] {
+        guard limit > 1 else { return points.prefix(max(0, limit)).map { [$0.latitude, $0.longitude] } }
         guard points.count > limit else { return points.map { [$0.latitude, $0.longitude] } }
         let step = Double(points.count - 1) / Double(limit - 1)
         return (0..<limit).map { i in let p = points[Int((Double(i) * step).rounded())]; return [p.latitude, p.longitude] }
@@ -61,11 +66,35 @@ enum AnchorageLog {
         return dir.appendingPathComponent("anchorages.json")
     }
 
-    static func load(from url: URL? = nil) -> [AnchorageEntry] {
-        (try? Data(contentsOf: url ?? file)).flatMap { try? JSONDecoder().decode([AnchorageEntry].self, from: $0) } ?? []
+    struct LoadResult { let entries: [AnchorageEntry]; let recovered: Bool }
+    static func read(from url: URL? = nil) throws -> LoadResult {
+        let url = url ?? file
+        func decode(_ source: URL) throws -> [AnchorageEntry] {
+            let entries = try JSONDecoder().decode([AnchorageEntry].self, from: Data(contentsOf: source))
+            guard entries.allSatisfy({ CLLocationCoordinate2DIsValid($0.coordinate) && $0.depth.isFinite && $0.rodeOut.isFinite && $0.radius.isFinite }) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            return entries
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else { return LoadResult(entries: [], recovered: false) }
+        do { return LoadResult(entries: try decode(url), recovered: false) }
+        catch {
+            let original = error
+            do { return LoadResult(entries: try decode(url.appendingPathExtension("backup")), recovered: true) }
+            catch { throw original }
+        }
     }
-
-    static func save(_ entries: [AnchorageEntry], to url: URL? = nil) {
-        try? JSONEncoder().encode(entries).write(to: url ?? file, options: .atomic)
+    static func load(from url: URL? = nil) -> [AnchorageEntry] { (try? read(from: url).entries) ?? [] }
+    @discardableResult static func save(_ entries: [AnchorageEntry], to url: URL? = nil) -> Error? {
+        let url = url ?? file
+        do {
+            let data = try JSONEncoder().encode(entries)
+            // Preserve the last readable original before replacement; never back up a corrupt file.
+            if let previous = try? Data(contentsOf: url), (try? JSONDecoder().decode([AnchorageEntry].self, from: previous)) != nil {
+                try previous.write(to: url.appendingPathExtension("backup"), options: .atomic)
+            }
+            try data.write(to: url, options: .atomic)
+            return nil
+        } catch { return error }
     }
 }

@@ -30,14 +30,55 @@ final class WindAnnotation: MKPointAnnotation {
     var from = 0.0
 }
 
+/// Keep transient SwiftUI layout proposals away from MapKit's Metal drawable.
+/// In particular, navigation and animated panel changes can briefly propose zero bounds.
+@MainActor
+final class ChartMapContainer: UIView {
+    let map = MKMapView(frame: CGRect(x: 0, y: 0, width: 320, height: 320))
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        clipsToBounds = true
+        addSubview(map)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil { setNeedsLayout() }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard window != nil, let size = Self.drawableSize(bounds.size, scale: window?.screen.scale ?? 1),
+              map.frame.size != size else { return }
+        UIView.performWithoutAnimation {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            map.frame = CGRect(origin: .zero, size: size)
+            map.layoutIfNeeded()
+            CATransaction.commit()
+        }
+    }
+
+    static func drawableSize(_ size: CGSize, scale: CGFloat) -> CGSize? {
+        guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0,
+              scale.isFinite, scale > 0 else { return nil }
+        let pixels = CGSize(width: (size.width * scale).rounded(), height: (size.height * scale).rounded())
+        guard pixels.width >= 1, pixels.height >= 1 else { return nil }
+        return CGSize(width: pixels.width / scale, height: pixels.height / scale)
+    }
+}
+
 /// UIKit map wrapped for SwiftUI because SwiftUI's Map can't host tile overlays.
 struct ChartMapView: UIViewRepresentable {
     @ObservedObject var engine: AnchorWatchEngine
 
     func makeCoordinator() -> Coordinator { Coordinator(engine) }
 
-    func makeUIView(context: Context) -> MKMapView {
-        let map = MKMapView()
+    func makeUIView(context: Context) -> ChartMapContainer {
+        let container = ChartMapContainer(frame: .zero)
+        let map = container.map
         map.delegate = context.coordinator
         map.showsCompass = true
         map.showsScale = true
@@ -55,11 +96,15 @@ struct ChartMapView: UIViewRepresentable {
         press.minimumPressDuration = 0.5
         press.delegate = context.coordinator
         map.addGestureRecognizer(press)
-        return map
+        return container
     }
 
-    func updateUIView(_ map: MKMapView, context: Context) {
-        context.coordinator.sync(map)
+    func updateUIView(_ container: ChartMapContainer, context: Context) {
+        context.coordinator.sync(container.map)
+    }
+
+    static func dismantleUIView(_ container: ChartMapContainer, coordinator: Coordinator) {
+        container.map.delegate = nil
     }
 
     @MainActor
@@ -94,7 +139,7 @@ struct ChartMapView: UIViewRepresentable {
         private var driftArrow: MKPolyline?
         private var driftKey: [Double] = []
         private var trackLine: MKPolyline?
-        private var trackCount = 0
+        private var trackRevision = -1
         private var tether: MKPolyline?
         private var lastRecenter = 0
         private var lastZoomTick = 0
@@ -147,7 +192,7 @@ struct ChartMapView: UIViewRepresentable {
 
             // Boat
             if let fix = engine.fix { boatPin.coordinate = fix.coordinate }
-            boatPin.title = "Nereus"
+            boatPin.title = engine.boat.name
             updateBoatView(map)
 
             // Anchor + alarm circle
@@ -227,7 +272,7 @@ struct ChartMapView: UIViewRepresentable {
             if engine.windOverlayOn && !windWasOn { engine.requestWindGrid(for: map.region) }
             windWasOn = engine.windOverlayOn
 
-            let grid = engine.windGrid.map { "\($0.coordinate.latitude),\($0.coordinate.longitude),\($0.fetched.timeIntervalSince1970)" }.joined()
+            let grid = engine.windGrid.map { "\($0.coordinate.latitude),\($0.coordinate.longitude),\($0.fetched.timeIntervalSince1970),\($0.sample(atHour: engine.windHour)?.time.timeIntervalSince1970 ?? -1)" }.joined()
             let key = "\(engine.windOverlayOn)-\(Int(engine.windHour))-\(grid.hashValue)"
             guard key != windKey else { return }
             windKey = key
@@ -290,6 +335,9 @@ struct ChartMapView: UIViewRepresentable {
             boatPoints = min(max(CGFloat(length), BoatIcon.minPoints), 600)
             if let view = map.view(for: boatPin) {
                 view.image = BoatIcon.image(height: boatPoints)
+                view.alpha = engine.hasFreshPosition ? 1 : 0.35
+                view.isAccessibilityElement = true
+                view.accessibilityLabel = engine.boat.name + (engine.hasFreshPosition ? " position" : " last known position")
                 if let heading = engine.heading { lastHeading = heading }
                 view.transform = CGAffineTransform(rotationAngle: (lastHeading - map.camera.heading).radians)
             }
@@ -310,11 +358,26 @@ struct ChartMapView: UIViewRepresentable {
             if engine.windOverlayOn { engine.requestWindGrid(for: map.region) }
         }
 
+        private var tileGeneration = UUID()
+        private var failedTiles: Set<URL> = []
         private func installLayer(_ map: MKMapView) {
+            tileGeneration = UUID()
+            let generation = tileGeneration
+            failedTiles.removeAll()
+            DispatchQueue.main.async { [weak self] in self?.engine.chartStatus = nil }
             tiles.forEach(map.removeOverlay)
             layer = engine.mapLayer
             map.mapType = engine.mapLayer.mapType
             tiles = engine.mapLayer.makeOverlays()
+            for case let tile as ChartTileOverlay in tiles {
+                tile.onTileResult = { [weak self] url, error in
+                    DispatchQueue.main.async {
+                        guard let self, self.tileGeneration == generation else { return }
+                        if error != nil { self.failedTiles.insert(url) } else { self.failedTiles.remove(url) }
+                        self.engine.chartStatus = self.failedTiles.isEmpty ? nil : "Some chart tiles are unavailable. Check your connection or choose another map source."
+                    }
+                }
+            }
             // Tiles go under everything else; re-add vector overlays on top afterwards.
             var vectors: [MKOverlay] = []
             if let circle { vectors.append(circle) }
@@ -330,7 +393,7 @@ struct ChartMapView: UIViewRepresentable {
         }
 
         private var circleText: String {
-            engine.alarm == nil ? CircleLabel.safe(engine.units.format(engine.radius)) : CircleLabel.alarm
+            engine.alarm != nil ? engine.monitoring.title + " · " + engine.units.format(engine.radius) : (engine.circleMonitoringAvailable ? "Circle alarm ON · " : "Circle alarm OFF · ") + engine.units.format(engine.radius)
         }
 
         /// Small caption centred just below the south edge of the alarm circle.
@@ -338,14 +401,15 @@ struct ChartMapView: UIViewRepresentable {
             labelPin.coordinate = Geo.destination(from: anchor, bearing: 180, meters: engine.radius)
             if !map.annotations.contains(where: { $0 === labelPin }) { map.addAnnotation(labelPin) }
             let text = circleText
-            if text != labelText, let view = map.view(for: labelPin) {
-                labelText = text
-                view.image = CircleLabel.image(text, alarm: engine.alarm != nil)
+            let appearanceKey = text + engine.monitoring.tone.rawValue
+            if appearanceKey != labelText, let view = map.view(for: labelPin) {
+                labelText = appearanceKey
+                view.image = CircleLabel.image(text, alarm: engine.alarm != nil, caution: engine.monitoring.tone != .green)
             }
         }
 
         private func syncCircle(_ map: MKMapView, anchor: CLLocationCoordinate2D) {
-            let key = [anchor.latitude, anchor.longitude, engine.radius, engine.alarm == nil ? 0 : 1]
+            let key = [anchor.latitude, anchor.longitude, engine.radius, Double(engine.monitoring.tone == .green ? 0 : engine.monitoring.tone == .red ? 2 : 1), engine.circleMonitoringAvailable ? 1 : 0]
             guard key != circleKey else { return }
             circleKey = key
             if let circle { map.removeOverlay(circle) }
@@ -453,8 +517,8 @@ struct ChartMapView: UIViewRepresentable {
         }
 
         private func syncTrack(_ map: MKMapView) {
-            guard engine.track.count != trackCount else { return }
-            trackCount = engine.track.count
+            guard engine.trackRevision != trackRevision else { return }
+            trackRevision = engine.trackRevision
             if let trackLine { map.removeOverlay(trackLine) }
             guard engine.track.count > 1 else { trackLine = nil; return }
             var coords = engine.track.map(\.coordinate)
@@ -823,6 +887,9 @@ struct ChartMapView: UIViewRepresentable {
             case is AnchorAnnotation:
                 let view = MKAnnotationView(annotation: annotation, reuseIdentifier: "anchor")
                 view.image = AnchorIcon.image
+                view.isAccessibilityElement = true
+                view.accessibilityLabel = "Anchor position"
+                view.accessibilityHint = "Use Move Anchor or Fine-tune on the Anchor tab to adjust"
                 // The tip at the bottom of the icon sits exactly on the anchor's coordinate.
                 view.centerOffset = CGPoint(x: 0, y: -AnchorIcon.size.height / 2)
                 view.canShowCallout = true
@@ -833,6 +900,8 @@ struct ChartMapView: UIViewRepresentable {
             case let pin as HazardAnnotation:
                 let view = MKAnnotationView(annotation: annotation, reuseIdentifier: "hazard")
                 view.image = HazardIcon.image(pin.hazard?.kind ?? .other)
+                view.isAccessibilityElement = true
+                view.accessibilityLabel = "Hazard: " + (pin.hazard?.label ?? "marked hazard")
                 view.canShowCallout = true
                 let remove = UIButton(type: .system)
                 remove.setTitle("Remove", for: .normal)
@@ -898,7 +967,7 @@ struct ChartMapView: UIViewRepresentable {
             case is CircleLabelAnnotation:
                 let view = MKAnnotationView(annotation: annotation, reuseIdentifier: "circleLabel")
                 labelText = circleText
-                view.image = CircleLabel.image(labelText, alarm: engine.alarm != nil)
+                view.image = CircleLabel.image(labelText, alarm: engine.alarm != nil, caution: engine.monitoring.tone != .green)
                 view.centerOffset = CGPoint(x: 0, y: (view.image?.size.height ?? 0) / 2 + 4)   // hang below the circle edge
                 view.canShowCallout = false
                 view.isUserInteractionEnabled = false
@@ -908,6 +977,9 @@ struct ChartMapView: UIViewRepresentable {
             case is BoatAnnotation:
                 let view = MKAnnotationView(annotation: annotation, reuseIdentifier: "boat")
                 view.image = BoatIcon.image(height: boatPoints)
+                view.alpha = engine.hasFreshPosition ? 1 : 0.35
+                view.isAccessibilityElement = true
+                view.accessibilityLabel = engine.boat.name + (engine.hasFreshPosition ? " position" : " last known position")
                 view.displayPriority = .required
                 view.canShowCallout = true
                 view.zPriority = .defaultSelected
@@ -942,7 +1014,8 @@ struct ChartMapView: UIViewRepresentable {
                 return r
             case let circle as MKCircle:
                 let r = MKCircleRenderer(circle: circle)
-                let color: UIColor = engine.alarm == nil ? .systemGreen : .systemRed
+                let color = UIColor(engine.monitoring.color)
+                if !engine.circleMonitoringAvailable { r.lineDashPattern = [6, 5] }
                 r.strokeColor = color
                 r.fillColor = color.withAlphaComponent(0.15)
                 r.lineWidth = 3
@@ -1204,9 +1277,9 @@ enum CircleLabel {
     static func safe(_ radius: String) -> String { "Alarm Radius = \(radius)" }
     static let alarm = "Nereus is on the move!"
 
-    static func image(_ text: String, alarm: Bool) -> UIImage {
+    static func image(_ text: String, alarm: Bool, caution: Bool = false) -> UIImage {
         let font = UIFont.systemFont(ofSize: 11, weight: .semibold)
-        let color: UIColor = alarm ? .white : UIColor(red: 0.05, green: 0.35, blue: 0.15, alpha: 1)
+        let color: UIColor = alarm ? .white : caution ? .systemOrange : UIColor(red: 0.05, green: 0.35, blue: 0.15, alpha: 1)
         let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
         let textSize = (text as NSString).size(withAttributes: attrs)
         let size = CGSize(width: ceil(textSize.width) + 14, height: ceil(textSize.height) + 6)
@@ -1214,7 +1287,7 @@ enum CircleLabel {
             let pill = UIBezierPath(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: size.height / 2)
             (alarm ? UIColor.systemRed : UIColor.white.withAlphaComponent(0.88)).setFill()
             pill.fill()
-            (alarm ? UIColor.white : UIColor.systemGreen).setStroke()
+            (alarm ? UIColor.white : caution ? UIColor.systemOrange : UIColor.systemGreen).setStroke()
             pill.lineWidth = 1.5
             pill.stroke()
             (text as NSString).draw(at: CGPoint(x: 7, y: 3), withAttributes: attrs)

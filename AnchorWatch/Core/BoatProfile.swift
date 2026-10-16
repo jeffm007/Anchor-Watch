@@ -183,7 +183,7 @@ extension Units {
 
     /// A force in newtons, as pounds-force or kilograms-force.
     func formatForce(_ newtons: Double) -> String {
-        self == .feet ? String(format: "%.0f lb", newtons / 4.44822) : String(format: "%.0f kg", newtons / 9.80665)
+        self == .feet ? String(format: "%.0f lbf", newtons / 4.44822) : String(format: "%.0f kgf", newtons / 9.80665)
     }
 
     /// Chain and rope sizes: fractions of an inch alongside feet, millimetres alongside metres.

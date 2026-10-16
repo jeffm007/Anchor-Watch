@@ -11,6 +11,7 @@ struct BoatProfileView: View {
 
     var body: some View {
         Form {
+            Section { TextField("Boat name", text: $engine.boat.name) }
             Section {
                 length("Length overall", $engine.scope.boatLength)
                 length("Waterline length", $engine.boat.waterlineLength)
@@ -65,7 +66,7 @@ struct BoatProfileView: View {
             } header: { Text("Rode") }
         }
         .scrollDismissesKeyboard(.interactively)
-        .navigationTitle("\(boat.name) - 2005 Selene 47'")
+        .navigationTitle(boat.name + " · Boat profile")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {

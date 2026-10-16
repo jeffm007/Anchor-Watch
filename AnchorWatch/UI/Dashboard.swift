@@ -4,27 +4,30 @@ import SwiftUI
 /// The main screen's top half: boat name and status, then six tiles answering "am I OK?" at a glance.
 struct DashboardHeader: View {
     @EnvironmentObject var engine: AnchorWatchEngine
+    @Environment(\.dynamicTypeSize) private var textSize
     @State private var confirming = false
+    @State private var reviewingWarnings = false
     // `-showDrop` opens the drop sheet at launch, for screenshots.
     @State private var dropping = ProcessInfo.processInfo.arguments.contains("-showDrop")
 
     var body: some View {
-        HStack(alignment: .top) {
+        let layout = textSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6)) : AnyLayout(HStackLayout(alignment: .top, spacing: 8))
+        layout {
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(engine.boat.name.uppercased()) — ANCHOR WATCH")
-                    .font(.headline.weight(.heavy)).lineLimit(1).minimumScaleFactor(0.7)
+                Text(engine.boat.name.uppercased() + " · ANCHOR WATCH")
+                    .font(.headline.weight(.heavy)).dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                    .lineLimit(1).minimumScaleFactor(0.7)
                 subtitle
-            }
-            Spacer(minLength: 8)
-            // The status doubles as the anchor switch: drop when not anchored, raise (or silence) when anchored.
-            // Always confirmed, since raising also ends the alarm watch.
+            }.frame(maxWidth: .infinity, alignment: .leading)
             Button { if engine.anchor == nil { dropping = true } else { confirming = true } } label: { statusPill }
-                .buttonStyle(.plain)
+                .buttonStyle(.plain).frame(minHeight: 44)
+                .accessibilityLabel(engine.monitoring.title)
                 .accessibilityHint(engine.anchor == nil ? "Drop the anchor" : "Raise the anchor")
                 .confirmationDialog("Anchor watch", isPresented: $confirming, titleVisibility: .visible) {
                     if engine.alarm != nil {
                         Button("Silence Alarm") { engine.silence() }
                     }
+                    Button("Warnings") { reviewingWarnings = true }
                     Button("Retrieve Anchor") { engine.startRetrieval() }
                     Button("Raise Anchor", role: .destructive) { engine.raiseAnchor() }
                     Button("Cancel", role: .cancel) {}
@@ -32,12 +35,13 @@ struct DashboardHeader: View {
                     Text("Raising ends the watch: the circle, track and alarm all stop. Retrieve ends it too, and then shows the way from the bow to the anchor.")
                 }
                 .sheet(isPresented: $dropping) { DropAnchorSheet() }
+                .sheet(isPresented: $reviewingWarnings) { WarningReviewView() }
         }
     }
 
     @ViewBuilder private var subtitle: some View {
         if engine.sourceKind == .simulator {
-            Text("Simulated GPS · not your real position").font(.caption.bold()).foregroundStyle(.yellow)
+            Text("Simulated GPS · not your real position").font(.caption.bold()).foregroundStyle(.yellow).fixedSize(horizontal: false, vertical: true)
         } else if let fix = engine.rawFix {
             let color: Color = engine.gpsIsUnusable ? .red : engine.gpsIsPoor ? .orange : .green
             HStack(spacing: 4) {
@@ -51,35 +55,30 @@ struct DashboardHeader: View {
     }
 
     private var statusPill: some View {
-        let (text, icon, color): (String, String, Color) = switch engine.watchState {
-        case .notAnchored: ("Not anchored", "circle.dashed", .gray)
-        case .acquiringGPS: ("Acquiring GPS", "location", .orange)
-        case .gpsInterrupted: ("Monitoring interrupted", "location.slash", .red)
-        case .retrieving: ("Retrieving", "arrow.up", .purple)
-        case .awaitingFix: ("Finding anchor", "scope", .purple)
-        case .alarm: ("Alarm", "exclamationmark.octagon.fill", .red)
-        case .outside: ("Outside circle", "exclamationmark.octagon.fill", .red)
-        case .dragging: ("Dragging", "exclamationmark.triangle.fill", .red)
-        case .movingAway: ("Moving away", "exclamationmark.triangle.fill", .orange)
-        case .holding:
-            engine.holdingWarning != nil || engine.pressureLevel == .fallingFast
-                || engine.watchProblems.contains(where: { $0.state == .critical })
-                ? ("Check", "exclamationmark.triangle", .orange) : ("Holding", "checkmark.circle", .green)
+        let status = engine.monitoring
+        let title: String = switch status.title {
+        case "Circle alarm ON": "Alarm ON"
+        case "Circle alarm OFF": "Alarm OFF"
+        case "Check alarm readiness": "Check alarm"
+        case "Monitoring interrupted": "GPS interrupted"
+        default: status.title
         }
         return HStack(spacing: 4) {
-            Label(text, systemImage: icon)
-            Image(systemName: "chevron.down").font(.caption2.bold()).opacity(0.7)
+            Image(systemName: status.icon).font(.system(size: 14, weight: .semibold))
+            Text(title).font(.subheadline.bold()).fixedSize(horizontal: false, vertical: true)
+            Image(systemName: "chevron.down").font(.system(size: 10, weight: .bold))
         }
-            .font(.subheadline.bold())
-            .foregroundStyle(color == .gray ? Color.secondary : Color.white)
-            .padding(.horizontal, 10).padding(.vertical, 5)
-            .background(color.opacity(color == .gray ? 0.2 : 0.35), in: Capsule())
-            .overlay(Capsule().stroke(color.opacity(0.8), lineWidth: 1))
+        .foregroundStyle(status.color)
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(status.color.opacity(0.18), in: Capsule())
+        .overlay(Capsule().stroke(status.color.opacity(0.65)))
     }
+
 }
 
 struct DashboardTiles: View {
     @EnvironmentObject var engine: AnchorWatchEngine
+    @Environment(\.dynamicTypeSize) private var textSize
     let openConditions: () -> Void
     let openDepth: () -> Void
     let openAnchoring: () -> Void
@@ -87,17 +86,29 @@ struct DashboardTiles: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
-            Grid(horizontalSpacing: 8, verticalSpacing: 8) {
-                GridRow {
+            if textSize.isAccessibilitySize {
+                VStack(spacing: 8) {
                     tap(wind, openConditions)
                     tap(depth, openDepth)
                     tap(scope, openAnchoring)
-                }
-                GridRow {
                     tap(anchor, openAnchoring)
-                    // With hazards marked, the Tide tile gives way to Clearance (the tide is in Depth at High Tide).
-                    if engine.anchor != nil && !engine.hazards.isEmpty { clearance } else { tap(tide(now: context.date), openDepth) }
+                    if engine.anchor != nil && !engine.hazards.isEmpty { clearance }
+                    else { tap(tide(now: context.date), openDepth) }
                     distance
+                }
+            } else {
+                Grid(horizontalSpacing: 8, verticalSpacing: 8) {
+                    GridRow {
+                        tap(wind, openConditions)
+                        tap(depth, openDepth)
+                        tap(scope, openAnchoring)
+                    }
+                    GridRow {
+                        tap(anchor, openAnchoring)
+                        if engine.anchor != nil && !engine.hazards.isEmpty { clearance }
+                        else { tap(tide(now: context.date), openDepth) }
+                        distance
+                    }
                 }
             }
         }
@@ -123,52 +134,19 @@ struct DashboardTiles: View {
 
     private var scope: some View {
         DashboardTile(title: "Scope", value: engine.liveScopeRatio.map { String(format: "%.1f:1", $0) } ?? "--",
-                      detail: "\(units.format(engine.rodeOut)) \(engine.rodeOutSet == nil ? "suggested" : "out")")
+                      detail: "\(units.format(engine.rodeOut)) \(engine.armed && !engine.rodeConfirmed ? "unconfirmed" : engine.rodeOutSet == nil ? "suggested" : "out")")
     }
 
     private var anchor: some View {
-        switch engine.watchState {
-        case .acquiringGPS, .gpsInterrupted:
-            return DashboardTile(title: "GPS", value: "Unavailable", detail: engine.gpsFreshnessText, color: .orange)
-        case .retrieving:
-            return DashboardTile(title: "Anchor", value: "Retrieving", detail: "Circle watch ended")
-        case .notAnchored:
-            return DashboardTile(title: "Anchor", value: "Not set", detail: "Drop it below")
-        case .awaitingFix:
-            let progress: String = if case .collecting(let m) = engine.estimatePending {
-                " \(Int(m))/\(Int(AnchorEstimate.minMinutes)) min"
-            } else { "" }
-            return DashboardTile(title: "Anchor", value: "Not armed", detail: "Waiting for the swing fit" + progress, color: .purple)
-        case .alarm(let reason):
-            return DashboardTile(title: "Anchor", value: "ALARM", detail: reason.message, color: .red)
-        case .outside(let distance):
-            return DashboardTile(title: "Anchor", value: "Outside", detail: "\(units.format(distance - engine.radius)) past the circle", color: .red)
-        case .dragging(let drift):
-            return DashboardTile(title: "Anchor", value: "Dragging",
-                                 detail: "\(units.format(drift.distance)) \(Compass.name(drift.bearing)) in \(Int(drift.minutes.rounded())) min", color: .red)
-        case .movingAway(let rate):
-            return DashboardTile(title: "Anchor", value: "Moving away",
-                                 detail: "+\(units.format(rate)) per min", color: .orange)
-        case .holding:
-            return DashboardTile(title: "Anchor", value: "Secure", detail: swingDetail)
+        let status = engine.monitoring
+        let title: String = switch engine.watchState {
+        case .holding: status.tone == .green ? "Holding" : "Check alarm"
+        case .awaitingFix, .notAnchored: "Alarm OFF"
+        case .acquiringGPS, .gpsInterrupted: "GPS interrupted"
+        default: status.title
         }
-    }
-
-    /// What the swing fit says, since it's the only check on where the anchor really is.
-    private var swingDetail: String {
-        if let estimate = engine.anchorEstimate, let anchor = engine.anchor {
-            let off = Geo.distance(anchor, estimate.center)
-            return off <= estimate.semiMajor
-                ? "Swing agrees with mark"
-                : "Swing: \(units.format(off)) \(Compass.name(Geo.bearing(from: anchor, to: estimate.center))) of mark"
-        }
-        switch engine.estimatePending {
-        case .collecting(let minutes): return "Finding by swing \(Int(minutes))/\(Int(AnchorEstimate.minMinutes)) min"
-        case .tooUncertain: return "Need more swing to fix it"
-        case nil:
-            let toward = engine.fix.flatMap { fix in engine.anchor.map { Compass.name(Geo.bearing(from: fix.coordinate, to: $0)) } }
-            return "No drag" + (toward.map { " · lies \($0)" } ?? "")
-        }
+        let detail: String = engine.awaitingSwingFix ? "Place anchor to enable" : status.detail
+        return DashboardTile(title: "Anchor", value: title, detail: detail, color: status.color)
     }
 
     /// Gap from the stern at full swing to the nearest marked hazard.
@@ -200,13 +178,14 @@ struct DashboardTiles: View {
         }
         let d = engine.distance ?? 0
         let color: Color = d > engine.radius ? .red : d > engine.radius * 0.8 ? .orange : .primary
-        return DashboardTile(title: "Distance", value: engine.distance.map(units.format) ?? "--",
+        return DashboardTile(title: "Distance", value: engine.hasFreshPosition ? engine.distance.map(units.format) ?? "--" : "--",
                              detail: "Max \(units.format(engine.maxDistance)) · alarm \(units.format(engine.radius))",
                              color: color)
     }
 }
 
 struct DashboardTile: View {
+    @Environment(\.dynamicTypeSize) private var textSize
     let title: String
     let value: String
     let detail: String
@@ -227,11 +206,14 @@ struct DashboardTile: View {
                 Text(value).font(.system(.title2, design: .rounded).bold()).monospacedDigit()
                     .foregroundStyle(color).lineLimit(1).minimumScaleFactor(0.6)
             }
-            Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.7)
+            Text(detail).font(.caption2).foregroundStyle(.secondary)
+                .lineLimit(textSize.isAccessibilitySize ? nil : 2)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 10).padding(.vertical, 8)
         .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -242,8 +224,13 @@ struct NoticesCard: View {
     let openConditions: () -> Void
     let openAlerts: () -> Void
     let openWatchCheck: () -> Void
-    /// Notices hidden with a tap, and when. Each comes back after `hideFor` if it still applies.
+    var reviewMode = false
+    /// Advisory hides expire after an hour; previous-visit dismissal lasts for this anchoring session.
+    @AppStorage("anchorwatch.dismissedPreviousVisit") private var dismissedPreviousVisit = ""
+    /// Other advisory notices can be restored from the hidden-notices control.
     @State private var hidden: [String: Date] = [:]
+    @State private var showAll = false
+    @State private var pendingNoticeAction: (() -> Void)?
     private let hideFor: TimeInterval = 3600
 
     private struct Notice: Identifiable {
@@ -253,6 +240,7 @@ struct NoticesCard: View {
         let title: String
         let detail: String
         let action: () -> Void
+        var canHide = true
     }
 
     private var notices: [Notice] {
@@ -261,10 +249,10 @@ struct NoticesCard: View {
             for problem in engine.watchProblems.sorted(by: { $0.state == .critical && $1.state != .critical }) {
                 list.append(Notice(id: "check-\(problem.title)", icon: "exclamationmark.octagon",
                                    color: problem.state == .critical ? .red : .orange,
-                                   title: problem.title, detail: "The watch check has the details", action: openWatchCheck))
+                                   title: problem.title, detail: "Open the watch check", action: openWatchCheck, canHide: problem.state != .critical))
             }
         }
-        if let visit = engine.previousVisit {
+        if let visit = engine.previousVisit, reviewMode || dismissedPreviousVisit != previousVisitKey {
             let units = engine.units
             list.append(Notice(id: "visit-\(visit.id)", icon: "clock.arrow.circlepath", color: .blue,
                                title: "Anchored here before",
@@ -278,7 +266,7 @@ struct NoticesCard: View {
                                detail: String(format: "%.1f hPa in 3 hours: ", change) + (fast ? "gale risk." : "wind likely."),
                                action: openConditions))
         }
-        for alert in engine.nwsAlerts {
+        for alert in engine.activeAlerts {
             list.append(Notice(id: "nws-\(alert.id)", icon: "exclamationmark.triangle", color: alert.severity.color,
                                title: alert.event,
                                detail: alert.ends.map { "Until \($0.formatted(.dateTime.weekday(.abbreviated).hour().minute()))" } ?? "Weather alert",
@@ -292,17 +280,29 @@ struct NoticesCard: View {
         return list
     }
 
+    private var previousVisitKey: String {
+        guard let visit = engine.previousVisit else { return "" }
+        return visit.id.uuidString + ":" + String(engine.anchorDropped?.timeIntervalSince1970 ?? 0)
+    }
+
+    private func dismissNotice(_ notice: Notice) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            if notice.id.hasPrefix("visit-") { dismissedPreviousVisit = previousVisitKey }
+            else { hidden[notice.id] = Date() }
+        }
+    }
+
     var body: some View {
-        let all = notices
+        let all = notices.filter { reviewMode || !engine.hideWarningBanners || !$0.canHide }
         let now = Date()
-        let shown = all.filter { n in hidden[n.id].map { now.timeIntervalSince($0) >= hideFor } ?? true }
+        let shown = all.filter { n in reviewMode || !n.canHide || (hidden[n.id].map { now.timeIntervalSince($0) >= hideFor } ?? true) }
         let hiddenCount = all.count - shown.count
-        if !all.isEmpty {
+        Group { if !all.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(shown.prefix(2)) { n in
+                ForEach(shown.prefix(reviewMode ? shown.count : 1)) { n in
                     HStack(alignment: .top, spacing: 10) {
-                        // Tapping the notice hides it; the chevron opens the screen it's about.
-                        Button { withAnimation { hidden[n.id] = Date() } } label: {
+                        // The card opens details; hiding is a separate explicit action.
+                        Button(action: n.action) {
                             HStack(alignment: .top, spacing: 10) {
                                 Image(systemName: n.icon).foregroundStyle(n.color).font(.title3)
                                 VStack(alignment: .leading, spacing: 1) {
@@ -314,18 +314,30 @@ struct NoticesCard: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityHint("Hides this notice for an hour")
-                        Button(action: n.action) {
-                            Image(systemName: "chevron.right").font(.subheadline.bold()).foregroundStyle(.secondary)
-                                .frame(width: 32, height: 32)
+                        .accessibilityHint("Opens details")
+                        if n.canHide && !reviewMode {
+                            Button { dismissNotice(n) } label: {
+                                Image(systemName: "xmark").frame(width: 44, height: 44)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(n.id.hasPrefix("visit-") ? "Dismiss previous visit" : "Hide " + n.title + " for an hour")
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Open details")
                     }
+                    .contentShape(Rectangle())
+                    .simultaneousGesture(DragGesture(minimumDistance: 20).onEnded { gesture in
+                        if n.canHide && !reviewMode, gesture.translation.width < -60,
+                           abs(gesture.translation.width) > abs(gesture.translation.height) * 1.5 {
+                            dismissNotice(n)
+                        }
+                    })
+                    .accessibilityActions {
+                        if n.canHide && !reviewMode { Button("Dismiss notice") { dismissNotice(n) } }
+                    }
+                    .transition(.move(edge: .leading).combined(with: .opacity))
                 }
                 HStack {
-                    if shown.count > 2 {
-                        Text("+\(shown.count - 2) more").font(.caption2).foregroundStyle(.secondary)
+                    if shown.count > 1 && !reviewMode {
+                        Button("Show all \(shown.count) notices") { showAll = true }.font(.caption)
                     }
                     Spacer()
                     if hiddenCount > 0 {
@@ -338,6 +350,18 @@ struct NoticesCard: View {
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+        } }
+        .sheet(isPresented: $showAll, onDismiss: { pendingNoticeAction?(); pendingNoticeAction = nil }) {
+            NavigationStack {
+                List(notices) { notice in
+                    Button(action: { pendingNoticeAction = notice.action; showAll = false }) {
+                        Label { VStack(alignment: .leading) { Text(notice.title).bold(); Text(notice.detail).font(.caption) } }
+                            icon: { Image(systemName: notice.icon).foregroundStyle(notice.color) }
+                    }.foregroundStyle(.primary)
+                }
+                .navigationTitle("Notices")
+                .toolbar { Button("Done") { showAll = false } }
+            }
         }
     }
 }
@@ -362,11 +386,11 @@ struct OutlookBanner: View {
             guard let risk = engine.nextRisk else {
                 return ("info.circle", engine.environmentCoverage.complete ? .green : .orange,
                         engine.outlookSummaryTitle,
-                        engine.environmentCoverage.summary)
+                        engine.forecastStatusText)
             }
             return (risk.severity == .danger ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill",
                     risk.severity == .danger ? .red : .orange,
-                    "\(countdown(to: risk.start, now: now)) · \(risk.title)", OutlookList.span(risk) + " · " + engine.environmentCoverage.summary)
+                    "\(countdown(to: risk.start, now: now)) · \(risk.title)", OutlookList.span(risk) + " · " + engine.forecastStatusText)
         }()
         return HStack(spacing: 10) {
             Image(systemName: icon).font(.title3).foregroundStyle(color)
@@ -394,6 +418,7 @@ struct OutlookBanner: View {
 struct OutlookList: View {
     @EnvironmentObject var engine: AnchorWatchEngine
     @Environment(\.dismiss) private var dismiss
+    var includeHidden = false
 
     var body: some View {
         NavigationStack {
@@ -406,10 +431,10 @@ struct OutlookList: View {
                 }
                 if engine.outlook.isEmpty {
                     Text("No issues found in the available inputs. Check coverage above; missing inputs are not an all clear.").foregroundStyle(.secondary)
-                } else if engine.visibleOutlook.isEmpty {
+                } else if engine.visibleOutlook.isEmpty && !includeHidden {
                     Text("No visible warnings. Hidden warnings still apply; check data coverage above.").foregroundStyle(.secondary)
                 }
-                ForEach(engine.visibleOutlook) { item in
+                ForEach(includeHidden ? engine.outlook : engine.visibleOutlook) { item in
                     HStack(alignment: .top, spacing: 12) {
                         Image(systemName: Self.icon(item.kind)).foregroundStyle(Self.color(item.severity)).frame(width: 24)
                         VStack(alignment: .leading, spacing: 2) {
@@ -518,11 +543,33 @@ struct DropAnchorSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     private var units: Units { engine.units }
+    @State private var deployedRode = 0.0
+    @FocusState private var editingRode: Bool
+
+    private var rodeIsValid: Bool {
+        let meters = deployedRode / units.perMeter, carried = BoatMath.rodeCarried(engine.boat)
+        return meters.isFinite && meters > 0 && (carried <= 0 || meters <= carried)
+    }
+    private var settledReach: Double {
+        let rode = deployedRode / units.perMeter, height = engine.liveDepth + engine.scope.bowHeight
+        return (rode > height ? sqrt(rode * rode - height * height) : 0) + ScopeCalculator.gpsFromBow(engine.scope)
+    }
     private var calm: Bool { (engine.windNow?.speed ?? 0) < AnchorPlacement.minWindKnots }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        NavigationStack { ScrollView { VStack(alignment: .leading, spacing: 16) {
             Text("Drop the anchor").font(.title2.bold())
+            LabeledContent("Actual rode paid out (" + units.symbol + ")") {
+                TextField("Rode", value: $deployedRode, format: .number.precision(.fractionLength(0...1)))
+                    .keyboardType(.decimalPad).multilineTextAlignment(.trailing).focused($editingRode)
+                    .accessibilityLabel("Actual rode paid out in " + units.symbol)
+            }
+            Text("Confirm the amount you have deployed. Recommendation: " + units.format(engine.rodeSuggested) + ". Your choice is saved until you raise the anchor.")
+                .font(.footnote).foregroundStyle(.secondary)
+            if !rodeIsValid {
+                Text("Enter a positive rode length no greater than the amount carried (" + units.format(BoatMath.rodeCarried(engine.boat)) + ").")
+                    .font(.footnote).foregroundStyle(.orange)
+            }
             if let problem = gpsProblem {
                 Label(problem, systemImage: "exclamationmark.triangle.fill")
                     .fixedSize(horizontal: false, vertical: true)
@@ -532,10 +579,10 @@ struct DropAnchorSheet: View {
                 choice("Anchor going down now", detail: "Marked just ahead of the bow, \(units.format(ScopeCalculator.gpsFromBow(engine.scope))) from the phone.",
                        icon: "arrow.down.to.line", moment: .goingDown)
                 choice("Boat has settled on the rode",
-                       detail: "Marked \(units.format(engine.settledOffset)) upwind: a full scope distance with \(units.format(engine.rodeOut)) out.",
+                       detail: "Marked \(units.format(settledReach)) upwind: a full scope distance with \(units.format(deployedRode / units.perMeter)) out.",
                        icon: "arrow.uturn.backward", moment: .settled)
                 if calm {
-                    Label("Too little wind to tell which way is upwind. If you choose settled, the circle alarm waits for the swing fit (about 20 minutes) before arming.",
+                    Label("Too little wind to locate the anchor from a settled boat. The circle alarm stays OFF until you place the mark or a swing estimate succeeds. A reminder sounds after 5 minutes.",
                           systemImage: "wind")
                         .font(.callout).foregroundStyle(.orange)
                 }
@@ -547,15 +594,17 @@ struct DropAnchorSheet: View {
             .foregroundStyle(.white)
             .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
         }
-        .padding(20)
+        .padding(20) }
+        .toolbar { ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("Done") { editingRode = false } } }
         .foregroundStyle(.white)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
         .presentationBackground(Color(white: 0.17))
         .preferredColorScheme(.dark)
         // Full GPS accuracy while choosing, so the drop gets a precise position.
-        .onAppear { engine.preparingDrop = true }
+        .onAppear { engine.preparingDrop = true; deployedRode = engine.rodeOut * units.perMeter }
         .onDisappear { engine.preparingDrop = false }
+        }
     }
 
     private var gpsProblem: String? {
@@ -568,7 +617,7 @@ struct DropAnchorSheet: View {
 
     private func choice(_ title: String, detail: String, icon: String, moment: AnchorWatchEngine.DropMoment) -> some View {
         Button {
-            engine.dropAnchor(moment)
+            engine.dropAnchor(moment, rode: deployedRode / units.perMeter)
             dismiss()
         } label: {
             HStack(spacing: 14) {
@@ -585,6 +634,7 @@ struct DropAnchorSheet: View {
             .background(Color.blue.opacity(0.55), in: RoundedRectangle(cornerRadius: 14))
         }
         .buttonStyle(.plain)
+        .disabled(!rodeIsValid)
     }
 }
 
@@ -687,10 +737,11 @@ struct NightModeView: View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             ZStack {
                 Color.black.ignoresSafeArea()
-                VStack(spacing: 14) {
-                    Text(status.uppercased()).font(.title2.weight(.heavy)).tracking(2)
+                ScrollView { VStack(spacing: 14) {
+                    Text(engine.monitoring.title.uppercased()).font(.title2.weight(.heavy))
+                    Text(engine.monitoring.detail).font(.footnote).multilineTextAlignment(.center)
                     VStack(spacing: 0) {
-                        Text(engine.distance.map(units.format) ?? "--")
+                        Text(engine.hasFreshPosition ? engine.distance.map(units.format) ?? "--" : "--")
                             .font(.system(size: 76, weight: .bold, design: .rounded)).monospacedDigit()
                             .minimumScaleFactor(0.5).lineLimit(1)
                         Text("from the anchor · alarm at \(units.format(engine.radius))").font(.subheadline)
@@ -703,13 +754,20 @@ struct NightModeView: View {
                         if let fix = engine.fix { Text("±\(units.format(fix.accuracy))") }
                     }
                     .font(.footnote.monospacedDigit())
+                    if let failure = engine.audioFailure {
+                        Text("Siren unavailable: " + failure).font(.headline).multilineTextAlignment(.center)
+                    }
                     if let alarm = engine.alarm {
-                        Text(alarm.message).font(.headline).multilineTextAlignment(.center)
+                        Text(engine.alarmHeadline ?? alarm.message).font(.headline).multilineTextAlignment(.center)
                         Button { engine.silence() } label: {
                             Text("SILENCE").font(.title3.bold()).frame(maxWidth: .infinity).padding(.vertical, 16)
                         }
                         .foregroundStyle(.black)
                         .background(red, in: RoundedRectangle(cornerRadius: 14))
+                    }
+                    if engine.awaitingSwingFix {
+                        Button("Place anchor on chart") { dismiss(); engine.tab = .watch; engine.placingAnchor = true; engine.pokeControls() }
+                            .buttonStyle(.bordered)
                     }
                     if showExit {
                         Button { dismiss() } label: {
@@ -719,7 +777,7 @@ struct NightModeView: View {
                     }
                 }
                 .foregroundStyle(red)
-                .padding(20)
+                .padding(20) }
             }
             .contentShape(Rectangle())
             .onTapGesture {
@@ -744,20 +802,7 @@ struct NightModeView: View {
         }
     }
 
-    private var status: String {
-        switch engine.watchState {
-        case .notAnchored: "Not anchored"
-        case .acquiringGPS: "Acquiring GPS"
-        case .gpsInterrupted: "Monitoring interrupted"
-        case .retrieving: "Retrieving"
-        case .awaitingFix: "Finding anchor"
-        case .alarm: "Alarm"
-        case .outside: "Outside circle"
-        case .dragging: "Dragging"
-        case .movingAway: "Moving away"
-        case .holding: "Holding"
-        }
-    }
+
 }
 
 /// North-up sketch of the anchorage in red: alarm and swing circles, the anchor, the boat and the last half hour.
@@ -775,7 +820,7 @@ struct NightRadar: View {
                 return CGPoint(x: c.x + o.east * scale, y: c.y - o.north * scale)
             }
             func ring(_ r: Double) -> Path { Path(ellipseIn: CGRect(x: c.x - r * scale, y: c.y - r * scale, width: 2 * r * scale, height: 2 * r * scale)) }
-            ctx.stroke(ring(engine.radius), with: .color(red), lineWidth: 2)
+            ctx.stroke(ring(engine.radius), with: .color(red), style: StrokeStyle(lineWidth: 2, dash: engine.circleMonitoringAvailable ? [] : [5, 4]))
             ctx.stroke(ring(engine.swingRadius), with: .color(red.opacity(0.5)), style: StrokeStyle(lineWidth: 1, dash: [5, 5]))
             let recent = engine.track.filter { Date().timeIntervalSince($0.timestamp) * max(engine.simTimeScale, 1) <= 1800 }
             if recent.count > 1 {
@@ -784,7 +829,7 @@ struct NightRadar: View {
                 ctx.stroke(trail, with: .color(red.opacity(0.6)), lineWidth: 1.5)
             }
             ctx.draw(Text(anchorGlyph).font(.title3).foregroundStyle(red), at: c)
-            if let fix = engine.fix {
+            if engine.hasFreshPosition, let fix = engine.fix {
                 let b = p(fix.coordinate)
                 ctx.fill(Path(ellipseIn: CGRect(x: b.x - 6, y: b.y - 6, width: 12, height: 12)), with: .color(red))
             }
@@ -856,5 +901,102 @@ struct RetrieveView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(white: 0.08).ignoresSafeArea())
         .preferredColorScheme(.dark)
+    }
+}
+
+
+extension AnchorWatchEngine.MonitoringPresentation {
+    var color: Color {
+        switch tone {
+        case .gray: .secondary
+        case .green: .green
+        case .orange: .orange
+        case .red: .red
+        case .purple: .purple
+        }
+    }
+}
+
+struct MonitoringActionCard: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+    @Environment(\.dynamicTypeSize) private var textSize
+    var openWatchCheck: () -> Void = {}
+
+    var body: some View {
+        if engine.armed && (engine.awaitingSwingFix || !engine.rodeConfirmed) {
+            VStack(alignment: .leading, spacing: 8) {
+                if engine.awaitingSwingFix {
+                    Text("Confirm anchor position").font(.subheadline.bold())
+                    Text("Place the mark to enable the circle alarm. A swing estimate may take 20 minutes or longer.").font(.caption)
+                    Button("Place anchor on chart") { engine.tab = .watch; engine.placingAnchor = true; engine.pokeControls() }
+                        .buttonStyle(.borderedProminent).tint(.orange).foregroundStyle(.black)
+                }
+                if !engine.rodeConfirmed {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Rode: " + engine.units.format(engine.rodeOut) + " unconfirmed").font(.caption).fixedSize(horizontal: false, vertical: true)
+                        if textSize.isAccessibilitySize {
+                            VStack(alignment: .leading) { rodeActions }
+                        } else { HStack { rodeActions } }
+                    }.buttonStyle(.bordered).font(.caption)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(10)
+            .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
+        } else if engine.armed && engine.monitoring.tone != .green && engine.alarm == nil {
+            Button(action: openWatchCheck) {
+                Label(engine.monitoring.detail, systemImage: engine.monitoring.icon)
+                    .font(.footnote).frame(maxWidth: .infinity, alignment: .leading).padding(10)
+            }
+            .foregroundStyle(engine.monitoring.color)
+            .background(engine.monitoring.color.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+    @ViewBuilder private var rodeActions: some View {
+        Button("Confirm rode") { engine.confirmRode(engine.rodeOut) }
+        Button("Edit rode") { engine.tab = .anchor }
+    }
+
+}
+
+
+/// A permanent route to advisories, including those hidden from the dashboard.
+struct WarningReviewView: View {
+    @EnvironmentObject var engine: AnchorWatchEngine
+    @Environment(\.dismiss) private var dismiss
+    @State private var outlook = false
+    @State private var alerts = false
+    @State private var readiness = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Label(engine.hideWarningBanners ? "Warning banners hidden" : "Warning banners shown", systemImage: engine.hideWarningBanners ? "eye.slash" : "eye")
+                    Label(engine.muteAdvisoryNotifications ? "Advisory notifications silenced" : "Advisory notifications enabled", systemImage: engine.muteAdvisoryNotifications ? "bell.slash" : "bell")
+                }
+                Section("Review") {
+                    Button { outlook = true } label: {
+                        Label("Forecast warnings (\(engine.outlook.count))", systemImage: "clock.badge.exclamationmark")
+                    }
+                    Button { alerts = true } label: {
+                        Label("Weather alerts (\(engine.activeAlerts.count))", systemImage: "cloud.bolt")
+                    }
+                    Button { readiness = true } label: { Label("Alarm readiness", systemImage: "checkmark.shield") }
+                }
+                Section("Current notices") {
+                    NoticesCard(openAnchoring: { engine.tab = .anchor; dismiss() },
+                                openConditions: { engine.tab = .weather; dismiss() },
+                                openAlerts: { alerts = true }, openWatchCheck: { readiness = true }, reviewMode: true)
+                    Text("Includes notices hidden from the dashboard. Forecast warnings also include individually hidden items. Anchor alarms and critical monitoring warnings remain active.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Warnings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button("Done") { dismiss() } }
+        }
+        .sheet(isPresented: $outlook) { OutlookList(includeHidden: true) }
+        .sheet(isPresented: $alerts) { AlertsView() }
+        .sheet(isPresented: $readiness) { WatchCheckView() }
     }
 }

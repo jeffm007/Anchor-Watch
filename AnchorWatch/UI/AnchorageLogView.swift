@@ -7,6 +7,13 @@ struct AnchorageLogView: View {
 
     var body: some View {
         List {
+if let error = engine.persistenceError {
+                                    VStack(alignment: .leading) {
+                                        Text(error).foregroundStyle(.orange)
+                                        Button("Retry anchorage log") { engine.retrySavingAnchorages() }
+                                    }.font(.caption)
+                                }
+
             if engine.anchorages.isEmpty {
                 Text("Each time you raise the anchor after ten minutes or more, the stay is saved here: where, depth, rode, bottom, how far you swung and the track.")
                     .foregroundStyle(.secondary)

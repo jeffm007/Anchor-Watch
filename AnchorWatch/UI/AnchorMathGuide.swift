@@ -28,7 +28,7 @@ private enum AnchorMathGuide {
         Boat Profile  → A, A_u, w
         Conditions    → wind, gust, current,
                         waves, bottom, rode
-        Water tab → h at high water
+        Water tab + chosen tide → h
                   ↓
         load at gusts  H
                   ↓
@@ -39,7 +39,8 @@ private enum AnchorMathGuide {
                   ↓
         safe gust limit, rode needed
         """),
-        .text("Every calculation uses the **height of the bow roller above the seabed at high water**, because that's when scope is shortest:"),
+        .text("**Planning scenario · estimated capacity** uses the conditions selected on Anchor. The separate forecast summary uses deployed rode and hourly forecast assessments, with predicted depth/current when usable; it assumes 0.3 m waves and 0.5 kt current when current data is missing. These may differ from the manually selected planning conditions. The summary identifies incomplete inputs, and its warning time is a forecast hour—not a period of guaranteed safety before that time."),
+        .text("The calculation uses the **bow roller height above the seabed at the selected tide**: **Low tide**, **Now** or **High tide** on Anchor. The forecast assessment recalculates for each hour’s predicted depth and current. High water usually gives the shortest scope for fixed deployed rode:"),
         .formula("h = depth + tide rise + bow roller height"),
     ]
 
@@ -174,7 +175,7 @@ private enum AnchorMathGuide {
         }
         return [
             .heading("10. Anchor holding (rough)"),
-            .text("Holding is taken as a multiple of the anchor's weight, set by anchor type and bottom. These ratios are conservative readings of published pull tests, and they are the least certain numbers in the app: the same anchor can hold twice or half as much depending on how well it set."),
+            .text("Holding is taken as a multiple of the anchor's weight, set by anchor type and bottom. These are model assumptions, not a certified capacity or an independently validated prediction for your anchor. Actual holding depends strongly on the seabed, burial and how the anchor was set."),
             .formula(([header] + rows).joined(separator: "\n")),
             .formula("""
             holding = ratio × anchor weight (kg)
@@ -195,22 +196,23 @@ private enum AnchorMathGuide {
         .text("Two gust speeds, and the lower one wins:"),
         .bullets([
             "**Chain lift-off gust** (section 7): above it, the anchor starts being pulled upward.",
-            "**Holding gust**: the gust at which H reaches holding ÷ \(n(A.holdingSafety, 1)), with holding taken flat (efficiency 100%), since below lift-off the pull is flat.",
+            "**Holding gust**: found by repeatedly evaluating gust load, chain shape, bottom friction and pull-angle efficiency. It is the gust at which the estimated load reaching the anchor reaches angle-adjusted holding ÷ \(n(A.holdingSafety, 1)).",
         ]),
-        .text("**Set gust warning to N kt** copies it into Settings (clamped to 10–50 kt), so the wind warnings on the main screen fire at your boat's real limit."),
+        .text("**Set gust warning to N kt** copies it into Settings (clamped to 10–50 kt), to set the advisory gust threshold. This changes a warning setting, not the actual anchoring system or a measured vessel limit. Advisory banners and weather/barometer notifications can be suppressed in Settings → Warnings; anchor alarms remain active."),
         .heading("12. The status line"),
         .formula("""
-        At risk of dragging, if any of:
-          H > holding
+        Exceeds modeled limits, if any of:
+          anchor load > holding
           θ ≥ 10°
           rode out ≤ h
 
         Marginal, if any of:
-          H > holding / \(n(A.holdingSafety, 1))
+          anchor load > holding / \(n(A.holdingSafety, 1))
           θ > 0° (chain lifting the shank)
 
-        Holding well: none of the above
+        Within modeled limits: none of the above
         """),
+        .text("These are modeled capacity limits, not confirmation that the anchor is holding."),
     ]
 
     // MARK: Worked example
@@ -291,7 +293,7 @@ private enum AnchorMathGuide {
 
     static let swing: [GuideTopic.Block] = [
         .heading("14. Finding the anchor from the swing"),
-        .text("Where you marked the anchor is a guess: GPS error, which way the bow pointed, and how far the anchor dragged while it set. Once the boat has swung for a while, the track itself says where the anchor is."),
+        .text("Where you marked the anchor is a guess: GPS error, which way the bow pointed, and how far the anchor dragged while it set. A sufficient swing track can support an estimate of the anchor position; it is not a direct measurement."),
         .text("At anchor the phone moves on (or inside) a circle **centred on the anchor**. Its radius is the rode's reach plus the bow-to-phone distance, because the bow points at the anchor. The outer edge of the track traces that circle; fit a circle to it and the centre is the anchor."),
         .heading("Step 1: wait for enough track"),
         .bullets([
@@ -338,10 +340,10 @@ private enum AnchorMathGuide {
         """),
         .bullets([
             "**Free fit** (centre and radius) when the edge covers \(Int(S.freeFitArc))° of swing or more.",
-            "**Fixed radius** below that: r is held at the scope calculator's reach plus half the boat length, and only the centre moves. A short arc can't tell a big circle from a small one, but with r known it still finds the centre.",
+            "**Fixed radius** below that: r is held at the deployed-rode reach plus half the boat length, and only the centre moves. A short arc can't tell a big circle from a small one, so the estimate depends on that assumed radius.",
             "Steps 3 and 4 run three times, re-picking the edge round each new centre.",
         ]),
-        .tip("A free fit also measures the radius. If it comes out well short of the scope calculator's, you have less rode out, or less reach, than you think."),
+        .tip("A free fit estimates the radius. A smaller result can reflect slack, incomplete swing, GPS uncertainty or incorrect deployed-rode inputs; verify aboard before changing the mark or rode."),
         .heading("Step 5: how sure is it?"),
         .text("The fit's covariance gives an error ellipse round the centre:"),
         .formula("""
@@ -359,7 +361,7 @@ private enum AnchorMathGuide {
         b = \(n(S.confidenceScale)) × √(m − s)   short axis
         θ = ½ atan2(2Cxy, Cxx − Cyy)
         """),
-        .text("The \(n(S.confidenceScale)) scales a one-sigma ellipse to cover about two times in three, the same as the GPS ± figure. Both axes are at least \(n(S.floorMeters, 0)) m, because GPS error drifts too slowly to average away. If the long axis is over \(n(S.maxSemiMajor, 0)) m, nothing is shown: \"Not enough swing yet\"."),
+        .text("The \(n(S.confidenceScale)) scales a one-sigma ellipse to cover about two times in three, as a nominal model interpretation, not a guaranteed real-world containment probability. Both axes are at least \(n(S.floorMeters, 0)) m, because GPS error drifts too slowly to average away. If the long axis is over \(n(S.maxSemiMajor, 0)) m, nothing is shown: \"Not enough swing yet\"."),
         .heading("Step 6: wind cross-check"),
         .text("With \(n(S.windMinKnots, 0)) kt or more of forecast wind, the anchor should lie upwind of the boat, a radius away:"),
         .formula("""

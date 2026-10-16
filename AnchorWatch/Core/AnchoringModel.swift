@@ -209,6 +209,17 @@ enum AnchorMath {
         return (height * height + 2 * height * load / weight).squareRoot()
     }
 
+    /// Greatest water depth where the carried chain retains the rode margin at this load.
+    /// Nil when even the bow height cannot be covered while keeping that margin.
+    static func deepestChainDepth(length: Double, load: Double, weight: Double, bowHeight: Double) -> Double? {
+        guard length > 0, weight > 0, load >= 0, bowHeight >= 0 else { return nil }
+        let usable = length / rodeMargin
+        let a = load / weight
+        let height = usable * usable / (hypot(a, usable) + a)
+        let depth = height - bowHeight
+        return depth > 0 ? depth : nil
+    }
+
     /// Shape of a chain rode of `length` hanging between the seabed and a bow `height` up, under horizontal pull `load`.
     /// Rope is drawn as a straight line, which is close enough for nylon that has little weight in water.
     static func shape(length: Double, height: Double, load: Double, weight: Double, samples: Int = 40) -> RodeShape {
@@ -306,15 +317,16 @@ enum AnchorMath {
         // The gust at which the pull reaching the anchor hits holding ÷ safety. Friction depends on how much chain
         // is still down, which depends on the pull, so it's found by bisection on the gust speed.
         let holdingGust = fullHolding.map { full -> Double in
-            func atAnchor(_ g: Double) -> Double {
-                let h = self.load(b, wind: g, current: c.current, waveHeight: c.waveHeight, windArea: area).design
-                return anchorLoad(h, length: c.rodeOut, height: height, weight: weight, bottom: c.bottom)
+            func withinHolding(_ g: Double) -> Bool {
+                let pull = self.load(b, wind: g, current: c.current, waveHeight: c.waveHeight, windArea: area).design
+                let angle = self.shape(length: c.rodeOut, height: height, load: pull, weight: weight).shankAngle
+                let target = full * angleEfficiency(angle) / holdingSafety
+                return anchorLoad(pull, length: c.rodeOut, height: height, weight: weight, bottom: c.bottom) < target
             }
-            let target = full / holdingSafety
-            if atAnchor(0) >= target { return 0 }
+            if !withinHolding(0) { return 0 }
             var lo = 0.0, hi = 150.0
-            if atAnchor(hi) < target { return hi }
-            for _ in 0..<50 { let mid = (lo + hi) / 2; if atAnchor(mid) < target { lo = mid } else { hi = mid } }
+            if withinHolding(hi) { return hi }
+            for _ in 0..<50 { let mid = (lo + hi) / 2; if withinHolding(mid) { lo = mid } else { hi = mid } }
             return lo
         }
         let safeGust = [liftOffGust, holdingGust].compactMap { $0 }.min()
@@ -336,19 +348,24 @@ enum AnchorMath {
     }
 
     /// Plain-language advice for the conditions, worst first.
-    /// `tideTurn` is the next high or low, when a tidal current reverses.
+    /// `tideTurn` is a predicted current slack, never a tide height extreme.
     static func suggestions(_ b: BoatProfile, scope s: ScopeSettings, _ c: AnchorConditions, _ r: AnchorAssessment, units: Units,
                             tideTurn: Date? = nil) -> [String] {
         var tips: [String] = []
-        let carried = BoatMath.rodeCarried(b)
+        let carried = b.rodeType.hasChain ? b.chainLength : 0
 
         if c.rodeOut <= r.height {
             tips.append("The rode doesn't reach the bottom at this tide. Let out at least \(units.format(r.height * 3)).")
         }
         if let needed = r.rodeNeeded, needed > c.rodeOut {
             if carried > 0, needed > carried {
-                let deepest = max(0, carried / rodeMargin - s.bowHeight)
-                tips.append("Even all \(units.format(carried)) of chain lifts off in these gusts. Look for water under about \(units.format(deepest)), or set a second anchor.")
+                let deepest = deepestChainDepth(length: carried, load: r.load.design,
+                                                weight: chainWeight(sizeMM: b.chainSize), bowHeight: s.bowHeight)
+                if let deepest, deepest > b.draft + keelClearance {
+                    tips.append("Even all \(units.format(carried)) of chain leaves too little on the bottom in these gusts. Look for water under about \(units.format(deepest)), while allowing for draft and low tide, or set a second anchor.")
+                } else {
+                    tips.append("Even all \(units.format(carried)) of chain needs water too shallow for adequate keel clearance in these gusts. Use a longer rode, seek more shelter, or set a second anchor.")
+                }
             } else {
                 tips.append("Let out \(units.format(needed - c.rodeOut)) more (\(units.format(needed)) in all) to keep chain on the bottom at \(Int(c.gust)) kt.")
             }
@@ -371,7 +388,7 @@ enum AnchorMath {
         if c.current > 0 && c.currentDirection != .with {
             tips.append("\(c.currentDirection == .against ? "Wind against current" : "Current across the wind"): the boat may lie beam-on, so loads use the side windage. Expect steeper chop; raise the wave height to match.")
             if let turn = tideTurn {
-                tips.append("The current reverses around \(turn.formatted(date: .omitted, time: .shortened)) and the anchor will have to reset as the boat swings. Watch it then.")
+                tips.append("Predicted current slack is around \(turn.formatted(date: .omitted, time: .shortened)). Watch for a change in swing as the current turns.")
             }
         }
         if c.current >= 1.5 {
@@ -384,7 +401,7 @@ enum AnchorMath {
         }
         if tips.isEmpty || r.status == .good {
             if let safe = r.safeGust {
-                tips.append("Holding well. This setup is good to about \(Int(safe)) kt gusts.")
+                tips.append("Estimated gust limit: about \(Int(safe)) kt for these scenario inputs. This is a model, not a holding test.")
             }
         }
         return tips

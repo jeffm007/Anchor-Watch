@@ -223,7 +223,7 @@ enum Outlook {
             items.append(OutlookItem(
                 kind: .gusts, severity: worst == .danger ? .danger : .caution, start: first.time,
                 end: run.count > 1 ? last.time : nil,
-                title: beyond ? "Gusts \(Int(peak.gust.rounded())) kt, beyond the \(Int(limit!)) kt you can hold"
+                title: beyond ? "Gusts \(Int(peak.gust.rounded())) kt, beyond the modeled \(Int(limit!)) kt limit"
                               : "Gusts \(Int(peak.gust.rounded())) kt, close to your limit",
                 detail: "Peak around \(when(peak.time)) from the \(Compass.name(peak.direction)). Let out more rode, or move somewhere better."))
             run = []
@@ -298,7 +298,7 @@ enum Outlook {
         // Where the wind and current will put the stern, hour by hour, against the marked hazards.
         if let anchor, !hazards.isEmpty {
             items += hazardItems(anchor: anchor, hazards: hazards, hourly: hourly, rodeOut: rodeOut,
-                                 bowHeight: s.bowHeight, boatLength: s.boatLength, minPush: minPush(b), units: units)
+                                 bowHeight: s.bowHeight, boatLength: s.boatLength, minPush: minPush(b), units: units, beam: b.beam)
         }
 
         return items.sorted { $0.start < $1.start }
@@ -309,7 +309,7 @@ enum Outlook {
 
     /// Stretches when the stern, lying where the wind and current put it, comes within `hazardMargin` of a hazard.
     static func hazardItems(anchor: CLLocationCoordinate2D, hazards: [Hazard], hourly: [HourlyHolding], rodeOut: Double,
-                            bowHeight: Double, boatLength: Double, minPush: Double, units: Units) -> [OutlookItem] {
+                            bowHeight: Double, boatLength: Double, minPush: Double, units: Units, beam: Double = 0) -> [OutlookItem] {
         var items: [OutlookItem] = []
         for hazard in hazards {
             var run: [(time: Date, gap: Double)] = []
@@ -321,16 +321,40 @@ enum Outlook {
                     end: run.count > 1 ? last.time : nil,
                     title: least <= 0 ? "Swing reaches the \(hazard.label.lowercased())"
                                       : "Swing within \(units.format(least)) of the \(hazard.label.lowercased())",
-                    detail: "Where the wind and current are forecast to put the stern. Let out less rode, or re-anchor further off.",
+                    detail: "Hull and forecast swing clearance, including a 5 m position allowance. Unforecast swings remain possible. Reduce rode only if safe, or re-anchor further off.",
                     subject: hazard.id.uuidString))
                 run = []
             }
-            for h in hourly where h.push >= minPush {
-                let height = h.depth + bowHeight
-                let reach = (rodeOut > height ? (rodeOut * rodeOut - height * height).squareRoot() : 0) + boatLength
-                let stern = Geo.destination(from: anchor, bearing: h.lie, meters: reach)
-                let gap = Geo.distance(stern, hazard.coordinate) - hazard.radius
-                if gap < hazardMargin { run.append((h.time, gap)) } else { close() }
+            var previous: HourlyHolding?
+            for h in hourly.sorted(by: { $0.time < $1.time }) {
+                let height = max(0, h.depth + bowHeight)
+                var bowReach = rodeOut > height ? sqrt(rodeOut * rodeOut - height * height) : 0
+                var reach = bowReach + boatLength
+                if let p = previous, h.time.timeIntervalSince(p.time) <= 5400 {
+                    let ph = max(0, p.depth + bowHeight)
+                    let previousBow = rodeOut > ph ? sqrt(rodeOut * rodeOut - ph * ph) : 0
+                    reach = max(reach, previousBow + boatLength)
+                    bowReach = min(bowReach, previousBow)
+                }
+                let distance = Geo.distance(anchor, hazard.coordinate)
+                // A capsule around the bow-to-stern segment includes beam and a 5 m positional allowance.
+                func gap(at bearing: Double) -> Double {
+                    let angle = (Geo.bearing(from: anchor, to: hazard.coordinate) - bearing) * .pi / 180
+                    let along = distance * cos(angle), across = distance * sin(angle)
+                    let closest = min(reach, max(bowReach, along))
+                    return hypot(along - closest, across) - hazard.radius - max(0, beam) / 2 - 5
+                }
+                var least = gap(at: h.lie)
+                if h.push < minPush || (previous.map { h.time.timeIntervalSince($0.time) <= 5400 && $0.push < minPush } ?? false) {
+                    least = max(0, distance - reach) - hazard.radius - max(0, beam) / 2 - 5
+                } else if let p = previous, h.time.timeIntervalSince(p.time) <= 5400 {
+                    let delta = (h.lie - p.lie + 540).truncatingRemainder(dividingBy: 360) - 180
+                    // Sample the shortest forecast swing at <=1 degree; enlarge for the arc between samples.
+                    let steps = max(1, Int(ceil(abs(delta))))
+                    for i in 0...steps { least = min(least, gap(at: p.lie + delta * Double(i) / Double(steps)) - reach * .pi / 360) }
+                } else if previous != nil { close() }
+                if least < hazardMargin { run.append((h.time, least)) } else { close() }
+                previous = h
             }
             close()
         }
@@ -369,7 +393,7 @@ enum Outlook {
 
 /// Provenance and availability accompany environmental advice, independently of anchor monitoring.
 struct EnvironmentRecord: Equatable {
-    enum Phase: Equatable { case waiting, loading, ready, cached, noCoverage, failed(String) }
+    enum Phase: Equatable { case waiting, loading, ready, cached, noCoverage, partial(String), failed(String) }
     var source: String
     var latitude: Double
     var longitude: Double
@@ -392,6 +416,7 @@ struct EnvironmentRecord: Equatable {
         case .loading: state = "Loading"
         case .noCoverage: state = "No provider coverage at this location"
         case .failed(let message): state = "Refresh failed: " + message
+        case .partial(let message): state = "Partial coverage: " + message
         case .ready, .cached:
             state = isUsable(at: now) ? (phase == .cached ? "Cached" : "Available") : "Expired or outside prediction coverage"
         }

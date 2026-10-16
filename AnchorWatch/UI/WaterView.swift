@@ -14,12 +14,7 @@ struct WaterView: View {
                 let points = engine.waterForecast
                 Form {
                     DepthEntrySection()
-                    if points.isEmpty {
-                        Section("Next 24 hours") {
-                            Text(engine.tide == nil ? (engine.tideStatus.isEmpty ? "Waiting for tide predictions…" : engine.tideStatus) : engine.depthReferenceDetail)
-                                .foregroundStyle(.secondary)
-                        }
-                    } else {
+                    if !points.isEmpty {
                         timeline(points, now: context.date)
                         outlook(points)
                     }
@@ -162,6 +157,8 @@ struct WaterView: View {
                                                                       Compass.name(e.velocity >= 0 ? e.floodToward : e.ebbToward))))
                     }
                 }
+                Text("Estimated anchorage speed = station prediction × \(Int(engine.currentFactor * 100))%. This scaling is an assumption.")
+                    .font(.footnote).foregroundStyle(.secondary)
                 Picker("Current here vs the station", selection: $engine.currentFactor) {
                     Text("100%").tag(1.0); Text("50%").tag(0.5); Text("25%").tag(0.25)
                 }
@@ -235,7 +232,7 @@ struct WindOutlookSections: View {
                 .frame(height: 200)
                 .padding(.vertical, 6)
             } header: { Text("Wind, next 24 hours") } footer: {
-                Text("Blue is the wind, orange the gusts, red dashed the gust your setup holds at each hour's depth (\(engine.units.format(engine.rodeOut)) of rode in \(engine.anchorBottom.rawValue.lowercased())). Arrows show which way it blows.")
+                Text("Blue is the wind, orange the gusts, red dashed the estimated gust limit at each hour's depth (\(engine.units.format(engine.rodeOut)) of rode in \(engine.anchorBottom.rawValue.lowercased())). Arrows show which way it blows.")
             }
         }
         let wind = engine.visibleOutlook.filter { $0.kind == .gusts || $0.kind == .windShift || $0.kind == .swing }

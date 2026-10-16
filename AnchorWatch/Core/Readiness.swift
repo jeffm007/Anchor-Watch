@@ -26,6 +26,7 @@ struct ReadinessInput {
     var radius: Double
     /// Nil when unknown or irrelevant (no anchor set yet).
     var liveActivity: LiveActivityState?
+    var audioFailure: String?
     var goodAccuracy = 8.0
     var usableAccuracy = 50.0
 }
@@ -41,6 +42,11 @@ enum Readiness {
     /// The full checklist, in the order shown on screen.
     static func checks(_ i: ReadinessInput, format: (Double) -> String) -> [WatchCheck] {
         var list: [WatchCheck] = []
+
+        if let failure = i.audioFailure {
+            list.append(WatchCheck(id: "audio", title: "Siren unavailable",
+                                   detail: failure + ". Keep a separate watch until the siren passes a test.", state: .critical))
+        }
 
         // Volume
         if let volume = i.volume {

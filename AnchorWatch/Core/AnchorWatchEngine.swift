@@ -34,6 +34,7 @@ enum AlarmReason: Equatable {
     case gpsLost
     /// Fixes keep arriving but none is accurate enough to tell whether the anchor is holding.
     case gpsPoor
+    case anchorUnconfirmed
     case lowBattery(level: Double)
 
     var message: String {
@@ -41,6 +42,7 @@ enum AlarmReason: Equatable {
         case .outsideCircle: return "Boat has left the alarm circle"
         case .gpsLost: return "GPS signal lost"
         case .gpsPoor: return "GPS too inaccurate to watch the anchor"
+        case .anchorUnconfirmed: return "Circle alarm OFF — place the anchor on the chart"
         case .lowBattery(let level): return String(format: "Phone battery %.0f%% and not charging", level * 100)
         }
     }
@@ -51,6 +53,7 @@ enum AlarmReason: Equatable {
         case .outsideCircle: return "outside"
         case .gpsLost: return "gpsLost"
         case .gpsPoor: return "gpsPoor"
+        case .anchorUnconfirmed: return "anchorUnconfirmed"
         case .lowBattery: return "battery"
         }
     }
@@ -59,7 +62,7 @@ enum AlarmReason: Equatable {
     var priority: Int {
         switch self {
         case .outsideCircle: return 3
-        case .gpsLost, .gpsPoor: return 2
+        case .gpsLost, .gpsPoor, .anchorUnconfirmed: return 2
         case .lowBattery: return 1
         }
     }
@@ -84,7 +87,8 @@ final class AnchorWatchEngine: ObservableObject {
     @Published private(set) var fix: Fix?
     /// Latest raw callback for diagnostics; navigation uses only accepted `fix` values.
     @Published private(set) var rawFix: Fix?
-    @Published private(set) var track: [Fix] = []
+    @Published private(set) var track: [Fix] = [] { didSet { trackRevision &+= 1 } }
+    private(set) var trackRevision = 0
     @Published private(set) var anchor: CLLocationCoordinate2D?
     /// How far off the anchor point may be from GPS error alone (metres): the average accuracy of the
     /// fixes averaged into it. Nil when the anchor was placed by hand.
@@ -272,13 +276,20 @@ final class AnchorWatchEngine: ObservableObject {
         let height = liveDepth + scope.bowHeight
         return height > 0 ? rodeOut / height : nil
     }
-    @Published var boat = BoatProfile() { didSet { saveBoat() } }
+    @Published var boat = BoatProfile() {
+        didSet {
+            saveBoat()
+            lastOutlook = .distantPast
+            if !loading { followRode() }
+        }
+    }
 
     // MARK: Is the phone ready to keep watch?
     @Published private(set) var batteryLevel: Float?
     @Published private(set) var charging = false
     @Published private(set) var volume: Float?
     @Published private(set) var externalAudioRoute: String?
+    @Published private(set) var audioFailure: String?
     @Published private(set) var notificationsAllowed: Bool?
     @Published private(set) var locationAlways: Bool?
     @Published private(set) var liveActivityState = LiveActivityState.idle
@@ -293,6 +304,7 @@ final class AnchorWatchEngine: ObservableObject {
                        notificationsAllowed: notificationsAllowed,
                        locationAlways: sourceKind == .gps ? locationAlways : nil,
                        accuracy: hasFreshPosition ? fix?.accuracy : nil, radius: radius, liveActivity: armed ? liveActivityState : nil,
+                       audioFailure: audioFailure,
                        goodAccuracy: goodAccuracy, usableAccuracy: usableLimit(for: fix))
     }
 
@@ -303,6 +315,12 @@ final class AnchorWatchEngine: ObservableObject {
             checks.append(WatchCheck(id: "gps", title: "Fresh GPS position unavailable", detail: gpsFreshnessText,
                                      state: armed ? .critical : .warning))
         }
+        if awaitingSwingFix {
+            checks.append(WatchCheck(id: "placement", title: "Circle alarm OFF", detail: "Confirm the anchor position on the chart to enable circle monitoring.", state: .critical))
+        }
+        if armed && !rodeConfirmed {
+            checks.append(WatchCheck(id: "rode", title: "Deployed rode not confirmed", detail: "Confirm the actual amount paid out on the Anchor tab.", state: .warning))
+        }
         return checks
     }
     var watchProblems: [WatchCheck] { watchChecks.filter(\.isProblem) }
@@ -312,10 +330,12 @@ final class AnchorWatchEngine: ObservableObject {
     func testSiren(after delay: TimeInterval = 0) {
         let wasArmed = armed
         if !wasArmed { player.arm() }
+        pollDevice()
         Task {
             if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
             testingSiren = true                      // shows on the lock screen too, so the whole alarm chain can be checked
             player.test(duration: 4)
+            pollDevice()
             try? await Task.sleep(for: .seconds(4))
             testingSiren = false
             try? await Task.sleep(for: .seconds(1))
@@ -360,6 +380,7 @@ final class AnchorWatchEngine: ObservableObject {
         if volume != v { volume = v }
         let route = player.externalRoute
         if externalAudioRoute != route { externalAudioRoute = route }
+        if audioFailure != player.audioFailure { audioFailure = player.audioFailure }
     }
 
     private func refreshPermissionsIfDue() {
@@ -490,6 +511,9 @@ final class AnchorWatchEngine: ObservableObject {
 
     func retryEnvironment() {
         lastWindAttempt = .distantPast; lastTideAttempt = .distantPast; lastCurrentAttempt = .distantPast
+        lastObservationAttempt = .distantPast; observationsChecked = nil
+        lastAlertAttempt = .distantPast; nwsChecked = nil
+        refreshObservationsIfDue(); refreshAlertsIfDue()
         Task { await refreshWind(); await refreshTide(); await refreshCurrent() }
     }
 
@@ -512,11 +536,12 @@ final class AnchorWatchEngine: ObservableObject {
         Task {
             defer { if generation == environmentGeneration { observationsFetching = false } }
             do {
-                let stations = try await ObservationService.fetchNearby(point)
+                let result = try await ObservationService.fetchNearbyResult(point)
+                let stations = result.stations
                 guard generation == environmentGeneration else { return }
                 observations = stations
                 observationsChecked = clock()
-                record("observations", phase: .ready, fetched: clock(), from: stations.map(\.time).min() ?? clock(), until: (stations.map(\.time).max() ?? clock()) + 3600,
+                record("observations", phase: result.warnings.isEmpty ? .ready : .partial(result.warnings.joined(separator: "; ")), fetched: clock(), from: stations.map(\.time).min() ?? clock(), until: (stations.map(\.time).max() ?? clock()) + 3600,
                        station: stations.map { $0.id + " " + $0.name }.joined(separator: ", "))
             } catch {
                 guard generation == environmentGeneration else { return }
@@ -534,11 +559,13 @@ final class AnchorWatchEngine: ObservableObject {
     }
 
     /// Wind actually being measured nearby (the closest station reporting it).
-    var observedWind: StationObservation? { observations.first { $0.windSpeed != nil } }
+    var freshObservations: [StationObservation] { observations.filter { clock().timeIntervalSince($0.time) >= -60 && clock().timeIntervalSince($0.time) <= 3 * 3600 } }
+    var activeAlerts: [NWSAlert] { nwsAlerts.filter { ($0.ends ?? .distantFuture) > clock() } }
+    var observedWind: StationObservation? { freshObservations.first { $0.windSpeed != nil } }
 
     /// Set when a nearby station reports gusts at or above the warning limit.
     var observedGustAlert: (station: StationObservation, gust: Double)? {
-        ObservationMath.gustAlert(observations, limit: gustLimit)
+        ObservationMath.gustAlert(freshObservations, limit: gustLimit)
     }
 
     // MARK: National Weather Service alerts
@@ -580,7 +607,7 @@ final class AnchorWatchEngine: ObservableObject {
         var known = Set(defaults.stringArray(forKey: knownAlertsKey) ?? [])
         for alert in alerts where !known.contains(alert.id) {
             known.insert(alert.id)
-            if alert.isUrgentForBoaters { player.notice(title: alert.event, message: alert.headline) }
+            if alert.isUrgentForBoaters && !muteAdvisoryNotifications { player.notice(title: alert.event, message: alert.headline) }
         }
         defaults.set(Array(known.suffix(200)), forKey: knownAlertsKey)
     }
@@ -631,7 +658,11 @@ final class AnchorWatchEngine: ObservableObject {
     }
 
     /// Loads forecasts for the lattice points under the visible map (debounced; cached for an hour).
+    private var windRegion: MKCoordinateRegion?
+    private var lastGridAttempt = Date.distantPast
     func requestWindGrid(for region: MKCoordinateRegion) {
+        windRegion = region
+        lastGridAttempt = Date()
         gridTask?.cancel()
         gridTask = Task {
             try? await Task.sleep(for: .milliseconds(700))
@@ -644,6 +675,10 @@ final class AnchorWatchEngine: ObservableObject {
                 for series in fresh { windCache[key(series.coordinate)] = series }
             }
             guard !Task.isCancelled else { return }
+            windCache = windCache.filter { $0.value.fetched >= stale }
+            if windCache.count > 256 {
+                windCache = Dictionary(uniqueKeysWithValues: windCache.sorted { $0.value.fetched > $1.value.fetched }.prefix(256).map { ($0.key, $0.value) })
+            }
             windGrid = points.compactMap { windCache[key($0)] }
         }
     }
@@ -679,7 +714,10 @@ final class AnchorWatchEngine: ObservableObject {
         } catch {
             guard generation == environmentGeneration else { return }
             tideStatus = error.localizedDescription
-            record("tide", phase: .failed(error.localizedDescription))
+            if let error = error as? TideService.TideError, case .noCoverage = error {
+                tide = nil
+                record("tide", phase: .noCoverage)
+            } else { record("tide", phase: .failed(error.localizedDescription)) }
         }
     }
 
@@ -810,6 +848,15 @@ final class AnchorWatchEngine: ObservableObject {
         }
     }
 
+    @Published private(set) var rodeConfirmed = false
+
+    func confirmRode(_ meters: Double) {
+        guard meters.isFinite, meters > 0 else { return }
+        rodeOutSet = meters
+        rodeConfirmed = true
+        save()
+    }
+
     /// What the scope calls for, or everything on board if that's less.
     var rodeSuggested: Double {
         let carried = BoatMath.rodeCarried(boat)
@@ -821,15 +868,19 @@ final class AnchorWatchEngine: ObservableObject {
 
     /// Forecast gusts in the next 12 h beyond what this setup can hold.
     var holdingWarning: HoldingWarning? {
-        guard let samples = windForAdvice?.samples else { return nil }
-        return AnchorMath.forecastWarning(boat, scope: scope, bottom: anchorBottom, rodeOut: rodeOut, forecast: samples, now: clock())
+        let end = clock().addingTimeInterval(12 * 3600)
+        guard let worst = forecastAssessments.filter({ h in h.time <= end && h.safeGust.map { h.gust > $0 } == true }).max(by: { ($0.gust - ($0.safeGust ?? 0)) < ($1.gust - ($1.safeGust ?? 0)) }) else { return nil }
+        return HoldingWarning(gust: worst.gust, time: worst.time, safeGust: worst.safeGust ?? 0, rodeOut: rodeOut)
     }
 
     /// The next 24 hours: forecast hours with the safe gust at each hour's depth, and what's coming up.
     /// Recomputed at most once a minute (and as soon as tide or wind data first arrives).
     @Published private(set) var hourlyHolding: [HourlyHolding] = []
     @Published private(set) var outlook: [OutlookItem] = []
-    private var lastOutlook = Date.distantPast
+    private var forecastCache: (minute: Int, generation: Int, hours: [HourlyHolding])?
+    private var lastOutlook = Date.distantPast {
+        didSet { if lastOutlook == .distantPast { forecastCache = nil } }
+    }
 
     /// How far the boat can swing from the anchor over the next 24 hours, and the arc it's predicted to lie in.
     var swingRadius: Double {
@@ -864,19 +915,32 @@ final class AnchorWatchEngine: ObservableObject {
     }
     func unlockOutlook(_ item: OutlookItem) { lockedOutlook.removeAll { $0.matches(item) } }
 
+    var forecastAssessments: [HourlyHolding] {
+        let now = clock(), minute = Int(clock().timeIntervalSince1970 / 60)
+        if let cached = forecastCache, cached.minute == minute, cached.generation == environmentGeneration { return cached.hours }
+        var adviceScope = scope
+        adviceScope.depth = liveDepth
+        let hours = Outlook.hourly(boat, scope: adviceScope, bottom: anchorBottom, rodeOut: rodeOut,
+                                   depths: waterForecast, forecast: windForAdvice?.samples ?? [],
+                                   current: usable("current") ? { [weak self] in self?.currentHere(at: $0) } : nil, now: now)
+        forecastCache = (minute, environmentGeneration, hours)
+        return hours
+    }
+
     func refreshOutlookIfDue() {
         guard clock().timeIntervalSince(lastOutlook) >= 60 || (outlook.isEmpty && hourlyHolding.isEmpty) else { return }
         lastOutlook = clock()
-        let depths = waterForecast
-        var adviceScope = scope
-        adviceScope.depth = liveDepth
-        let hourly = Outlook.hourly(boat, scope: adviceScope, bottom: anchorBottom, rodeOut: rodeOut,
-                                    depths: depths, forecast: usable("wind") ? windHere?.samples ?? [] : [],
-                                    current: usable("current") ? { [weak self] in self?.currentHere(at: $0) } : nil, now: clock())
-        hourlyHolding = hourly
-        outlook = Outlook.items(boat, scope: scope, rodeOut: rodeOut, depths: depths, hourly: hourly,
+        hourlyHolding = forecastAssessments
+        outlook = Outlook.items(boat, scope: scope, rodeOut: rodeOut, depths: waterForecast, hourly: hourlyHolding,
                                 tideTurns: usable("tide") ? tide?.events ?? [] : [], currentEvents: scaledCurrentEvents,
                                 anchor: anchor, hazards: hazards, units: units, now: clock())
+    }
+
+    var nextCurrentSlack: Date? { scaledCurrentEvents?.first { $0.isSlack && $0.time > clock() }?.time }
+
+    var forecastStatusText: String {
+        if depthReading == nil { return "Forecast incomplete — confirm water depth" }
+        return environmentCoverage.complete ? "Forecast inputs available for 24 hours" : "Forecast incomplete — some inputs are missing or cached"
     }
 
     // MARK: Tidal current (NOAA predictions for the nearest current station)
@@ -963,7 +1027,9 @@ final class AnchorWatchEngine: ObservableObject {
     @Published private(set) var zoomTick = 0
     private(set) var zoomFactor = 1.0
     @Published var mapLayer: ChartLayer = .seaMap { didSet { defaults.set(mapLayer.rawValue, forKey: "anchorwatch.layer") } }
-    @Published var units: Units = .feet
+    @Published var units: Units = .feet {
+        didSet { defaults.set(units.rawValue, forKey: "anchorwatch.units"); lastOutlook = .distantPast }
+    }
 
     /// A real iPhone defaults to its GPS; the iOS Simulator has none, so it defaults to the fake one.
     #if targetEnvironment(simulator)
@@ -1046,6 +1112,7 @@ final class AnchorWatchEngine: ObservableObject {
     }
 
     func start() {
+        guard !started else { return }
         started = true
         pokeControls()
         let demo = ProcessInfo.processInfo.arguments.contains("-autoDrop")
@@ -1160,6 +1227,9 @@ final class AnchorWatchEngine: ObservableObject {
         saveBattery()
         checkGPSLost()
         checkGPSPoor()
+        if awaitingSwingFix, let anchorDropped, clock().timeIntervalSince(anchorDropped) >= anchorConfirmationTimeout {
+            trigger(.anchorUnconfirmed)
+        }
         checkBattery()
         player.ensureRunning()
         pollDevice()
@@ -1167,32 +1237,64 @@ final class AnchorWatchEngine: ObservableObject {
         if liveActivityState != liveActivity.state { liveActivityState = liveActivity.state }
     }
 
+    /// One presentation for the phone, wrist, night view, chart and lock screen.
+    struct MonitoringPresentation: Equatable {
+        enum Tone: String { case gray, green, orange, red, purple }
+        var title: String
+        var detail: String
+        var icon: String
+        var tone: Tone
+        var activityStatus: AnchorWatchAttributes.Status
+    }
+
+    var circleMonitoringAvailable: Bool { armed && !awaitingSwingFix && hasFreshPosition }
+    let anchorConfirmationTimeout: TimeInterval = 5 * 60
+
+    var monitoring: MonitoringPresentation {
+        typealias P = MonitoringPresentation
+        if let alarm {
+            return P(title: "ALARM", detail: alarmHeadline ?? alarm.message, icon: "exclamationmark.octagon.fill", tone: .red, activityStatus: .alarm)
+        }
+        if testingSiren && audioFailure == nil {
+            return P(title: "Siren test", detail: "Siren test, not a real alarm", icon: "speaker.wave.3.fill", tone: .orange, activityStatus: .alarm)
+        }
+        switch watchState {
+        case .notAnchored:
+            return P(title: "Circle alarm OFF", detail: "No anchor set", icon: "circle.dashed", tone: .gray, activityStatus: .caution)
+        case .retrieving:
+            return P(title: "Retrieving", detail: "Circle alarm OFF — retrieving anchor", icon: "arrow.up", tone: .purple, activityStatus: .caution)
+        case .acquiringGPS, .gpsInterrupted:
+            return P(title: "Monitoring interrupted", detail: "Circle alarm unavailable — " + gpsFreshnessText, icon: "location.slash", tone: .orange, activityStatus: .caution)
+        case .awaitingFix:
+            return P(title: "Circle alarm OFF", detail: "Circle alarm OFF — confirm anchor position. GPS and battery checks remain active.", icon: "exclamationmark.triangle.fill", tone: .orange, activityStatus: .caution)
+        case .outside:
+            return P(title: "Outside circle", detail: "Outside the alarm circle — check the boat", icon: "exclamationmark.octagon.fill", tone: .red, activityStatus: .caution)
+        case .dragging:
+            return P(title: "Possible dragging", detail: "Swing estimates show the anchor moving", icon: "exclamationmark.triangle.fill", tone: .red, activityStatus: .caution)
+        case .movingAway:
+            return P(title: "Moving away", detail: "Distance from the anchor is increasing", icon: "exclamationmark.triangle.fill", tone: .orange, activityStatus: .caution)
+        case .alarm: break // handled above
+        case .holding: break
+        }
+        if let problem = watchProblems.first(where: { $0.state == .critical }) {
+            return P(title: "Check alarm readiness", detail: problem.title, icon: "exclamationmark.triangle.fill", tone: .orange, activityStatus: .caution)
+        }
+        return P(title: "Circle alarm ON", detail: "Circle alarm ON · Holding", icon: "checkmark.shield.fill", tone: .green, activityStatus: .holding)
+    }
+
     /// What the lock-screen Live Activity shows; nil when no anchor is set.
     var snapshot: WatchSnapshot? {
         guard armed || retrieveTarget != nil else { return nil }
-        let fraction = radius > 0 ? (distance ?? 0) / radius : 0
-        let distanceText = distance.map(units.format) ?? "--"
-        if testingSiren, alarm == nil {
-            return WatchSnapshot(distanceText: distanceText, radiusText: units.format(radius), fraction: fraction, status: .alarm,
-                                 headline: "Siren test, not a real alarm")
-        }
-        if let alarm {
-            return WatchSnapshot(distanceText: distanceText, radiusText: units.format(radius), fraction: fraction, status: .alarm, headline: alarm.message)
-        }
-        switch watchState {
-        case .acquiringGPS, .gpsInterrupted, .awaitingFix, .retrieving, .outside, .dragging, .movingAway:
-            return WatchSnapshot(distanceText: hasFreshPosition ? distanceText : "--", radiusText: units.format(radius),
-                                 fraction: fraction, status: .caution, headline: monitoringHeadline)
-        default: break
-        }
-        if let problem = watchProblems.first(where: { $0.state == .critical }) {
-            return WatchSnapshot(distanceText: distanceText, radiusText: units.format(radius), fraction: fraction, status: .caution, headline: problem.title)
-        }
-        return WatchSnapshot(distanceText: distanceText, radiusText: units.format(radius), fraction: fraction, status: .holding,
-                             headline: fraction < 0.5 ? "Holding well" : "Holding, swinging wide")
+        let presentation = monitoring
+        return WatchSnapshot(distanceText: hasFreshPosition ? distance.map(units.format) ?? "--" : "--",
+                             radiusText: units.format(radius), fraction: hasFreshPosition && radius > 0 ? (distance ?? 0) / radius : 0,
+                             status: presentation.activityStatus, headline: presentation.detail, boatName: boat.name)
     }
 
     private func refreshData() {
+        if windOverlayOn, Date().timeIntervalSince(lastGridAttempt) > 60, let region = windRegion {
+            requestWindGrid(for: region)
+        }
         if let point = anchor ?? fix?.coordinate { bindEnvironment(to: point) }
         if Date().timeIntervalSince(lastEstimate) >= max(2, estimateInterval / simTimeScale) { updateAnchorEstimate() }
         refreshPermissionsIfDue()
@@ -1245,8 +1347,12 @@ final class AnchorWatchEngine: ObservableObject {
         return reach + ScopeCalculator.gpsFromBow(scope)
     }
 
-    func dropAnchor(_ moment: DropMoment = .goingDown) {
+    func dropAnchor(_ moment: DropMoment = .goingDown, rode: Double? = nil) {
         guard !gpsIsUnusable, let fix, let position = averagedPosition, let accuracy = averagedAccuracy else { return }
+        let deployed = rode ?? rodeOut
+        guard deployed.isFinite, deployed > 0 else { return }
+        rodeConfirmed = rode != nil || rodeOutSet != nil
+        rodeOutSet = deployed
         retrieveTarget = nil
         hiddenOutlook = []
         lockedOutlook = []
@@ -1267,7 +1373,7 @@ final class AnchorWatchEngine: ObservableObject {
         estimatePending = .collecting(minutes: 0)
         resetDrift()
         pokeControls()
-        anchorDropped = Date()
+        anchorDropped = clock()
         originalAnchor = anchor
         // A new anchorage gets the default radius from its rode and depth, and the chart frames it.
         applySuggestedRadius()
@@ -1283,6 +1389,7 @@ final class AnchorWatchEngine: ObservableObject {
         guard anchor != nil else { return }
         estimateAutoApplied = true      // a mark set by hand (or from the swing) isn't corrected again
         awaitingSwingFix = false
+        if alarm == .anchorUnconfirmed { silence(snoozeAfter: false) }
         setAnchor(coordinate)
         anchorUncertainty = nil     // placed by hand, not by GPS
         anchorPlacement = nil
@@ -1315,7 +1422,8 @@ final class AnchorWatchEngine: ObservableObject {
         lastEstimate = Date()
         guard let anchor, let anchorDropped else { anchorEstimate = nil; estimatePending = nil; return }
         let wind = windNow
-        let modelRadius = ScopeCalculator.horizontalReach(scope) + ScopeCalculator.gpsFromBow(scope)
+        let modelRadius = Outlook.swingRadius(rodeOut: rodeOut, shallowest: liveDepth, bowHeight: scope.bowHeight,
+                                              bowToPhone: ScopeCalculator.gpsFromBow(scope))
         switch AnchorEstimate.evaluate(track: track, dropped: anchorDropped, mark: anchor, modelRadius: modelRadius,
                                        windFrom: wind?.direction, windKnots: wind?.speed, timeScale: simTimeScale) {
         case .success(let r): anchorEstimate = r; estimatePending = nil; correctFromSwing(r)
@@ -1374,6 +1482,7 @@ final class AnchorWatchEngine: ObservableObject {
         guard !estimateAutoApplied, r.windAgrees != false, let anchor, let anchorDropped else { return }
         estimateAutoApplied = true
         awaitingSwingFix = false        // the swing has spoken: arm the circle alarm
+        if alarm == .anchorUnconfirmed { silence(snoozeAfter: false) }
         save()
         let minutes = Date().timeIntervalSince(anchorDropped) * max(simTimeScale, 1) / 60
         let off = Geo.distance(anchor, r.center)
@@ -1398,70 +1507,63 @@ final class AnchorWatchEngine: ObservableObject {
     /// The phone is in night mode; the watch follows it.
     var nightMode = false
 
-    var monitoringHeadline: String {
-        switch watchState {
-        case .notAnchored: "Not anchored"
-        case .acquiringGPS: "Acquiring GPS — circle monitoring unavailable"
-        case .gpsInterrupted: "Monitoring interrupted — fresh GPS unavailable"
-        case .awaitingFix: "Finding anchor — circle alarm not armed"
-        case .retrieving: "Retrieving"
-        case .alarm(let reason): reason.message
-        case .outside: "Outside circle"
-        case .dragging: "Dragging"
-        case .movingAway: "Moving away"
-        case .holding: "Holding"
+    var monitoringHeadline: String { monitoring.detail }
+
+    /// Testable payload uses exactly the same readiness decision as the phone and Live Activity.
+    var watchStatus: [String: String] {
+        let presentation = monitoring
+        var status = ["state": presentation.title, "tone": presentation.tone.rawValue,
+                      "distance": armed && hasFreshPosition ? distance.map(units.format) ?? "--" : "--",
+                      "radius": armed ? "Circle " + units.format(radius) : "",
+                      "detail": presentation.detail, "night": nightMode ? "1" : "0",
+                      "circleActive": circleMonitoringAvailable ? "1" : "0"]
+        if let w = windNow { status["wind"] = "Wind \(Int(w.speed.rounded())) kt \(Compass.name(w.direction)), gusts \(Int(w.gust.rounded()))" }
+        if let alarmHeadline { status["alarm"] = alarmHeadline }
+        if let anchor {
+            status.merge(WatchLink.chart(anchor: anchor, radius: radius, boat: hasFreshPosition ? fix?.coordinate : nil,
+                                         track: track.suffix(720).map(\.coordinate))) { $1 }
         }
+        if let guide = retrievalGuide {
+            status["distance"] = units.format(guide.distance)
+            status["radius"] = "bow to anchor"
+            status["detail"] = presentation.detail + ". " + guide.steer
+        }
+        return status
     }
 
     private func publishToWatch() {
         guard let watchLink else { return }
         if watchLink.onSilence == nil { watchLink.onSilence = { [weak self] in self?.silence() } }
-        let (state, tone): (String, String) = switch watchState {
-        case .notAnchored: ("Not anchored", "gray")
-        case .acquiringGPS: ("Acquiring GPS", "orange")
-        case .gpsInterrupted: ("Monitoring interrupted", "orange")
-        case .retrieving: ("Retrieving", "purple")
-        case .awaitingFix: ("Finding anchor", "purple")
-        case .alarm: ("Alarm", "red")
-        case .outside: ("Outside circle", "red")
-        case .dragging: ("Dragging", "red")
-        case .movingAway: ("Moving away", "orange")
-        case .holding: ("Holding", "green")
-        }
-        var status = ["state": state, "tone": tone,
-                      "distance": anchor == nil ? "--" : (distance.map(units.format) ?? "--"),
-                      "radius": anchor == nil ? "" : "Alarm at \(units.format(radius))"]
-        if let anchor, let fix {
-            status["detail"] = "Anchor lies \(Compass.name(Geo.bearing(from: fix.coordinate, to: anchor)))"
-        } else {
-            status["detail"] = anchor == nil ? "No anchor set" : "Waiting for GPS"
-        }
-        if let w = windNow { status["wind"] = "Wind \(Int(w.speed.rounded())) kt \(Compass.name(w.direction)), gusts \(Int(w.gust.rounded()))" }
-        if let alarm { status["alarm"] = alarm.message }
-        status["night"] = nightMode ? "1" : "0"
-        if let anchor {
-            status.merge(WatchLink.chart(anchor: anchor, radius: radius, boat: fix?.coordinate,
-                                         track: track.suffix(720).map(\.coordinate))) { $1 }
-        }
-        if let guide = retrievalGuide {
-            status["state"] = "Retrieving"
-            status["tone"] = guide.overAnchor ? "green" : "purple"
-            status["distance"] = units.format(guide.distance)
-            status["radius"] = "bow to anchor"
-            status["detail"] = guide.steer
-        }
-        if !hasFreshPosition || awaitingSwingFix {
-            status["detail"] = monitoringHeadline + ". " + gpsFreshnessText
-            if !hasFreshPosition { status["distance"] = "--"; status.removeValue(forKey: "boat") }
-        }
-        watchLink.publish(status)
+        watchLink.publish(watchStatus)
     }
 
     // MARK: Anchorage log
 
     /// Past anchorages, newest first. Saved to a file; tests point `logURL` somewhere of their own.
     @Published private(set) var anchorages: [AnchorageEntry] = []
-    var logURL: URL? { didSet { anchorages = AnchorageLog.load(from: logURL) } }
+    @Published var chartStatus: String?
+    @Published private(set) var persistenceError: String?
+    private var logLoadFailed = false
+    var logURL: URL? { didSet { loadAnchorageLog() } }
+    func loadAnchorageLog() {
+        do {
+            let result = try AnchorageLog.read(from: logURL)
+            if logLoadFailed {
+                let retained = Set(anchorages.map(\.id))
+                anchorages += result.entries.filter { !retained.contains($0.id) }
+                anchorages.sort { $0.dropped > $1.dropped }
+            } else { anchorages = result.entries }
+            logLoadFailed = false
+            persistenceError = result.recovered ? "Anchorage log recovered from backup. The latest changes may be missing. Review the log, then retry saving." : nil
+        } catch {
+            logLoadFailed = true
+            persistenceError = "Cannot read the anchorage log: " + error.localizedDescription + " Original files have been kept."
+        }
+    }
+    func retrySavingAnchorages() {
+        guard !logLoadFailed else { loadAnchorageLog(); return }
+        persistenceError = AnchorageLog.save(anchorages, to: logURL).map { "Anchorage log is not saved: " + $0.localizedDescription + " Keep the app open and retry." }
+    }
 
     func setAnchorageLocked(_ id: UUID, _ locked: Bool) {
         guard var entry = anchorages.first(where: { $0.id == id }) else { return }
@@ -1472,13 +1574,13 @@ final class AnchorWatchEngine: ObservableObject {
     func updateAnchorage(_ entry: AnchorageEntry) {
         guard let i = anchorages.firstIndex(where: { $0.id == entry.id }) else { return }
         anchorages[i] = entry
-        AnchorageLog.save(anchorages, to: logURL)
+        retrySavingAnchorages()
     }
 
     /// Locked entries are kept.
     func deleteAnchorage(_ id: UUID) {
         anchorages.removeAll { $0.id == id && !$0.isLocked }
-        AnchorageLog.save(anchorages, to: logURL)
+        retrySavingAnchorages()
     }
 
     /// An earlier stay at this spot, while anchored.
@@ -1504,7 +1606,7 @@ final class AnchorWatchEngine: ObservableObject {
             depth: scope.depth, rodeOut: rodeOut, radius: radius, maxDistance: maxDistance, bottom: anchorBottom.rawValue,
             track: AnchorageLog.thin(track.map(\.coordinate)))
         anchorages.insert(entry, at: 0)
-        AnchorageLog.save(anchorages, to: logURL)
+        retrySavingAnchorages()
         let id = entry.id
         CLGeocoder().reverseGeocodeLocation(CLLocation(latitude: anchor.latitude, longitude: anchor.longitude)) { [weak self] places, _ in
             guard let place = places?.first, let name = place.name ?? place.locality else { return }
@@ -1514,6 +1616,14 @@ final class AnchorWatchEngine: ObservableObject {
                 self.updateAnchorage(named)
             }
         }
+    }
+
+    /// Presentation and advisory notifications only; siren and monitoring checks are independent.
+    @Published var hideWarningBanners = false {
+        didSet { defaults.set(hideWarningBanners, forKey: "anchorwatch.hideWarningBanners") }
+    }
+    @Published var muteAdvisoryNotifications = false {
+        didSet { defaults.set(muteAdvisoryNotifications, forKey: "anchorwatch.muteAdvisoryNotifications") }
     }
 
     // MARK: Barometer
@@ -1539,7 +1649,7 @@ final class AnchorWatchEngine: ObservableObject {
         pressureHistory.removeAll { time.timeIntervalSince($0.time) > 12 * 3600 }
         defaults.set(try? JSONEncoder().encode(pressureHistory), forKey: "anchorwatch.pressure")
         let level = pressureLevel
-        if level > lastPressureAlert, let change = pressureChange {
+        if level > lastPressureAlert, !muteAdvisoryNotifications, let change = pressureChange {
             let content = UNMutableNotificationContent()
             content.title = level == .fallingFast ? "Barometer falling very fast" : "Barometer falling quickly"
             content.body = String(format: "%.1f hPa in 3 hours. ", change)
@@ -1712,6 +1822,7 @@ final class AnchorWatchEngine: ObservableObject {
         anchorCorrection = nil
         awaitingSwingFix = false
         rodeOutSet = nil
+        rodeConfirmed = false
         placingAnchor = false
         outsideCount = 0
         track = []
@@ -1758,6 +1869,7 @@ final class AnchorWatchEngine: ObservableObject {
         bindEnvironment(to: coordinate)
         anchor = coordinate
         player.arm()
+        pollDevice()
         gps?.keepsRunningInBackground = true
         outsideCount = 0
         // Distances measured from the old spot don't compare with ones from the new.
@@ -1846,6 +1958,10 @@ final class AnchorWatchEngine: ObservableObject {
 
     // MARK: Alarm
 
+    var alarmHeadline: String? {
+        alarm.map { $0.message + (audioFailure == nil ? "" : " — siren unavailable") }
+    }
+
     private func trigger(_ reason: AlarmReason) {
         guard clock() >= (snoozedUntil[reason.kind] ?? .distantPast) else { return }
         if let current = alarm {
@@ -1856,6 +1972,7 @@ final class AnchorWatchEngine: ObservableObject {
         alarm = reason
         pokeControls()
         player.start(message: reason.message)
+        pollDevice()
     }
 
     /// Stops the siren. The same kind of alarm re-arms after its snooze if the problem persists.
@@ -1878,45 +1995,55 @@ final class AnchorWatchEngine: ObservableObject {
         var uncertainty: Double?
         var originalLatitude: Double?, originalLongitude: Double?
         var awaitingSwingFix: Bool?
+        var estimateAutoApplied: Bool?
+        var rodeConfirmed: Bool?
     }
     private let key = "anchorwatch.saved"
     private let scopeKey = "anchorwatch.scope.v3"
     private let boatKey = "anchorwatch.boat.v3"
 
-    private func saveScope() {
-        defaults.set(try? JSONEncoder().encode(scope), forKey: scopeKey)
+    @Published private(set) var settingsError: String?
+    private func encodeSetting<T: Encodable>(_ value: T, key: String) {
+        do { defaults.set(try JSONEncoder().encode(value), forKey: key); settingsError = nil }
+        catch { settingsError = "Settings could not be saved: " + error.localizedDescription + " Previous saved values have been kept." }
     }
+    private func saveScope() { encodeSetting(scope, key: scopeKey) }
 
     private func saveBoat() {
-        defaults.set(try? JSONEncoder().encode(boat), forKey: boatKey)
+        encodeSetting(boat, key: boatKey)
     }
 
     private func save() {
         guard let anchor else { defaults.removeObject(forKey: key); return }
         let saved = Saved(latitude: anchor.latitude, longitude: anchor.longitude, radius: radius, dropped: anchorDropped,
                           uncertainty: anchorUncertainty,
-                          originalLatitude: originalAnchor?.latitude, originalLongitude: originalAnchor?.longitude, awaitingSwingFix: awaitingSwingFix)
-        defaults.set(try? JSONEncoder().encode(saved), forKey: key)
+                          originalLatitude: originalAnchor?.latitude, originalLongitude: originalAnchor?.longitude, awaitingSwingFix: awaitingSwingFix,
+                          estimateAutoApplied: estimateAutoApplied, rodeConfirmed: rodeConfirmed)
+        encodeSetting(saved, key: key)
     }
 
     private func load() {
+        if let raw = defaults.string(forKey: "anchorwatch.units"), let saved = Units(rawValue: raw) { units = saved }
         if let raw = defaults.string(forKey: "anchorwatch.simPlace"), let place = SimulatedLocationSource.Place(rawValue: raw) {
             simPlace = place
             simulator.origin = place.coordinate
         }
         if defaults.object(forKey: "anchorwatch.gustLimit") != nil { gustLimit = defaults.double(forKey: "anchorwatch.gustLimit") }
         if let raw = defaults.string(forKey: "anchorwatch.source"), let kind = SourceKind(rawValue: raw) { sourceKind = kind }
+        hideWarningBanners = defaults.bool(forKey: "anchorwatch.hideWarningBanners")
+        muteAdvisoryNotifications = defaults.bool(forKey: "anchorwatch.muteAdvisoryNotifications")
         fadeSideButtons = defaults.bool(forKey: "anchorwatch.fadeSideButtons")
         trackWhenUnanchored = defaults.bool(forKey: "anchorwatch.trackUnanchored")
         rodeOutSet = defaults.object(forKey: "anchorwatch.rodeOut") as? Double
         // Tests get an empty log of their own rather than the phone's.
-        anchorages = defaults === UserDefaults.standard ? AnchorageLog.load() : []
+        if defaults === UserDefaults.standard { loadAnchorageLog() }
         if let data = defaults.data(forKey: "anchorwatch.pressure"), let saved = try? JSONDecoder().decode([PressureReading].self, from: data) {
             pressureHistory = saved
             lastPressureAlert = pressureLevel
         }
         if let data = defaults.data(forKey: "anchorwatch.hazards"), let saved = try? JSONDecoder().decode([Hazard].self, from: data) {
-            savedHazards = saved
+            savedHazards = saved.filter { CLLocationCoordinate2DIsValid($0.coordinate) && $0.radius.isFinite && $0.radius >= 0 }
+            if savedHazards.count != saved.count { persistenceError = "Invalid saved hazard coordinates were ignored. Review your hazard marks." }
         }
         if defaults.object(forKey: "anchorwatch.radiusFollows") != nil { radiusFollowsRode = defaults.bool(forKey: "anchorwatch.radiusFollows") }
         if defaults.object(forKey: "anchorwatch.currentFactor") != nil { currentFactor = defaults.double(forKey: "anchorwatch.currentFactor") }
@@ -1928,11 +2055,20 @@ final class AnchorWatchEngine: ObservableObject {
         if let data = defaults.data(forKey: scopeKey), let s = try? JSONDecoder().decode(ScopeSettings.self, from: data) { scope = s }
         if let data = defaults.data(forKey: boatKey), let b = try? JSONDecoder().decode(BoatProfile.self, from: data) { boat = b }
         guard let data = defaults.data(forKey: key), let s = try? JSONDecoder().decode(Saved.self, from: data) else { return }
-        anchor = CLLocationCoordinate2D(latitude: s.latitude, longitude: s.longitude)
+        let savedAnchor = CLLocationCoordinate2D(latitude: s.latitude, longitude: s.longitude)
+        guard CLLocationCoordinate2DIsValid(savedAnchor), s.radius.isFinite, s.radius > 0 else {
+            persistenceError = "The saved anchor position or radius is invalid. Set and verify the anchor again before relying on monitoring."
+            return
+        }
+        anchor = savedAnchor
         radius = s.radius
         anchorDropped = s.dropped
         anchorUncertainty = s.uncertainty
+        rodeConfirmed = s.rodeConfirmed ?? false
+        if rodeOutSet == nil { rodeOutSet = rodeSuggested }
         awaitingSwingFix = s.awaitingSwingFix ?? false
-        if let lat = s.originalLatitude, let lon = s.originalLongitude { originalAnchor = CLLocationCoordinate2D(latitude: lat, longitude: lon) }
+        // Older saves cannot tell us whether the mark was hand placed: preserve it unless still finding the anchor.
+        estimateAutoApplied = s.estimateAutoApplied ?? !awaitingSwingFix
+        if let lat = s.originalLatitude, let lon = s.originalLongitude { let point = CLLocationCoordinate2D(latitude: lat, longitude: lon); if CLLocationCoordinate2DIsValid(point) { originalAnchor = point } }
     }
 }

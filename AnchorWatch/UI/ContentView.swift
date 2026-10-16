@@ -44,7 +44,7 @@ struct NudgePad: View {
             HStack(spacing: 2) {
                 arrow("arrowtriangle.left.fill", 270, "West")
                 Button { engine.showNudgePad = false } label: {
-                    Image(systemName: "xmark").font(.caption.bold()).frame(width: 40, height: 40)
+                    Image(systemName: "xmark").font(.caption.bold()).frame(width: 44, height: 44)
                 }
                 .accessibilityLabel("Close fine-tune")
                 arrow("arrowtriangle.right.fill", 90, "East")
@@ -62,7 +62,7 @@ struct NudgePad: View {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             engine.nudgeAnchor(toward: bearing)
         } label: {
-            Image(systemName: icon).font(.title3).frame(width: 40, height: 40)
+            Image(systemName: icon).font(.system(size: 20)).frame(width: 44, height: 44)
                 .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
         }
         .accessibilityLabel("Move anchor \(name)")
@@ -103,6 +103,7 @@ enum AnchorTabIcon {
 
 struct ContentView: View {
     @EnvironmentObject var engine: AnchorWatchEngine
+    @Environment(\.dynamicTypeSize) private var textSize
     // `-showSettings` opens the settings sheet at launch, for screenshots.
     @State private var showSettings = ProcessInfo.processInfo.arguments.contains("-showSettings")
     @State private var showAlerts = false
@@ -123,29 +124,65 @@ struct ContentView: View {
     // `-showBoat` opens the boat profile at launch, for screenshots.
     @State private var showBoat = ProcessInfo.processInfo.arguments.contains("-showBoat")
 
+    @AppStorage("anchorwatch.dashboardExpanded") private var dashboardExpanded = true
+    @State private var watchPanelHeights: [String: CGFloat] = [:]
+
     var body: some View {
-        ZStack {
+        GeometryReader { _ in ZStack {
             Color(red: 0.06, green: 0.09, blue: 0.15).ignoresSafeArea()
-            VStack(spacing: 10) {
-                DashboardHeader()
-                if let alarm = engine.alarm { AlarmBanner(reason: alarm) }
-                AnchorCorrectionBanner()
-                if let drift = engine.anchorDrift { DriftBanner(drift: drift) }
-                DashboardTiles(openConditions: { engine.tab = .weather }, openDepth: { engine.tab = .water },
-                               openAnchoring: { engine.tab = .anchor })
-                OutlookBanner()
-                chartPanel
-                if !engine.hiddenHazards.isEmpty {
-                    Button("Hidden hazards (\(engine.hiddenHazards.count))") { showHiddenHazards = true }
-                        .font(.footnote)
-                        .accessibilityIdentifier("hiddenHazards")
+            VStack(spacing: 8) {
+                if !textSize.isAccessibilitySize {
+                    DashboardHeader()
+                    dashboard
                 }
-                NoticesCard(openAnchoring: { engine.tab = .anchor }, openConditions: { engine.tab = .weather },
-                            openAlerts: { showAlerts = true }, openWatchCheck: { showWatchCheck = true })
-                controlRow
+                GeometryReader { mapArea in
+                    ScrollView {
+                        VStack(spacing: 10) {
+                            VStack(spacing: 10) {
+                                if textSize.isAccessibilitySize {
+                                    DashboardHeader()
+                                    dashboard
+                                }
+                                if let error = engine.settingsError { Text(error).font(.caption).foregroundStyle(.orange) }
+                                if let error = engine.persistenceError {
+                                    VStack(alignment: .leading) {
+                                        Text(error).foregroundStyle(.orange)
+                                        Button("Retry anchorage log") { engine.retrySavingAnchorages() }
+                                    }.font(.caption)
+                                }
+                                MonitoringActionCard(openWatchCheck: { showWatchCheck = true })
+                                if !engine.hideWarningBanners { OutlookBanner() }
+                            }
+                            .background {
+                                GeometryReader { panel in
+                                    Color.clear.preference(key: WatchPanelHeightKey.self, value: ["top": panel.size.height])
+                                }
+                            }
+                            chartPanel.frame(height: max(220, mapArea.size.height - (watchPanelHeights["top"] ?? 0) - (watchPanelHeights["bottom"] ?? 0) - 20))
+                                .transaction { transaction in
+                                    transaction.animation = nil
+                                    transaction.disablesAnimations = true
+                                }
+                            secondaryDetails
+                                .background {
+                                    GeometryReader { panel in
+                                        Color.clear.preference(key: WatchPanelHeightKey.self, value: ["bottom": panel.size.height])
+                                    }
+                                }
+                        }
+                    }
+                    .onPreferenceChange(WatchPanelHeightKey.self) { watchPanelHeights = $0 }
+                }
+                if engine.sideButtonsVisible {
+                    controlRow.transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
             }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 4)
+            .padding(.horizontal, 12).padding(.bottom, 4)
+        } }
+        .animation(.easeInOut(duration: 0.6), value: engine.sideButtonsVisible)
+        .animation(.easeInOut(duration: 0.2), value: dashboardExpanded)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if let alarm = engine.alarm { AlarmBanner(reason: alarm).padding(.horizontal, 12).padding(.vertical, 4) }
         }
         .preferredColorScheme(.dark)
         // Coming back from a sheet shows the buttons again, rather than leaving them faded.
@@ -168,11 +205,37 @@ struct ContentView: View {
         .sheet(isPresented: $showBoat) { NavigationStack { BoatProfileView() } }
     }
 
+    private var dashboard: some View {
+        DisclosureGroup(isExpanded: $dashboardExpanded) {
+            DashboardTiles(openConditions: { engine.tab = .weather }, openDepth: { engine.tab = .water },
+                           openAnchoring: { engine.tab = .anchor }).padding(.top, 6)
+        } label: {
+            Text("Dashboard").font(.caption.bold()).foregroundStyle(.secondary)
+        }
+        .accessibilityIdentifier("dashboardGrid")
+    }
+
+    private var secondaryDetails: some View {
+        VStack(spacing: 10) {
+            AnchorCorrectionBanner()
+            if let drift = engine.anchorDrift { DriftBanner(drift: drift) }
+            if !engine.hiddenHazards.isEmpty {
+                Button("Hidden hazards (\(engine.hiddenHazards.count))") { showHiddenHazards = true }
+                    .font(.footnote).accessibilityIdentifier("hiddenHazards")
+            }
+            NoticesCard(openAnchoring: { engine.tab = .anchor }, openConditions: { engine.tab = .weather },
+                        openAlerts: { showAlerts = true }, openWatchCheck: { showWatchCheck = true })
+        }
+    }
+
     /// The real chart in a rounded panel, with the anchor controls fading over its lower edge.
     private var chartPanel: some View {
         ZStack(alignment: .bottom) {
             ChartMapView(engine: engine)
             VStack(spacing: 8) {
+                if let status = engine.chartStatus {
+                    Text(status).font(.caption).padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                }
                 if engine.windOverlayOn {
                     WindTimeBar()
                         .opacity(engine.controlsVisible ? 1 : 0)
@@ -198,6 +261,12 @@ struct ContentView: View {
             .padding(8)
         }
         .overlay(alignment: .topLeading) { SimClockBadge().padding(8) }
+        .overlay(alignment: .bottomLeading) {
+            if engine.mapLayer == .seaMap || engine.mapLayer == .satellite {
+                Link("© OpenStreetMap contributors · OpenSeaMap", destination: URL(string: "https://www.openstreetmap.org/copyright")!)
+                    .font(.caption2).foregroundStyle(.primary).padding(4).background(.regularMaterial).padding(6)
+            }
+        }
         .overlay(alignment: .bottomTrailing) {
             if engine.showNudgePad && engine.anchor != nil { NudgePad().padding(10) }
         }
@@ -209,27 +278,33 @@ struct ContentView: View {
     private var controlRow: some View {
         HStack(spacing: 0) {
             Group {
-                RoundButton(icon: "gearshape") { showSettings = true }
+                RoundButton(icon: "gearshape", label: "Settings") { showSettings = true }
                 Menu {
                     Picker("Map", selection: $engine.mapLayer) {
                         ForEach(ChartLayer.allCases) { Text($0.rawValue).tag($0) }
                     }
-                } label: { RoundIcon(icon: "map") }
+                } label: { RoundIcon(icon: "map") }.accessibilityLabel("Chart layer")
                 Button { engine.windOverlayOn.toggle() } label: {
                     RoundIcon(icon: "wind", active: engine.windOverlayOn)
-                }
-                RoundButton(icon: "scope") { engine.recenter() }
-                RoundButton(icon: "moon.fill") { showNight = true }
-                RoundButton(icon: "plus") { engine.zoom(by: 0.5) }
-                RoundButton(icon: "minus") { engine.zoom(by: 2) }
+                }.accessibilityLabel(engine.windOverlayOn ? "Hide wind overlay" : "Show wind overlay")
+                RoundButton(icon: "scope", label: "Recenter chart") { engine.recenter() }
+                RoundButton(icon: "moon.fill", label: "Night mode") { showNight = true }
+                RoundButton(icon: "plus", label: "Zoom in") { engine.zoom(by: 0.5) }
+                RoundButton(icon: "minus", label: "Zoom out") { engine.zoom(by: 2) }
             }
             .frame(maxWidth: .infinity)
         }
-        .opacity(engine.sideButtonsVisible ? 1 : 0)
         .allowsHitTesting(engine.sideButtonsVisible)
-        .animation(.easeInOut(duration: 0.6), value: engine.sideButtonsVisible)
         // Using a button restarts the fade timer.
         .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in engine.pokeControls() })
+    }
+}
+
+/// Measure only the content around the map, so the map can consume all remaining height.
+private struct WatchPanelHeightKey: PreferenceKey {
+    static let defaultValue: [String: CGFloat] = [:]
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, latest in latest })
     }
 }
 
@@ -266,7 +341,7 @@ struct AlarmBanner: View {
     var body: some View {
         HStack {
             Image(systemName: "exclamationmark.triangle.fill")
-            Text(reason.message).bold()
+            Text(engine.alarmHeadline ?? reason.message).bold()
             Spacer()
             Button("Silence") { engine.silence() }
                 .buttonStyle(.borderedProminent).tint(.white).foregroundStyle(.red)
@@ -456,6 +531,17 @@ struct SettingsView: View {
                     .accessibilityIdentifier("anchorageLog")
                 }
                 Section {
+                    Toggle("Hide warning banners", isOn: $engine.hideWarningBanners)
+                        .accessibilityIdentifier("hideWarningBanners")
+                    Toggle("Silence advisory notifications", isOn: $engine.muteAdvisoryNotifications)
+                        .accessibilityIdentifier("muteAdvisoryNotifications")
+                    NavigationLink("Review warnings") { WarningReviewView() }
+                } header: {
+                    Text("Warnings")
+                } footer: {
+                    Text("Review warnings from the Alarm ON menu at any time. Hiding banners keeps forecast and advisory warnings off the dashboard. Silencing stops new weather and barometer notifications. Anchor alarms, drift warnings and critical monitoring problems stay active.")
+                }
+                Section {
                     Stepper(value: $engine.gustLimit, in: 10...50, step: 5) {
                         LabeledContent("Gust Warning", value: "\(Int(engine.gustLimit)) kt")
                     }
@@ -478,11 +564,56 @@ struct SettingsView: View {
                     }
                     .accessibilityIdentifier("testing")
                 }
+                Section {
+                    NavigationLink {
+                        AboutView()
+                    } label: {
+                        Label("About Anchor Watch", systemImage: "info.circle")
+                    }
+                    .accessibilityIdentifier("about")
+                } footer: {
+                    Text("Version " + AppVersion.version + " · Build " + AppVersion.build)
+                }
             }
             .navigationTitle("Settings")
             .toolbar { Button("Done") { dismiss() } }
         }
         .presentationDetents([.medium, .large])
+    }
+}
+
+/// Read the installed app's metadata so the screen always identifies the binary actually running.
+private enum AppVersion {
+    static var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown" }
+    static var build: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unknown" }
+    static var environment: String {
+        #if targetEnvironment(simulator)
+        "iOS Simulator"
+        #else
+        "iPhone"
+        #endif
+    }
+}
+
+struct AboutView: View {
+    var body: some View {
+        Form {
+            Section {
+                Label("Anchor Watch", systemImage: "info.circle.fill").font(.title2.bold())
+                Text("Anchor monitoring and anchorage planning").foregroundStyle(.secondary)
+            }
+            Section("Installed version") {
+                LabeledContent("Version", value: AppVersion.version)
+                LabeledContent("Build number", value: AppVersion.build)
+            }
+            .textSelection(.enabled)
+            Section("Running on") {
+                LabeledContent("Environment", value: AppVersion.environment)
+                LabeledContent("iOS", value: UIDevice.current.systemVersion)
+            }
+        }
+        .navigationTitle("About Anchor Watch")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -586,6 +717,7 @@ struct RoundIcon: View {
         Group {
             if isText { Text(icon).font(.title2) } else { Image(systemName: icon) }
         }
+            .font(.system(size: 20))
             .frame(width: 44, height: 44)
             .background(active ? AnyShapeStyle(Color.orange.opacity(0.35)) : AnyShapeStyle(.regularMaterial), in: Circle())
             .overlay(Circle().stroke(active ? Color.orange : .clear, lineWidth: 2))
@@ -594,8 +726,9 @@ struct RoundIcon: View {
 
 struct RoundButton: View {
     let icon: String
+    var label: String = ""
     let action: () -> Void
-    var body: some View { Button(action: action) { RoundIcon(icon: icon) } }
+    var body: some View { Button(action: action) { RoundIcon(icon: icon) }.accessibilityLabel(label.isEmpty ? icon : label) }
 }
 
 struct ScopeView: View {
@@ -658,6 +791,7 @@ struct ScopeView: View {
 /// The depth you read off the sounder: the first thing on the Water page.
 struct DepthEntrySection: View {
     @EnvironmentObject var engine: AnchorWatchEngine
+    @FocusState private var editingDepth: Bool
 
     private var units: Units { engine.units }
 
@@ -669,23 +803,27 @@ struct DepthEntrySection: View {
     private var step: Double { units == .feet ? 1 : 0.5 }
 
     var body: some View {
-        Section("Depth now · enter a new sounder reading") {
+        Section("Water depth below the surface") {
             HStack {
                 Button { depth.wrappedValue = max(0, depth.wrappedValue - step) } label: {
-                    Image(systemName: "minus.circle.fill").font(.largeTitle)
-                }
+                    Image(systemName: "minus.circle.fill").font(.largeTitle).frame(minWidth: 44, minHeight: 44)
+                }.accessibilityLabel("Decrease water depth")
                 TextField("Depth", value: depth, format: .number.precision(.fractionLength(0...1)))
+                    .focused($editingDepth).accessibilityLabel("Water depth in " + units.symbol)
                     .keyboardType(.decimalPad)
                     .multilineTextAlignment(.center)
                     .font(.system(size: 44, weight: .bold, design: .rounded))
                 Text(units.symbol).font(.title3).foregroundStyle(.secondary)
                 Button { depth.wrappedValue += step } label: {
-                    Image(systemName: "plus.circle.fill").font(.largeTitle)
-                }
+                    Image(systemName: "plus.circle.fill").font(.largeTitle).frame(minWidth: 44, minHeight: 44)
+                }.accessibilityLabel("Increase water depth")
             }
             .buttonStyle(.borderless)
+            Text("Use depth from the water surface to the seabed. Correct sounder readings shown below the keel or transducer before entering.").font(.footnote).foregroundStyle(.secondary)
             Text(engine.depthReferenceDetail).font(.caption).foregroundStyle(.secondary)
-            Button("Confirm this depth as a new sounder reading") { engine.setDepthReading(engine.liveDepth) }.font(.footnote)
+            Button("Confirm this depth as a new sounder reading") { engine.setDepthReading(engine.liveDepth); editingDepth = false }.font(.footnote)
+        }
+        .toolbar { ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("Done") { editingDepth = false } }
         }
     }
 }
@@ -740,6 +878,8 @@ struct DepthSections: View {
     var body: some View {
         Section("Tide") {
             tideData
+            Text("Stations are selected by distance, not by matching the local tide regime. Verify these predictions for your anchorage before using tide-adjusted depth.")
+                .font(.footnote).foregroundStyle(.secondary)
             HStack {
                 Button { tide.wrappedValue = max(0, tide.wrappedValue - step) } label: {
                     Image(systemName: "minus.circle.fill").font(.title)
@@ -795,14 +935,18 @@ struct ConditionsView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("Environmental data") {
-                    Text(engine.environmentCoverage.summary)
-                    ForEach(engine.environmentDetails, id: \.self) { Text($0).font(.caption) }
-                    Button("Retry environmental data") { engine.retryEnvironment() }
-                }
                 if let now = engine.windNow {
-                    Section("Forecast at your position") {
-                        Text("\(Compass.name(now.direction)) \(Int(now.speed.rounded())) kt, gusts \(Int(now.gust.rounded())) kt")
+                    Section(engine.sourceKind == .simulator ? "Simulated wind now" : "Forecast at your position") {
+                        Label("\(Int(now.speed.rounded())) kt · gusts \(Int(now.gust.rounded())) kt", systemImage: "wind").font(.title2.bold())
+                        Text("From " + Compass.name(now.direction)).foregroundStyle(.secondary)
+                    }
+                }
+                Section {
+                    DisclosureGroup(engine.forecastStatusText) {
+                        Text(engine.environmentCoverage.summary).font(.footnote)
+                        ForEach(engine.environmentDetails, id: \.self) { Text($0).font(.caption) }
+                        Text(engine.adviceAssumptions).font(.footnote)
+                        Button("Retry all environmental data") { engine.retryEnvironment() }
                     }
                 }
                 WindOutlookSections()
@@ -828,7 +972,7 @@ struct ConditionsView: View {
                     }
                 }
                 Section {
-                    Text("Observations from the NOAA National Data Buoy Center, refreshed about every 10 minutes. Forecast wind comes from a computer model and can differ from what a nearby station measures.")
+                    Text("Observations from NOAA and Environment Canada, refreshed about every 10 minutes. Forecast wind comes from a computer model and can differ from what a nearby station measures.")
                 }
                 .font(.caption).foregroundStyle(.secondary)
             }
@@ -895,7 +1039,7 @@ struct AlertsView: View {
                 if engine.nwsAlerts.isEmpty {
                     Text(engine.alertsAreCurrent ? "No active alerts returned by the latest check for this location." : "Current alert status unavailable. Check data age or retry.").foregroundStyle(.secondary)
                 }
-                ForEach(engine.nwsAlerts) { alert in
+                ForEach(engine.activeAlerts) { alert in
                     VStack(alignment: .leading, spacing: 6) {
                         Label(alert.event, systemImage: "exclamationmark.triangle.fill")
                             .font(.headline).foregroundStyle(alert.severity.color)
@@ -1030,5 +1174,51 @@ struct HiddenHazardsView: View {
                 Text("\(hazard.label) will be deleted and cannot be restored.")
             }
         }
+    }
+}
+
+
+/// Stages keypad edits until Done, so entering a multi-digit radius never changes the alarm mid-entry.
+struct NumericAdjustment: View {
+    let title: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let step: Double
+    let unit: String
+    @State private var draft = ""
+    @FocusState private var editing: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            LabeledContent(title) {
+                HStack {
+                    TextField(title, text: $draft)
+                        .keyboardType(.decimalPad).multilineTextAlignment(.trailing)
+                        .frame(minWidth: 70, maxWidth: 100).focused($editing)
+                        .accessibilityLabel(title + " in " + unit)
+                    Text(unit).foregroundStyle(.secondary)
+                }
+            }
+            Slider(value: $value, in: range, step: step)
+                .accessibilityLabel(title).accessibilityValue(String(format: "%.1f ", value) + unit)
+        }
+        .onAppear { refreshDraft() }
+        .onChange(of: value) { _, _ in if !editing { refreshDraft() } }
+        .onChange(of: editing) { _, active in if !active { commit() } }
+        .toolbar {
+            if editing {
+                ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("Done") { editing = false } }
+            }
+        }
+    }
+
+    private func refreshDraft() { draft = value.formatted(.number.precision(.fractionLength(0...2))) }
+    private func commit() {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        if let number = formatter.number(from: draft)?.doubleValue, number.isFinite {
+            value = min(range.upperBound, max(range.lowerBound, number))
+        }
+        refreshDraft()
     }
 }

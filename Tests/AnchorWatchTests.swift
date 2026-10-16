@@ -1511,9 +1511,9 @@ final class CurrentDirectionTests: XCTestCase {
         let b = BoatProfile(), turn = Date(timeIntervalSince1970: 1_800_000_000)
         var c = AnchorConditions(); c.current = 1; c.rodeOut = 60
         let r = AnchorMath.assess(b, scope: scope, c)
-        XCTAssertFalse(AnchorMath.suggestions(b, scope: scope, c, r, units: .feet, tideTurn: turn).contains { $0.contains("reverses") })
+        XCTAssertFalse(AnchorMath.suggestions(b, scope: scope, c, r, units: .feet, tideTurn: turn).contains { $0.contains("Predicted current slack") })
         c.currentDirection = .against
-        XCTAssertTrue(AnchorMath.suggestions(b, scope: scope, c, r, units: .feet, tideTurn: turn).contains { $0.contains("reverses") })
+        XCTAssertTrue(AnchorMath.suggestions(b, scope: scope, c, r, units: .feet, tideTurn: turn).contains { $0.contains("Predicted current slack") })
     }
 }
 
@@ -2320,7 +2320,8 @@ final class MonitoringFreshnessTests: XCTestCase {
         let e = AnchorWatchEngine(player: SilentAlarm(), liveActivity: NoLiveActivity(), defaults: defaults, useGPSHardware: false, clock: { now })
         e.ingest(observation(now)); e.dropAnchor(.settled)
         XCTAssertEqual(e.watchState, .awaitingFix)
-        XCTAssertEqual(e.snapshot?.headline, "Finding anchor — circle alarm not armed")
+        XCTAssertEqual(e.snapshot?.headline, e.monitoring.detail)
+        XCTAssertEqual(e.monitoring.title, "Circle alarm OFF")
         let restored = AnchorWatchEngine(player: SilentAlarm(), liveActivity: NoLiveActivity(), defaults: defaults, useGPSHardware: false, clock: { now })
         XCTAssertTrue(restored.awaitingSwingFix)
         restored.ingest(observation(now))
@@ -2664,5 +2665,513 @@ final class IntegratedReviewFixTests: XCTestCase {
         restored.setDepthReading(5)
         XCTAssertEqual(restored.liveDepth, 5, accuracy: 0.001)
         XCTAssertFalse(restored.waterForecast.isEmpty)
+    }
+}
+
+
+@MainActor
+final class ReviewFixRegressionTests: XCTestCase {
+    private let origin = CLLocationCoordinate2D(latitude: 48, longitude: -123)
+
+    private func engine(_ defaults: UserDefaults = UserDefaults(suiteName: UUID().uuidString)!,
+                        player: SilentAlarm? = nil) -> AnchorWatchEngine {
+        AnchorWatchEngine(player: player ?? SilentAlarm(), liveActivity: NoLiveActivity(), defaults: defaults, useGPSHardware: false)
+    }
+
+    private func fix(_ point: CLLocationCoordinate2D, at time: Date = Date()) -> Fix {
+        Fix(coordinate: point, accuracy: 3, course: nil, speed: nil, timestamp: time)
+    }
+
+    private func swing(_ engine: AnchorWatchEngine, around center: CLLocationCoordinate2D,
+                       radius: Double, arc: Double = 120) {
+        let start = Date()
+        for i in 0..<240 {
+            let bearing = 160 + arc * (0.5 - 0.5 * cos(Double(i) / 240 * 4 * .pi))
+            let time = start.addingTimeInterval(180 + Double(i) * 10)
+            engine.ingest(fix(Geo.destination(from: center, bearing: bearing, meters: radius), at: time), receivedAt: time)
+        }
+        engine.updateAnchorEstimate()
+    }
+
+    func testNarrowSwingUsesActualRodeAndPresentDepthWithoutMovingACorrectMark() throws {
+        let e = engine()
+        e.scope = ScopeSettings(depth: 5, tideRise: 3, bowHeight: 1, boatLength: 14, scopeRatio: 5, margin: 0)
+        e.rodeOutSet = 60
+        e.ingest(fix(origin)); e.dropAnchor()
+        let radius = sqrt(60.0 * 60 - 6 * 6) + 7
+        swing(e, around: origin, radius: radius, arc: 20)
+        let estimate = try XCTUnwrap(e.anchorEstimate)
+        XCTAssertEqual(estimate.modelRadius, radius, accuracy: 0.001)
+        XCTAssertEqual(estimate.method, .fixedRadius)
+        XCTAssertLessThan(Geo.distance(try XCTUnwrap(e.anchor), origin), 2)
+        XCTAssertNil(e.anchorCorrection)
+    }
+
+    func testHandPlacedAnchorStaysPutAfterRelaunch() throws {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let e = engine(defaults)
+        e.scope = ScopeSettings(depth: 5, bowHeight: 1, boatLength: 14, scopeRatio: 5, margin: 0)
+        e.ingest(fix(origin)); e.dropAnchor(); e.moveAnchor(to: origin)
+        let again = engine(defaults)
+        swing(again, around: Geo.destination(from: origin, bearing: 45, meters: 12), radius: 36)
+        XCTAssertNotNil(again.anchorEstimate)
+        XCTAssertLessThan(Geo.distance(try XCTUnwrap(again.anchor), origin), 0.01)
+        XCTAssertNil(again.anchorCorrection)
+    }
+
+    func testAutomaticCorrectionIsNotRepeatedAfterRelaunch() throws {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let e = engine(defaults)
+        e.scope = ScopeSettings(depth: 5, bowHeight: 1, boatLength: 14, scopeRatio: 5, margin: 0)
+        e.ingest(fix(origin)); e.dropAnchor()
+        let first = Geo.destination(from: origin, bearing: 45, meters: 12)
+        swing(e, around: first, radius: 36)
+        XCTAssertNotNil(e.anchorCorrection)
+        let saved = try XCTUnwrap(e.anchor)
+        let again = engine(defaults)
+        swing(again, around: Geo.destination(from: saved, bearing: 45, meters: 12), radius: 36)
+        XCTAssertNotNil(again.anchorEstimate)
+        XCTAssertLessThan(Geo.distance(try XCTUnwrap(again.anchor), saved), 0.01)
+        XCTAssertNil(again.anchorCorrection)
+    }
+
+    func testUncorrectedDropStillGetsItsFirstCorrectionAfterRelaunch() throws {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let e = engine(defaults)
+        e.scope = ScopeSettings(depth: 5, bowHeight: 1, boatLength: 14, scopeRatio: 5, margin: 0)
+        e.ingest(fix(origin)); e.dropAnchor()
+        let again = engine(defaults)
+        let center = Geo.destination(from: origin, bearing: 45, meters: 12)
+        swing(again, around: center, radius: 36)
+        XCTAssertLessThan(Geo.distance(try XCTUnwrap(again.anchor), center), 2)
+        XCTAssertNotNil(again.anchorCorrection)
+    }
+
+    func testLegacySavedMarkIsPreservedUnlessStillAwaitingSwing() throws {
+        for awaiting in [false, true] {
+            let defaults = UserDefaults(suiteName: UUID().uuidString)!
+            let e = engine(defaults)
+            e.scope = ScopeSettings(depth: 5, bowHeight: 1, boatLength: 14, scopeRatio: 5, margin: 0)
+            e.ingest(fix(origin)); e.dropAnchor(awaiting ? .settled : .goingDown)
+            let data = try XCTUnwrap(defaults.data(forKey: "anchorwatch.saved"))
+            var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            legacy.removeValue(forKey: "estimateAutoApplied")
+            defaults.set(try JSONSerialization.data(withJSONObject: legacy), forKey: "anchorwatch.saved")
+            let again = engine(defaults)
+            let center = Geo.destination(from: origin, bearing: 45, meters: 12)
+            swing(again, around: center, radius: 36)
+            let target = awaiting ? center : origin
+            XCTAssertLessThan(Geo.distance(try XCTUnwrap(again.anchor), target), 2)
+        }
+    }
+
+    func testAudioFailureIsCriticalAndShownInAlarmAndLockScreenThenClears() throws {
+        let player = SilentAlarm()
+        let e = engine(player: player)
+        e.ingest(fix(origin)); e.dropAnchor(); e.radius = 30
+        player.audioFailure = "Audio output unavailable"
+        e.safetyChecks()
+        XCTAssertEqual(e.watchChecks.first { $0.id == "audio" }?.state, .critical)
+        XCTAssertEqual(e.snapshot?.headline, "Siren unavailable")
+        e.testingSiren = true
+        XCTAssertEqual(e.snapshot?.headline, "Siren unavailable", "a failed test must not claim the siren is sounding")
+        e.testingSiren = false
+        let outside = Geo.destination(from: origin, bearing: 90, meters: 60)
+        e.ingest(fix(outside)); e.ingest(fix(outside))
+        XCTAssertTrue(try XCTUnwrap(e.alarmHeadline).contains("siren unavailable"))
+        XCTAssertEqual(e.snapshot?.headline, e.alarmHeadline)
+        XCTAssertNotNil(e.alarm, "audio failure must not discard the navigation alarm")
+        player.audioFailure = nil
+        e.safetyChecks()
+        XCTAssertFalse(e.watchChecks.contains { $0.id == "audio" })
+        XCTAssertEqual(e.snapshot?.headline, e.alarm?.message)
+    }
+}
+
+final class HoldingLimitRegressionTests: XCTestCase {
+    func testRopeAndMixedRodeGustLimitUsesAngleAdjustedHolding() throws {
+        let scope = ScopeSettings(depth: 6, bowHeight: 1.5, boatLength: 14.3, scopeRatio: 5, margin: 5)
+        for type in [BoatProfile.RodeType.rope, .chainAndRope, .allChain] {
+            var boat = BoatProfile()
+            boat.rodeType = type; boat.chainLength = 10
+            var conditions = AnchorConditions()
+            conditions.current = 0; conditions.waveHeight = 0; conditions.rodeOut = 60; conditions.bottom = .sand
+            let limit = try XCTUnwrap(AnchorMath.assess(boat, scope: scope, conditions).holdingGust)
+            conditions.gust = limit * 0.99
+            let below = AnchorMath.assess(boat, scope: scope, conditions)
+            XCTAssertLessThan(below.anchorLoad, try XCTUnwrap(below.holding) / AnchorMath.holdingSafety)
+            conditions.gust = limit * 1.01
+            let above = AnchorMath.assess(boat, scope: scope, conditions)
+            XCTAssertGreaterThan(above.anchorLoad, try XCTUnwrap(above.holding) / AnchorMath.holdingSafety)
+        }
+    }
+
+    func testDepthRecommendationInvertsLoadedChainEquation() throws {
+        let weight = AnchorMath.chainWeight(sizeMM: 9.525)
+        for load in [0.0, 500, 2_000, 5_000] {
+            let depth = try XCTUnwrap(AnchorMath.deepestChainDepth(length: 60, load: load, weight: weight, bowHeight: 1.5))
+            let needed = AnchorMath.chainNeeded(load: load, height: depth + 1.5, weight: weight) * AnchorMath.rodeMargin
+            XCTAssertEqual(needed, 60, accuracy: 0.0001)
+            let deeper = AnchorMath.chainNeeded(load: load, height: depth + 1.6, weight: weight) * AnchorMath.rodeMargin
+            XCTAssertGreaterThan(deeper, 60)
+        }
+    }
+
+    func testGaleAdviceDoesNotRecommendDeeperOrInsufficientWater() {
+        var boat = BoatProfile(); boat.chainLength = 30
+        let scope = ScopeSettings(depth: 10, bowHeight: 1.5, boatLength: 14.3, scopeRatio: 5, margin: 5)
+        var conditions = AnchorConditions(); conditions.gust = 50; conditions.rodeOut = 30
+        let result = AnchorMath.assess(boat, scope: scope, conditions)
+        let tips = AnchorMath.suggestions(boat, scope: scope, conditions, result, units: .meters)
+        XCTAssertTrue(tips.contains { $0.contains("adequate keel clearance") && $0.contains("seek more shelter") })
+        XCTAssertFalse(tips.contains { $0.contains("Look for water under") })
+        XCTAssertNil(AnchorMath.deepestChainDepth(length: 1, load: 5_000, weight: 10, bowHeight: 1.5))
+    }
+}
+
+@MainActor
+final class AudioStartupRegressionTests: XCTestCase {
+    private struct StartupError: LocalizedError {
+        let errorDescription: String? = "Simulated audio failure"
+    }
+
+    func testSessionFailurePreventsStartupAndRecoversOnWatchdogRetry() {
+        var failing = true
+        var starts = 0
+        let player = AlarmPlayer(sessionSetup: { if failing { throw StartupError() } }, engineStartup: { starts += 1 })
+        player.arm()
+        XCTAssertEqual(player.audioFailure, "Simulated audio failure")
+        XCTAssertEqual(starts, 0)
+        failing = false
+        player.ensureRunning()
+        XCTAssertNil(player.audioFailure)
+        XCTAssertEqual(starts, 1)
+        player.disarm()
+    }
+
+    func testInterruptionRemainsVisibleUntilItEndsAndAudioRestarts() {
+        var starts = 0
+        let player = AlarmPlayer(sessionSetup: {}, engineStartup: { starts += 1 })
+        player.arm()
+        XCTAssertEqual(starts, 1)
+        player.handleInterruption(ended: false)
+        player.ensureRunning()
+        XCTAssertNotNil(player.audioFailure)
+        XCTAssertEqual(starts, 1, "do not report successful recovery while audio is still interrupted")
+        player.handleInterruption(ended: true)
+        XCTAssertNil(player.audioFailure)
+        XCTAssertEqual(starts, 2)
+        player.disarm()
+    }
+
+    func testEngineFailureIsRetainedUntilStartupSucceeds() {
+        var failing = true
+        let player = AlarmPlayer(sessionSetup: {}, engineStartup: { if failing { throw StartupError() } })
+        player.arm()
+        XCTAssertEqual(player.audioFailure, "Simulated audio failure")
+        player.ensureRunning()
+        XCTAssertNotNil(player.audioFailure)
+        failing = false
+        player.ensureRunning()
+        XCTAssertNil(player.audioFailure)
+        player.disarm()
+    }
+}
+
+@MainActor
+final class MonitoringConsistencyRegressionTests: XCTestCase {
+    private let origin = CLLocationCoordinate2D(latitude: 38.97, longitude: -76.47)
+    private func fix(_ date: Date, meters: Double = 0) -> Fix {
+        Fix(coordinate: Geo.destination(from: origin, bearing: 90, meters: meters), accuracy: 3,
+            course: nil, speed: nil, timestamp: date)
+    }
+    private func engine(_ defaults: UserDefaults? = nil, player: SilentAlarm? = nil, clock: @escaping () -> Date) -> AnchorWatchEngine {
+        AnchorWatchEngine(player: player ?? SilentAlarm(), liveActivity: NoLiveActivity(), defaults: defaults ?? UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false, clock: clock)
+    }
+    private func assertShared(_ e: AnchorWatchEngine, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(e.watchStatus["state"], e.monitoring.title, file: file, line: line)
+        XCTAssertEqual(e.watchStatus["detail"], e.monitoring.detail, file: file, line: line)
+        XCTAssertEqual(e.watchStatus["tone"], e.monitoring.tone.rawValue, file: file, line: line)
+        XCTAssertEqual(e.snapshot?.headline, e.monitoring.detail, file: file, line: line)
+        XCTAssertEqual(e.snapshot?.status, e.monitoring.activityStatus, file: file, line: line)
+    }
+    func testAllSurfacesAgreeOnNormalLowVolumeStaleGPSAndAlarm() {
+        var now = Date()
+        let player = SilentAlarm(), e = engine(player: SilentAlarm(), clock: { now })
+        e.ingest(fix(now)); e.dropAnchor(rode: 40)
+        XCTAssertEqual(e.monitoring.title, "Circle alarm ON")
+        assertShared(e)
+        let lowVolume = engine(player: player, clock: { now })
+        lowVolume.ingest(fix(now)); lowVolume.dropAnchor(rode: 40)
+        player.volume = 0.1; lowVolume.safetyChecks()
+        XCTAssertEqual(lowVolume.monitoring.tone, .orange)
+        XCTAssertEqual(lowVolume.snapshot?.status, .caution)
+        assertShared(lowVolume)
+        now += 16
+        XCTAssertFalse(e.circleMonitoringAvailable)
+        XCTAssertEqual(e.snapshot?.distanceText, "--")
+        XCTAssertNil(e.watchStatus["boat"])
+        assertShared(e)
+        now += 15; e.safetyChecks()
+        XCTAssertEqual(e.alarm, .gpsLost)
+        assertShared(e)
+        e.silence()
+        XCTAssertNotEqual(e.monitoring.tone, .green)
+        assertShared(e)
+    }
+    func testUnconfirmedAnchorEscalatesAndManualPlacementClearsOnlySetupAlarm() {
+        var now = Date()
+        let e = engine(clock: { now })
+        e.ingest(fix(now)); e.dropAnchor(.settled, rode: 40)
+        XCTAssertTrue(e.awaitingSwingFix)
+        XCTAssertFalse(e.circleMonitoringAvailable)
+        XCTAssertEqual(e.monitoring.tone, .orange)
+        assertShared(e)
+        now += e.anchorConfirmationTimeout + 1
+        e.ingest(fix(now)); e.safetyChecks()
+        XCTAssertEqual(e.alarm, .anchorUnconfirmed)
+        assertShared(e)
+        e.moveAnchor(to: origin)
+        XCTAssertNil(e.alarm)
+        XCTAssertTrue(e.circleMonitoringAvailable)
+        assertShared(e)
+        now += 1
+        e.radius = 10
+        e.ingest(fix(now, meters: 80)); now += 1; e.ingest(fix(now, meters: 80))
+        XCTAssertNotNil(e.alarm)
+        e.moveAnchor(to: origin)
+        XCTAssertNotNil(e.alarm, "Repositioning must not clear a real outside-circle alarm")
+    }
+    func testConfirmedRodeDoesNotFollowRecommendationsAndSurvivesRelaunch() {
+        let now = Date(), defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let e = engine(defaults, clock: { now })
+        e.ingest(fix(now)); e.dropAnchor(rode: 40)
+        XCTAssertTrue(e.rodeConfirmed)
+        e.setDepthReading(8); e.scope.tideRise = 3; e.boat.chainLength = 120
+        XCTAssertEqual(e.rodeOut, 40)
+        XCTAssertNotEqual(e.rodeSuggested, 40)
+        let restored = engine(defaults, clock: { now })
+        XCTAssertEqual(restored.rodeOut, 40)
+        XCTAssertTrue(restored.rodeConfirmed)
+        e.confirmRode(50)
+        XCTAssertEqual(e.rodeOut, 50)
+        e.raiseAnchor()
+        XCTAssertNil(e.rodeOutSet)
+        XCTAssertFalse(e.rodeConfirmed)
+    }
+    func testInferredRodeIsFrozenButRequiresExplicitConfirmation() {
+        let now = Date(), e = engine(clock: { Date() })
+        e.ingest(fix(now)); e.dropAnchor()
+        let frozen = e.rodeOut
+        XCTAssertFalse(e.rodeConfirmed)
+        e.setDepthReading(12)
+        XCTAssertEqual(e.rodeOut, frozen)
+        e.confirmRode(frozen)
+        XCTAssertTrue(e.rodeConfirmed)
+    }
+    func testUnitsPersistAndInvalidateLocalizedOutlook() {
+        let now = Date(), defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let e = engine(defaults, clock: { now })
+        e.units = .meters
+        XCTAssertEqual(engine(defaults, clock: { now }).units, .meters)
+    }
+    func testTrackRevisionContinuesChangingAfterRollover() {
+        var now = Date()
+        let e = engine(clock: { now })
+        e.ingest(fix(now)); e.dropAnchor(rode: 40)
+        for i in 1...e.maxTrackPoints { now += 1; e.ingest(fix(now, meters: Double(i))) }
+        let revision = e.trackRevision, first = e.track.first, last = e.track.last
+        now += 1; e.ingest(fix(now, meters: Double(e.maxTrackPoints + 1)))
+        XCTAssertEqual(e.track.count, e.maxTrackPoints)
+        XCTAssertGreaterThan(e.trackRevision, revision)
+        XCTAssertNotEqual(e.track.first, first)
+        XCTAssertNotEqual(e.track.last, last)
+    }
+    func testForecastWarningUsesTheSameTideAndCurrentAssessmentsAsOutlook() async throws {
+        let now = Date(), e = engine(clock: { now })
+        e.ingest(fix(now)); e.dropAnchor(rode: 40)
+        let station = TideStation(id: "TEST", name: "Test", lat: origin.latitude, lng: origin.longitude)
+        e.applyTideSnapshot(TideSnapshot(station: station, events: (0...6).map {
+            TideEvent(time: now + Double($0) * 6 * 3600, height: $0 % 2 == 0 ? 0 : 5, isHigh: $0 % 2 != 0)
+        }, fetched: now))
+        e.setDepthReading(3)
+        e.fetchCurrent = { _ in CurrentSnapshot(station: CurrentStation(id: "C", name: "Current", lat: self.origin.latitude, lng: self.origin.longitude), events: (0...6).map {
+            CurrentEvent(time: now + Double($0) * 6 * 3600, velocity: $0 % 2 == 0 ? 0 : 2, floodToward: 90, ebbToward: 270)
+        }, fetched: now) }
+        e.fetchWind = { point in WindSeries(coordinate: point, samples: (0...24).map {
+            WindSample(time: now + Double($0) * 3600, speed: 20, direction: 180, gust: 40)
+        }, fetched: now) }
+        await e.refreshCurrent(); await e.refreshWind(); e.refreshOutlookIfDue()
+        let warning = try XCTUnwrap(e.holdingWarning)
+        let hour = try XCTUnwrap(e.hourlyHolding.first { $0.time == warning.time })
+        XCTAssertEqual(warning.safeGust, try XCTUnwrap(hour.safeGust), accuracy: 0.001)
+        XCTAssertEqual(warning.gust, hour.gust)
+        XCTAssertNotNil(hour.current)
+        XCTAssertGreaterThan(hour.depth, 3)
+        XCTAssertTrue(e.outlook.contains { $0.kind == .gusts })
+        // Profile edits must immediately invalidate the cached hourly result.
+        e.boat.anchorWeight = 1
+        e.refreshOutlookIfDue()
+        XCTAssertNotEqual(e.hourlyHolding.first?.safeGust, hour.safeGust)
+    }
+    func testRealSlackIsUsedIndependentlyOfHighAndLowWater() async {
+        let now = Date(), e = engine(clock: { now })
+        e.ingest(fix(now))
+        e.fetchCurrent = { _ in CurrentSnapshot(station: CurrentStation(id: "C", name: "Test", lat: self.origin.latitude, lng: self.origin.longitude), events: [
+            CurrentEvent(time: now - 3600, velocity: 1, floodToward: 90, ebbToward: 270),
+            CurrentEvent(time: now + 1800, velocity: 0, floodToward: 90, ebbToward: 270),
+            CurrentEvent(time: now + 7200, velocity: -1, floodToward: 90, ebbToward: 270)
+        ], fetched: now) }
+        await e.refreshCurrent()
+        XCTAssertEqual(e.nextCurrentSlack, now + 1800)
+        XCTAssertNil(e.nextTide)
+    }
+}
+
+final class ReviewRegressionTests: XCTestCase {
+    func testSafeTideSampleSeparatesShallowWindows() {
+        let t = Date()
+        let windows = TideMath.shallowWindows([(t, 1), (t + 600, 3), (t + 1200, 1)], below: 2)
+        XCTAssertEqual(windows.count, 2)
+    }
+    func testDistantTideStationIsRejected() {
+        let p = CLLocationCoordinate2D(latitude: 0, longitude: 0)
+        XCTAssertThrowsError(try TideService.coveredStation(near: p, stations: [TideStation(id: "far", name: "Far", lat: 10, lng: 0)]))
+    }
+    func testMalformedTrackCoordinatesAreIgnored() {
+        let entry = AnchorageEntry(name: "Test", latitude: 0, longitude: 0, dropped: Date(), raised: Date(), depth: 5, rodeOut: 40, radius: 50, maxDistance: 20, bottom: "Sand", track: [[], [2], [1, 2], [100, 2]])
+        XCTAssertEqual(entry.trackCoordinates.count, 1)
+    }
+    func testCorruptLogRecoversPreviousAtomicSave() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url); try? FileManager.default.removeItem(at: url.appendingPathExtension("backup")) }
+        XCTAssertNil(AnchorageLog.save([], to: url))
+        XCTAssertNil(AnchorageLog.save([], to: url))
+        try Data("corrupt".utf8).write(to: url)
+        XCTAssertTrue(try AnchorageLog.read(from: url).recovered)
+    }
+    func testSaveErrorIsReported() {
+        let url = URL(fileURLWithPath: "/dev/null/anchorages.json")
+        XCTAssertNotNil(AnchorageLog.save([], to: url))
+    }
+    func testExpiredWindIsNotShown() {
+        let now = Date()
+        let series = WindSeries(coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0), samples: [WindSample(time: now, speed: 10, direction: 0, gust: 15)], fetched: now - 3601)
+        XCTAssertNil(series.sample(atHour: 0, from: now))
+    }
+    @MainActor func testMediaResetReplacesEngineAndPreservesArmedState() {
+        var starts = 0
+        let player = AlarmPlayer(sessionSetup: {}, engineStartup: { starts += 1 })
+        player.arm()
+        player.handleMediaServicesReset()
+        XCTAssertEqual(player.engineGeneration, 1)
+        XCTAssertEqual(starts, 2)
+        XCTAssertNil(player.audioFailure)
+        player.disarm()
+    }
+}
+
+extension ReviewRegressionTests {
+    func testCanadianReadingsSurviveNOAAFailure() async throws {
+        let now = Date(), point = CLLocationCoordinate2D(latitude: 48, longitude: -123)
+        let reading = StationObservation(id: "CA", name: "Canada", coordinate: point, time: now, windDirection: 0, windSpeed: 10, gust: 12, waveHeight: nil, wavePeriod: nil, pressure: nil, pressureTrend: nil, airTemp: nil, waterTemp: nil, visibility: nil)
+        let result = try await ObservationService.fetchNearbyResult(point, now: now, noaa: { throw URLError(.notConnectedToInternet) }, canada: { [reading] })
+        XCTAssertEqual(result.stations.map(\.id), ["CA"])
+        XCTAssertEqual(result.warnings.count, 1)
+    }
+    func testHullAndIntermediateSwingAreChecked() {
+        let anchor = CLLocationCoordinate2D(latitude: 38, longitude: -76), now = Date()
+        let middle = Hazard(kind: .rock, at: Geo.destination(from: anchor, bearing: 45, meters: 65), radius: 1)
+        let hull = Hazard(kind: .rock, at: Geo.destination(from: anchor, bearing: 0, meters: 63), radius: 1)
+        let hours = [0.0, 1].map { hour in HourlyHolding(time: now + hour * 3600, speed: 15, gust: 20, direction: 180, depth: 5, safeGust: nil, status: .good, lie: hour * 90, push: 1000) }
+        let items = Outlook.hazardItems(anchor: anchor, hazards: [middle, hull], hourly: hours, rodeOut: 60, bowHeight: 1, boatLength: 15, minPush: 1, units: .feet, beam: 5)
+        XCTAssertEqual(Set(items.map(\.subject)), Set([middle.id.uuidString, hull.id.uuidString]))
+        XCTAssertTrue(items.allSatisfy { $0.severity == .danger })
+    }
+}
+
+extension ReviewRegressionTests {
+    func testTileRejectsHTTPErrorAndInvalidImageBodies() {
+        let url = URL(string: "https://example.com/tile.png")!
+        let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")!
+        func response(_ status: Int, _ mime: String) -> HTTPURLResponse {
+            HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: ["Content-Type": mime])!
+        }
+        XCTAssertTrue(ChartTileOverlay.isValidTile(png, response: response(200, "image/png")))
+        XCTAssertFalse(ChartTileOverlay.isValidTile(png, response: response(503, "image/png")))
+        XCTAssertFalse(ChartTileOverlay.isValidTile(png, response: response(200, "text/html")))
+        XCTAssertFalse(ChartTileOverlay.isValidTile(Data("server error".utf8), response: response(200, "image/png")))
+    }
+}
+
+@MainActor
+final class ChartMapLayoutRegressionTests: XCTestCase {
+    func testTransientInvalidSizesNeverReachDrawable() {
+        for size in [CGSize.zero, CGSize(width: 320, height: 0), CGSize(width: -1, height: 300), CGSize(width: CGFloat.infinity, height: 300), CGSize(width: 0.01, height: 300)] {
+            XCTAssertNil(ChartMapContainer.drawableSize(size, scale: 3))
+        }
+        XCTAssertEqual(ChartMapContainer.drawableSize(CGSize(width: 320.1, height: 500.1), scale: 3), CGSize(width: 320, height: 500))
+    }
+
+    func testMapSurvivesRepeatedPanelSizesAndDetachment() {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 900))
+        let container = ChartMapContainer(frame: window.bounds)
+        window.addSubview(container)
+        let original = container.map
+        for height in [220.0, 650, 300, 800, 220, 500] {
+            container.frame.size.height = height
+            container.setNeedsLayout()
+            container.layoutIfNeeded()
+            XCTAssertTrue(container.map === original)
+            XCTAssertEqual(container.map.frame.height, height)
+        }
+        let lastSize = container.map.frame.size
+        container.frame.size = .zero
+        container.setNeedsLayout()
+        container.layoutIfNeeded()
+        XCTAssertEqual(container.map.frame.size, lastSize)
+        container.removeFromSuperview()
+        container.frame.size = CGSize(width: 300, height: 600)
+        container.setNeedsLayout()
+        container.layoutIfNeeded()
+        XCTAssertEqual(container.map.frame.size, lastSize)
+    }
+}
+
+@MainActor
+final class WarningPreferencesTests: XCTestCase {
+    func testWarningPreferencesPersistWithoutMutatingWarnings() {
+        let suite = "warning-preferences-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let engine = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false)
+        XCTAssertFalse(engine.hideWarningBanners)
+        XCTAssertFalse(engine.muteAdvisoryNotifications)
+        let original = engine.outlook
+        engine.hideWarningBanners = true
+        engine.muteAdvisoryNotifications = true
+        XCTAssertEqual(engine.outlook, original)
+        let restored = AnchorWatchEngine(player: SilentAlarm(), defaults: defaults, useGPSHardware: false)
+        XCTAssertTrue(restored.hideWarningBanners)
+        XCTAssertTrue(restored.muteAdvisoryNotifications)
+    }
+
+    func testSilencingAdvisoriesDoesNotSilenceAnchorAlarm() {
+        let suite = "warning-alarm-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let player = SilentAlarm()
+        let engine = AnchorWatchEngine(player: player, defaults: defaults, useGPSHardware: false)
+        engine.hideWarningBanners = true
+        engine.muteAdvisoryNotifications = true
+        let origin = CLLocationCoordinate2D(latitude: 38.97, longitude: -76.47)
+        func fix(_ meters: Double) -> Fix {
+            Fix(coordinate: Geo.destination(from: origin, bearing: 90, meters: meters), accuracy: 3, course: nil, speed: nil, timestamp: Date())
+        }
+        engine.ingest(fix(0)); engine.dropAnchor(); engine.radius = 30
+        engine.ingest(fix(40)); engine.ingest(fix(41))
+        XCTAssertNotNil(engine.alarm)
+        XCTAssertTrue(player.sirenSounding)
+        XCTAssertTrue(player.armed)
     }
 }

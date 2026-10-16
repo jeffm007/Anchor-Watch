@@ -76,9 +76,18 @@ struct AnchoringView: View {
         NavigationStack {
             Form {
                 // The verdict first: is this setup good, for how much wind, and will the forecast stay under it?
-                Section {
+                if engine.armed {
+                    Section("Monitoring") {
+                        Label(engine.monitoring.title, systemImage: engine.monitoring.icon).foregroundStyle(engine.monitoring.color).font(.headline)
+                        if engine.awaitingSwingFix || !engine.rodeConfirmed { MonitoringActionCard() }
+                        else { Text(engine.monitoring.detail).font(.footnote) }
+                    }
+                }
+                Section("Planning scenario · estimated capacity") {
+                    Text("This model uses the conditions below. It does not confirm that the anchor is holding or that the circle alarm is ready.")
+                        .font(.footnote).foregroundStyle(.secondary)
                     statusRow(r)
-                    lookAhead(r)
+
                     if let safe = r.safeGust {
                         Button("Set gust warning to \(Int(min(50, max(10, safe)))) kt") {
                             engine.gustLimit = min(50, max(10, safe.rounded(.down)))
@@ -92,7 +101,7 @@ struct AnchoringView: View {
                         .frame(height: 240)
                         .listRowInsets(EdgeInsets())
                     // The depth now, the same one the Water tab sets; the tide buttons below move it to low or high water.
-                    knob("New sounder reading", length(Binding(get: { engine.liveDepth }, set: { engine.setDepthReading($0) })), 0...max(units == .feet ? 100 : 30, engine.scope.depth * units.perMeter),
+                    knob("Water depth below surface", length(Binding(get: { engine.liveDepth }, set: { engine.setDepthReading($0) })), 0...max(units == .feet ? 100 : 30, engine.scope.depth * units.perMeter),
                          step: units == .feet ? 1 : 0.5, format: (units == .feet ? "%.0f " : "%.1f ") + units.symbol)
                     Text(engine.depthReferenceDetail).font(.caption).foregroundStyle(.secondary)
                     Button("Confirm current depth as a new sounder reading") { engine.setDepthReading(engine.liveDepth) }.font(.footnote)
@@ -101,8 +110,8 @@ struct AnchoringView: View {
                     }
                     // Setting the rode here sets it for the whole app: Watch, the outlook and the swing circle.
                     knob("Rode out", length(Binding(get: { conditions.rodeOut },
-                                                    set: { editableConditions.rodeOut = $0; engine.rodeOutSet = $0 })),
-                         0...max(10, rodeMax * units.perMeter), step: units == .feet ? 5 : 1,
+                                                    set: { editableConditions.rodeOut = $0; engine.confirmRode($0) })),
+                         1...max(10, rodeMax * units.perMeter), step: units == .feet ? 5 : 1,
                          format: "%.0f " + units.symbol)
                     // Once anchored, the alarm radius sits with the depth and rode that set its default.
                     if engine.anchor != nil {
@@ -110,12 +119,20 @@ struct AnchoringView: View {
                              (10 * units.perMeter)...(300 * units.perMeter), step: units == .feet ? 5 : 1,
                              format: "%.0f " + units.symbol)
                     }
+                    if engine.armed {
+                        Toggle("Radius follows rode and depth", isOn: Binding(get: { engine.radiusFollowsRode }, set: {
+                            if $0 { engine.applySuggestedRadius() } else { engine.radiusFollowsRode = false }
+                        }))
+                        Text(engine.radiusFollowsRode ? "Changing deployed rode or entered depth updates the alarm radius. Enter a radius to keep it fixed." : "Alarm radius is fixed until you edit it or enable automatic updates.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     Picker("Tide", selection: $tide) {
                         ForEach(TideChoice.allCases) { Text($0.rawValue).tag($0) }
                     }.pickerStyle(.segmented)
                 }
 
-                Section("Your setup") {
+                Section("Anchorage forecast · next 12 hours") { forecastSummary }
+                Section("Scenario inputs") {
                     let scopeRatio = conditions.rodeOut / max(r.height, 0.1)
                     LabeledContent("Rode out", value: "\(units.format(conditions.rodeOut)) · \(String(format: "%.1f:1", scopeRatio)) scope")
                     LabeledContent(tide == .now ? "Depth now" : "Depth at \(tide == .low ? "low" : "high") tide") {
@@ -126,7 +143,7 @@ struct AnchoringView: View {
                 }
 
                 Section("Suggestions") {
-                    ForEach(AnchorMath.suggestions(boat, scope: tideScope, conditions, r, units: units, tideTurn: engine.nextTide?.time), id: \.self) { tip in
+                    ForEach(AnchorMath.suggestions(boat, scope: tideScope, conditions, r, units: units, tideTurn: engine.nextCurrentSlack), id: \.self) { tip in
                         Label(tip, systemImage: "lightbulb").font(.subheadline)
                     }
                 }
@@ -254,25 +271,16 @@ struct AnchoringView: View {
         return parts.joined(separator: " · ")
     }
 
-    /// Will the forecast stay under this setup's limit? The strongest gust in the next 12 hours against the safe gust.
-    @ViewBuilder private func lookAhead(_ r: AnchorAssessment) -> some View {
-        let now = Date()
-        let window = engine.windForAdvice?.samples.filter { $0.time >= now.addingTimeInterval(-1800) && $0.time <= now.addingTimeInterval(12 * 3600) } ?? []
-        if let peak = window.max(by: { $0.gust < $1.gust }), let safe = r.safeGust {
-            let when = peak.time.formatted(date: .omitted, time: .shortened)
-            if peak.gust > safe {
-                Label("Forecast gusts reach \(Int(peak.gust.rounded())) kt around \(when), above the \(Int(safe)) kt this setup holds. Let out more rode or pick a better spot.",
-                      systemImage: "exclamationmark.triangle.fill")
-                    .font(.footnote).foregroundStyle(.orange)
-            } else {
-                Label("Available forecast: peak \(Int(peak.gust.rounded())) kt around \(when), within the \(Int(safe)) kt limit.",
-                      systemImage: "checkmark.circle")
-                    .font(.footnote).foregroundStyle(.green)
-            }
+    @ViewBuilder private var forecastSummary: some View {
+        if let warning = engine.holdingWarning {
+            Label("Forecast gusts \(Int(warning.gust.rounded())) kt exceed the estimated \(Int(warning.safeGust)) kt limit around \(warning.time.formatted(date: .omitted, time: .shortened)).", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
         } else {
-            Text(engine.environmentRecords["wind"]?.description(at: now) ?? "Waiting for the wind forecast to look ahead.").font(.footnote).foregroundStyle(.secondary)
+            Text(engine.forecastAssessments.isEmpty ? "Wind forecast unavailable." : "No gust limit exceedance found in the next 12 hours of available forecast data.")
         }
-        Text(engine.environmentCoverage.summary).font(.caption).foregroundStyle(.secondary)
+        Text(engine.forecastStatusText).font(.caption).foregroundStyle(.secondary)
+        Text("Uses deployed rode, forecast wind, predicted depth and current where available; assumed waves 0.3 m and missing current 0.5 kt.")
+            .font(.caption).foregroundStyle(.secondary)
     }
 
     /// Most rode the slider offers: everything on board, or enough for the scope if more.
@@ -313,16 +321,16 @@ struct AnchoringView: View {
 
     private func statusRow(_ r: AnchorAssessment) -> some View {
         let (text, color, icon): (String, Color, String) = switch r.status {
-        case .good: ("Holding well", .green, "checkmark.circle.fill")
+        case .good: ("Within modeled limits", .green, "checkmark.circle.fill")
         case .marginal: ("Marginal", .orange, "exclamationmark.triangle.fill")
-        case .danger: ("At risk of dragging", .red, "xmark.octagon.fill")
+        case .danger: ("Exceeds modeled limits", .red, "xmark.octagon.fill")
         }
         return VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Label(text, systemImage: icon).font(.title3.bold()).foregroundStyle(color)
                 Spacer()
                 if let safe = r.safeGust {
-                    Text("good to \(Int(safe)) kt").font(.headline).foregroundStyle(.secondary)
+                    Text("est. \(Int(safe)) kt").font(.headline).foregroundStyle(.secondary)
                 }
             }
             if let why = statusReason(r) {
@@ -364,11 +372,9 @@ struct AnchoringView: View {
     }
 
     private func knob(_ title: String, _ value: Binding<Double>, _ range: ClosedRange<Double>, step: Double, format: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            LabeledContent(title, value: String(format: format, value.wrappedValue))
-            Slider(value: value, in: range, step: step)
-        }
+        NumericAdjustment(title: title, value: value, range: range, step: step, unit: String(format.split(separator: " ").last ?? ""))
     }
+
 }
 
 /// Side view: wind and current from the left, the anchor on the seabed, the rode hanging up to the bow,

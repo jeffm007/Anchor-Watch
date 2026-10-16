@@ -8,6 +8,7 @@ struct WatchSnapshot: Equatable {
     var fraction: Double
     var status: AnchorWatchAttributes.Status
     var headline: String
+    var boatName: String = "Nereus"
 }
 
 enum LiveActivityState: Equatable {
@@ -49,6 +50,13 @@ final class LiveActivityController: LiveActivityControlling {
         if activity == nil {
             activity = Activity<AnchorWatchAttributes>.activities.first { $0.activityState == .active || $0.activityState == .stale }   // resume after a relaunch
         }
+        if let current = activity, current.attributes.boatName != snapshot.boatName {
+            activity = nil
+            last = nil
+            Task { await current.end(nil, dismissalPolicy: .immediate) }
+            start(snapshot)
+            return
+        }
         guard activity != nil else { start(snapshot); return }
         state = .running
 
@@ -70,7 +78,7 @@ final class LiveActivityController: LiveActivityControlling {
     private func start(_ snapshot: WatchSnapshot) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { state = .disabled; return }
         do {
-            activity = try Activity.request(attributes: AnchorWatchAttributes(boatName: "Nereus"), content: content(snapshot), pushType: nil)
+            activity = try Activity.request(attributes: AnchorWatchAttributes(boatName: snapshot.boatName), content: content(snapshot), pushType: nil)
             last = snapshot
             lastUpdate = Date()
             state = .running

@@ -100,13 +100,18 @@ enum TideMath {
     /// Stretches of `points` where the depth is below `limit`, with the least depth in each.
     static func shallowWindows(_ points: [(time: Date, depth: Double)], below limit: Double) -> [(start: Date, end: Date, least: Double)] {
         var windows: [(start: Date, end: Date, least: Double)] = []
-        for p in points where p.depth < limit {
-            if let last = windows.last, p.time.timeIntervalSince(last.end) <= 3600 {
-                windows[windows.count - 1] = (last.start, p.time, min(last.least, p.depth))
+        var run: (start: Date, end: Date, least: Double)?
+        func close() { if let run { windows.append(run) }; run = nil }
+        for p in points.sorted(by: { $0.time < $1.time }) {
+            guard p.depth.isFinite, p.depth < limit else { close(); continue }
+            if let previous = run, p.time.timeIntervalSince(previous.end) <= 3600 {
+                run = (previous.start, p.time, min(previous.least, p.depth))
             } else {
-                windows.append((p.time, p.time, p.depth))
+                close()
+                run = (p.time, p.time, p.depth)
             }
         }
+        close()
         return windows
     }
 
@@ -124,15 +129,26 @@ enum TideMath {
 /// disk so a previously fetched anchorage still works without a connection.
 enum TideService {
     enum TideError: LocalizedError {
-        case noStations, noData, offline
+        case noStations, noData, offline, noCoverage
 
         var errorDescription: String? {
             switch self {
             case .noStations: return "No tide stations found."
+            case .noCoverage: return "No tide prediction station within 25 km. Tide adjustment is unavailable here."
             case .noData: return "NOAA returned no tide predictions for this station."
             case .offline: return "Can't reach NOAA and nothing is saved yet. Connect once to download the tides."
             }
         }
+    }
+
+    /// An operational coverage limit, not a guarantee of tidal similarity.
+    static let maximumStationDistance = 25_000.0
+    static func coveredStation(near point: CLLocationCoordinate2D, stations: [TideStation]) throws -> TideStation {
+        guard CLLocationCoordinate2DIsValid(point) else { throw TideError.noCoverage }
+        let valid = stations.filter { CLLocationCoordinate2DIsValid($0.coordinate) }
+        guard let station = TideMath.nearest(to: point, in: valid) else { throw TideError.noStations }
+        guard Geo.distance(station.coordinate, point) <= maximumStationDistance else { throw TideError.noCoverage }
+        return station
     }
 
     private static let base = "https://api.tidesandcurrents.noaa.gov"
@@ -223,8 +239,7 @@ enum TideService {
         async let canadian: [TideStation]? = point.latitude > 41 ? stations(source: TideStation.chs) : []
         let all = (await noaa ?? []) + (await canadian ?? [])
         guard !all.isEmpty else { throw TideError.offline }
-        guard let station = TideMath.nearest(to: point, in: all) else { throw TideError.noStations }
-        return station
+        return try coveredStation(near: point, stations: all)
     }
 
     /// One country's station list: from the disk cache, else downloaded and cached. Nil if unavailable.

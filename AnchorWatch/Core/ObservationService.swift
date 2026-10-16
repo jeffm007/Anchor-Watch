@@ -213,14 +213,40 @@ enum ObservationService {
         return names
     }
 
-    /// Latest readings near `point`, with station names filled in.
+    struct NearbyResult {
+        var stations: [StationObservation]
+        var warnings: [String]
+    }
+
+    /// Each provider completes independently: a failed NOAA request cannot discard Canadian readings.
+    static func fetchNearbyResult(_ point: CLLocationCoordinate2D, now: Date = Date(),
+                                  noaa: (() async throws -> [StationObservation])? = nil,
+                                  canada: (() async throws -> [StationObservation])? = nil) async throws -> NearbyResult {
+        func attempt(_ fetch: () async throws -> [StationObservation]) async -> Result<[StationObservation], Error> {
+            do { return .success(try await fetch()) } catch { return .failure(error) }
+        }
+        async let us = attempt(noaa ?? {
+            let text = try await download("/data/latest_obs/latest_obs.txt")
+            let names = await stationNames()
+            return parse(text).map { obs in var s = obs; s.name = names[s.id] ?? s.id; return s }
+        })
+        async let ca = attempt(canada ?? { await fetchCanadian(near: point) })
+        let (usResult, caResult) = await (us, ca)
+        var pooled: [StationObservation] = [], warnings: [String] = []
+        var failure: Error?
+        for (name, result) in [("NOAA", usResult), ("Environment Canada", caResult)] {
+            switch result {
+            case .success(let readings): pooled += readings
+            case .failure(let error): warnings.append(name + " unavailable: " + error.localizedDescription); failure = error
+            }
+        }
+        let nearby = ObservationMath.nearby(pooled, to: point, now: now)
+        if nearby.isEmpty, let failure { throw failure }
+        return NearbyResult(stations: nearby, warnings: warnings)
+    }
+
     static func fetchNearby(_ point: CLLocationCoordinate2D, now: Date = Date()) async throws -> [StationObservation] {
-        async let canadian = fetchCanadian(near: point)
-        let text = try await download("/data/latest_obs/latest_obs.txt")
-        let names = await stationNames()
-        // Pool both countries' stations so the nearest ones win, whichever side of the border they are on.
-        let named = parse(text).map { obs -> StationObservation in var s = obs; s.name = names[s.id] ?? s.id; return s }
-        return ObservationMath.nearby(named + (await canadian), to: point, now: now)
+        try await fetchNearbyResult(point, now: now).stations
     }
 
     private static func stationNames() async -> [String: String] {
