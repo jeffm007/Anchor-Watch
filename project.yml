@@ -9,25 +9,36 @@ settings:
     SWIFT_VERSION: "5.0"
     TARGETED_DEVICE_FAMILY: "1"
     MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: "29"
+    CURRENT_PROJECT_VERSION: "30"
     DEVELOPMENT_TEAM: FD52K7B8M3
     CODE_SIGN_STYLE: Automatic
   configs:
     Debug:
       # Work around SDK cache generation stalls during local development builds.
       SDK_STAT_CACHE_ENABLE: NO
+packages:
+  Slackwater:
+    url: https://github.com/openwatersio/slackwater.git
+    revision: 27d66edee3444d773ca5dfcc54e33eb2de05c53e
 targets:
   AnchorWatch:
     type: application
     platform: iOS
     sources: [AnchorWatch, AnchorWatchShared]
     dependencies:
+      - package: Slackwater
+        product: SlackwaterKit
       - target: AnchorWatchWidgets
       - target: AnchorWatchWatch
+    resources:
+      - path: AnchorWatch/Resources/anchorwatch-s57-bridge.js
+      - path: AnchorWatch/Resources/LICENSE-s57-parser.txt
+      - path: AnchorWatch/Resources/S57_DECODER_VERSION.txt
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.jeffmitchell.anchorwatch
         SWIFT_OBJC_BRIDGING_HEADER: AnchorWatch/Core/AudioSignal.h
+        OTHER_LDFLAGS: "$(inherited) -lz"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     entitlements:
       path: AnchorWatch/AnchorWatch.entitlements

@@ -21,3 +21,5 @@ static inline void AWAudioSignalStore(AWAudioSignalRef _Nonnull signal, bool sou
 }
 static inline void AWAudioSignalDestroy(AWAudioSignalRef _Nonnull signal) { free(signal); }
 #endif
+
+#include "ZipInflate.h"

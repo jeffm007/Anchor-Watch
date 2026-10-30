@@ -106,7 +106,7 @@ enum AnchorEstimate {
     /// Steps 3–6 on a given stretch of track, with no waiting rules. The drift check uses it on a rolling window.
     static func fit(_ fixes: [Fix], mark: CLLocationCoordinate2D, modelRadius: Double, minutes: Double,
                     windFrom: Double?, windKnots: Double?, timeScale scale: Double = 1) -> Swift.Result<Result, PendingError> {
-        guard fixes.count >= minPoints, modelRadius > 0 else {
+        guard fixes.count >= minPoints, modelRadius.isFinite, modelRadius > 0 else {
             return .failure(PendingError(.collecting(minutes: minutes)))
         }
         let points = fixes.map { local($0.coordinate, from: mark) }
@@ -123,7 +123,7 @@ enum AnchorEstimate {
             fit = f
             center = f.center
         }
-        guard let fit else { return .failure(PendingError(.collecting(minutes: minutes))) }
+        guard let fit, fit.center.x.isFinite, fit.center.y.isFinite, fit.radius.isFinite, fit.radius > 0 else { return .failure(PendingError(.collecting(minutes: minutes))) }
 
         // Each slice is treated as one independent measurement: points within a slice share GPS error.
         let slices = Double(Set(edge.map { slice(of: $0, around: fit.center) }).count)

@@ -63,7 +63,7 @@ final class SimulatedLocationSource: LocationSource {
     var rode = 25.0
     /// The boat and rode for the physics scenarios, from the app's settings. Changing it keeps the boat where it is.
     var physicsBoat: AnchorPhysics.Boat? {
-        didSet { if let physicsBoat { physics?.boat = physicsBoat } }
+        didSet { if let physicsBoat { physics?.updateBoat(physicsBoat) } }
     }
     private var physics: AnchorPhysics?
     /// When the current physics scenario started, on the real clock: the simulated clock runs on from here.

@@ -100,6 +100,8 @@ final class AnchorWatchEngine: ObservableObject {
     /// Why there's no estimate yet.
     @Published private(set) var estimatePending: AnchorEstimate.Pending?
     private var lastEstimate = Date.distantPast
+    /// Only compare positions collected under the current deployed-rode geometry.
+    private var swingAnalysisStarted: Date?
     /// Set when the rolling swing fits show the anchor moving steadily: a red warning, before the boat leaves the circle.
     @Published private(set) var anchorDrift: AnchorDrift.Result?
     /// Metres per minute the boat is steadily getting further from the anchor, past its earlier swing.
@@ -223,7 +225,7 @@ final class AnchorWatchEngine: ObservableObject {
 
     private func recordDepthReading() {
         depthReading = DepthReading(depth: scope.depth, measured: clock(),
-                                    stationID: tide.map { DepthReading.stationKey($0.station) }, tideHeight: tideNow)
+                                    stationID: tide.map { DepthReading.stationKey($0.station) }, tideHeight: tideNow, tideModelID: tide?.heightModelID)
     }
 
     /// Explicitly confirms a new sounder reading, even when its numeric value is unchanged.
@@ -265,6 +267,8 @@ final class AnchorWatchEngine: ObservableObject {
     func applyTideSnapshot(_ snapshot: TideSnapshot, cached: Bool = false) {
         if environmentLocation == nil { bindEnvironment(to: anchor ?? fix?.coordinate ?? snapshot.station.coordinate) }
         tide = snapshot
+        // Published NOAA/CHS predictions remain usable offline within their explicit date coverage.
+        environmentRecords["tide"]?.maxAge = 28 * 24 * 3600
         record("tide", phase: cached ? .cached : .ready, fetched: snapshot.fetched,
                from: snapshot.events.map(\.time).min(), until: snapshot.events.map(\.time).max(),
                station: snapshot.station.sourceName + " · " + snapshot.station.name + " (" + snapshot.station.id + ")")
@@ -500,7 +504,8 @@ final class AnchorWatchEngine: ObservableObject {
             currents = result
             if let result {
                 record("current", phase: result.fromCache == true ? .cached : .ready, fetched: result.fetched,
-                       from: result.events.map(\.time).min(), until: result.events.map(\.time).max(), station: result.station.name + " (" + result.station.id + ")")
+                       from: result.events.map(\.time).min(), until: result.events.map(\.time).max(),
+                       station: "\(result.station.providerName): \(result.station.name) (\(result.station.stationCode ?? result.station.id))")
             } else { record("current", phase: .noCoverage) }
             lastOutlook = .distantPast
         } catch {
@@ -612,6 +617,40 @@ final class AnchorWatchEngine: ObservableObject {
         defaults.set(Array(known.suffix(200)), forKey: knownAlertsKey)
     }
 
+    // MARK: Tide station chart overlay
+    @Published var tideStationsOverlayOn = true
+    @Published private(set) var chartTideStations: [TideStation] = []
+    private var loadingChartTideStations = false
+
+    func toggleTideStationsOverlay() {
+        tideStationsOverlayOn.toggle()
+        loadTideStationsForOverlay()
+    }
+
+    func loadTideStationsForOverlay() {
+        guard tideStationsOverlayOn, chartTideStations.isEmpty, !loadingChartTideStations else { return }
+        loadingChartTideStations = true
+        Task {
+            let stations = await TideService.stationsForOverlay()
+            chartTideStations = stations
+            loadingChartTideStations = false
+        }
+    }
+
+    @Published var currentStationsOverlayOn = false
+    @Published private(set) var chartCurrentStations: [CurrentStation] = []
+    private var loadingChartCurrentStations = false
+
+    func toggleCurrentStationsOverlay() {
+        currentStationsOverlayOn.toggle()
+        guard currentStationsOverlayOn, chartCurrentStations.isEmpty, !loadingChartCurrentStations else { return }
+        loadingChartCurrentStations = true
+        Task {
+            chartCurrentStations = await CurrentService.stationsForOverlay()
+            loadingChartCurrentStations = false
+        }
+    }
+
     // MARK: Wind (Open-Meteo forecasts)
     @Published var windOverlayOn = false
     /// Hours ahead of now shown by the overlay.
@@ -692,12 +731,12 @@ final class AnchorWatchEngine: ObservableObject {
     /// Expected rise above the current water level within the chosen window.
     var tideRiseEstimate: Double? {
         guard usable("tide") || usingSimulatedTide else { return nil }
-        return tide.flatMap { TideMath.rise(from: clock(), hours: tideWindowHours, events: $0.events) }
+        return tide.flatMap { TideMath.rise(from: clock(), hours: tideWindowHours, snapshot: $0) }
     }
 
-    var tideNow: Double? { guard usable("tide") || usingSimulatedTide else { return nil }; return tide.flatMap { TideMath.height(at: clock(), events: $0.events) } }
+    var tideNow: Double? { guard usable("tide") || usingSimulatedTide else { return nil }; return tide.flatMap { TideMath.height(at: clock(), snapshot: $0) } }
 
-    func refreshTide() async {
+    func refreshTide(forceRefresh: Bool = false) async {
         guard let point = anchor ?? fix?.coordinate else {
             tideStatus = "Waiting for a GPS position to find the nearest tide station…"
             return
@@ -706,7 +745,12 @@ final class AnchorWatchEngine: ObservableObject {
         record("tide", phase: .loading)
         tideStatus = "Finding the nearest tide station…"
         do {
-            let result = try await fetchTide(point)
+            let result: (snapshot: TideSnapshot, fromCache: Bool)
+            if forceRefresh {
+                result = try await TideService.snapshot(near: point, forceRefresh: true)
+            } else {
+                result = try await fetchTide(point)
+            }
             guard generation == environmentGeneration else { return }
             applyTideSnapshot(result.snapshot, cached: result.fromCache)
             tideIsSaved = result.fromCache
@@ -714,6 +758,8 @@ final class AnchorWatchEngine: ObservableObject {
         } catch {
             guard generation == environmentGeneration else { return }
             tideStatus = error.localizedDescription
+            tide = nil
+            tideIsSaved = false
             if let error = error as? TideService.TideError, case .noCoverage = error {
                 tide = nil
                 record("tide", phase: .noCoverage)
@@ -842,10 +888,25 @@ final class AnchorWatchEngine: ObservableObject {
     /// Rode actually let out, set with the Rode out slider on the Anchor tab. Nil until then; cleared on Raise.
     @Published var rodeOutSet: Double? {
         didSet {
+            if !loading, anchor != nil, abs((rodeOutSet ?? rodeSuggested) - (oldValue ?? rodeSuggested)) > 0.000001 {
+                restartSwingAnalysisAfterRodeChange()
+            }
             if let rodeOutSet { defaults.set(rodeOutSet, forKey: "anchorwatch.rodeOut") } else { defaults.removeObject(forKey: "anchorwatch.rodeOut") }
             lastOutlook = .distantPast
             followRode()
         }
+    }
+
+    private func restartSwingAnalysisAfterRodeChange() {
+        swingAnalysisStarted = max(clock(), track.last?.timestamp ?? .distantPast)
+        anchorEstimate = nil
+        anchorCorrection = nil
+        estimatePending = .collecting(minutes: 0)
+        lastEstimate = .distantPast
+        resetDrift()
+        // A rode edit is not evidence that the anchor mark was wrong. Keep it fixed for this session.
+        estimateAutoApplied = true
+        save()
     }
 
     @Published private(set) var rodeConfirmed = false
@@ -1362,6 +1423,7 @@ final class AnchorWatchEngine: ObservableObject {
         let placed = placeAtBow(position, accuracy: accuracy, lyingTo: nil, offset: offset, useApproach: moment == .goingDown)
         dropOffset = offset
         estimateAutoApplied = false
+        swingAnalysisStarted = nil
         anchorCorrection = nil
         // Settled with no wind to say which way the anchor lies: the mark could be a whole scope distance out,
         // so the circle alarm waits for the swing fit rather than going off as the boat swings.
@@ -1419,21 +1481,23 @@ final class AnchorWatchEngine: ObservableObject {
 
     /// Refits the anchor position from the swing. Called once a minute; tests call it directly.
     func updateAnchorEstimate() {
-        lastEstimate = Date()
+        lastEstimate = clock()
         guard let anchor, let anchorDropped else { anchorEstimate = nil; estimatePending = nil; return }
         let wind = windNow
         let modelRadius = Outlook.swingRadius(rodeOut: rodeOut, shallowest: liveDepth, bowHeight: scope.bowHeight,
                                               bowToPhone: ScopeCalculator.gpsFromBow(scope))
-        switch AnchorEstimate.evaluate(track: track, dropped: anchorDropped, mark: anchor, modelRadius: modelRadius,
+        let started = max(anchorDropped, swingAnalysisStarted ?? anchorDropped)
+        let analysisTrack = track.filter { $0.timestamp >= started }
+        switch AnchorEstimate.evaluate(track: analysisTrack, dropped: started, mark: anchor, modelRadius: modelRadius,
                                        windFrom: wind?.direction, windKnots: wind?.speed, timeScale: simTimeScale) {
         case .success(let r): anchorEstimate = r; estimatePending = nil; correctFromSwing(r)
         case .failure(let p): anchorEstimate = nil; estimatePending = p.pending
         }
-        updateDrift(anchor: anchor, dropped: anchorDropped, modelRadius: modelRadius)
+        updateDrift(anchor: anchor, dropped: started, modelRadius: modelRadius)
     }
 
     private func updateDrift(anchor: CLLocationCoordinate2D, dropped: Date, modelRadius: Double) {
-        guard let sample = AnchorDrift.rollingSample(track: track, dropped: dropped, mark: anchor,
+        guard let sample = AnchorDrift.rollingSample(track: track.filter { $0.timestamp >= dropped }, dropped: dropped, mark: anchor,
                                                      modelRadius: modelRadius, timeScale: simTimeScale) else { return }
         if let last = driftSamples.last, sample.minute <= last.minute { return }     // no new track since the last fit
         driftSamples.append(sample)
@@ -1457,7 +1521,7 @@ final class AnchorWatchEngine: ObservableObject {
 
     /// Moves the anchor mark to the swing estimate; the dotted circle becomes its error ellipse's long axis.
     func moveAnchorToEstimate() {
-        guard let estimate = anchorEstimate else { return }
+        guard let estimate = anchorEstimate, estimate.method == .free, estimate.windAgrees != false else { return }
         moveAnchor(to: estimate.center)
         anchorUncertainty = estimate.semiMajor
         save()
@@ -1479,12 +1543,12 @@ final class AnchorWatchEngine: ObservableObject {
     static let autoCorrectWithinMinutes = 90.0
 
     private func correctFromSwing(_ r: AnchorEstimate.Result) {
-        guard !estimateAutoApplied, r.windAgrees != false, let anchor, let anchorDropped else { return }
+        guard !estimateAutoApplied, r.method == .free, r.windAgrees != false, let anchor, let anchorDropped else { return }
         estimateAutoApplied = true
         awaitingSwingFix = false        // the swing has spoken: arm the circle alarm
         if alarm == .anchorUnconfirmed { silence(snoozeAfter: false) }
         save()
-        let minutes = Date().timeIntervalSince(anchorDropped) * max(simTimeScale, 1) / 60
+        let minutes = clock().timeIntervalSince(anchorDropped) * max(simTimeScale, 1) / 60
         let off = Geo.distance(anchor, r.center)
         guard minutes <= Self.autoCorrectWithinMinutes, off > max(r.semiMajor, 5) else { return }
         moveAnchorToEstimate()
@@ -1814,6 +1878,7 @@ final class AnchorWatchEngine: ObservableObject {
         anchorPlacement = nil
         anchorEstimate = nil
         estimatePending = nil
+        swingAnalysisStarted = nil
         resetDrift()
         distance = nil
         anchorDropped = nil
@@ -1922,11 +1987,15 @@ final class AnchorWatchEngine: ObservableObject {
             distance = d
             maxDistance = max(maxDistance, d)
             if let anchorDropped {
-                let minute = now.timeIntervalSince(anchorDropped) * max(simTimeScale, 1) / 60
+                let started = max(anchorDropped, swingAnalysisStarted ?? anchorDropped)
+                let minute = now.timeIntervalSince(started) * max(simTimeScale, 1) / 60
                 if minute >= AnchorEstimate.settleMinutes {
                     distanceLog.append((minute, d))
                     distanceLog.removeAll { minute - $0.minute > 30 }
-                    distanceTrend = AnchorDrift.distanceTrend(distanceLog, accuracy: new.accuracy)
+                    // Falling back on newly paid-out rode is normal while still within physical reach.
+                    let reach = Outlook.swingRadius(rodeOut: rodeOut, shallowest: liveDepth, bowHeight: scope.bowHeight,
+                                                   bowToPhone: ScopeCalculator.gpsFromBow(scope))
+                    distanceTrend = d > reach + new.accuracy ? AnchorDrift.distanceTrend(distanceLog, accuracy: new.accuracy) : nil
                 }
             }
             // Outside only when beyond the radius by more than the fix's own error (capped, so a very
@@ -1997,6 +2066,7 @@ final class AnchorWatchEngine: ObservableObject {
         var awaitingSwingFix: Bool?
         var estimateAutoApplied: Bool?
         var rodeConfirmed: Bool?
+        var swingAnalysisStarted: Date?
     }
     private let key = "anchorwatch.saved"
     private let scopeKey = "anchorwatch.scope.v3"
@@ -2018,7 +2088,7 @@ final class AnchorWatchEngine: ObservableObject {
         let saved = Saved(latitude: anchor.latitude, longitude: anchor.longitude, radius: radius, dropped: anchorDropped,
                           uncertainty: anchorUncertainty,
                           originalLatitude: originalAnchor?.latitude, originalLongitude: originalAnchor?.longitude, awaitingSwingFix: awaitingSwingFix,
-                          estimateAutoApplied: estimateAutoApplied, rodeConfirmed: rodeConfirmed)
+                          estimateAutoApplied: estimateAutoApplied, rodeConfirmed: rodeConfirmed, swingAnalysisStarted: swingAnalysisStarted)
         encodeSetting(saved, key: key)
     }
 
@@ -2065,6 +2135,7 @@ final class AnchorWatchEngine: ObservableObject {
         anchorDropped = s.dropped
         anchorUncertainty = s.uncertainty
         rodeConfirmed = s.rodeConfirmed ?? false
+        swingAnalysisStarted = s.swingAnalysisStarted
         if rodeOutSet == nil { rodeOutSet = rodeSuggested }
         awaitingSwingFix = s.awaitingSwingFix ?? false
         // Older saves cannot tell us whether the mark was hand placed: preserve it unless still finding the anchor.

@@ -1,0 +1,5 @@
+name,depth,tideRise,bowHeight,boatLength,scopeRatio,margin,rode,radius
+nereus_default,3.048,0,1.219,14.326,5,6.096,21.335,34.162945464911644
+high_water,3,2,1,14,7,6,42,54.569219381653056
+vertical_rode,10,0,1,10,1,2,11,7
+zero_depth,0,0,0,0,5,0,0,0

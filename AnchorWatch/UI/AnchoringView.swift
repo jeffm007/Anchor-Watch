@@ -8,6 +8,9 @@ struct AnchoringView: View {
     private var conditions: AnchorConditions {
         engine.plannerConditions(editableConditions)
     }
+    @State private var showAlerts = false
+    @State private var showWatchCheck = false
+    @State private var showHiddenHazards = false
     @State private var started = false
     @State private var tide = TideChoice.high
 
@@ -22,7 +25,7 @@ struct AnchoringView: View {
 
     /// Lowest and highest water in the Tides window, from the predictions for the nearest station.
     private var tideExtremes: (low: TideEvent, high: TideEvent)? {
-        engine.tide.flatMap { TideMath.extremes(from: Date(), hours: engine.tideWindowHours, events: $0.events) }
+        engine.tide.flatMap { TideMath.extremes(from: Date(), hours: engine.tideWindowHours, snapshot: $0) }
     }
 
     /// Change in water level from now at the chosen tide. High falls back to the rise entered in Depth & Scope.
@@ -75,6 +78,21 @@ struct AnchoringView: View {
         let r = result
         NavigationStack {
             Form {
+                Section {
+                    DashboardHeader()
+                    DashboardTiles(openConditions: { engine.tab = .weather }, openDepth: { engine.tab = .water }, openAnchoring: { })
+                }
+                Section {
+                    MonitoringActionCard()
+                    if !engine.hideWarningBanners { OutlookBanner() }
+                    NoticesCard(openAnchoring: { }, openConditions: { engine.tab = .weather }, openAlerts: { showAlerts = true }, openWatchCheck: { showWatchCheck = true })
+                    if !engine.hiddenHazards.isEmpty {
+                        Button("Hidden hazards (\(engine.hiddenHazards.count))") { showHiddenHazards = true }
+                    }
+                    AnchorCorrectionBanner()
+                    if let drift = engine.anchorDrift { DriftBanner(drift: drift) }
+                }
+
                 // The verdict first: is this setup good, for how much wind, and will the forecast stay under it?
                 if engine.armed {
                     Section("Monitoring") {
@@ -253,6 +271,9 @@ struct AnchoringView: View {
             }
             .navigationTitle("Anchoring")
             .navigationBarTitleDisplayMode(.inline)
+            .sheet(isPresented: $showAlerts) { AlertsView() }
+            .sheet(isPresented: $showWatchCheck) { WatchCheckView() }
+            .sheet(isPresented: $showHiddenHazards) { HiddenHazardsView() }
             .onAppear(perform: start)
             // The forecast often arrives after the page first opens; use it unless the wind was set by hand.
             .onChange(of: engine.windHere) { _, _ in if !windSetByHand { fillFromForecast() } }

@@ -1,14 +1,46 @@
 import CoreLocation
 import Foundation
 
-/// A NOAA tidal current prediction station. Most sit in channels, where the current runs harder than in a
-/// sheltered anchorage nearby, so the app scales the speed (see `AnchorWatchEngine.currentFactor`).
+enum CurrentProvider: String, Codable {
+    case noaa
+    case chs
+
+    var displayName: String { self == .chs ? "Canadian Hydrographic Service" : "NOAA" }
+}
+
+/// A NOAA or Canadian Hydrographic Service tidal-current prediction station.
+/// Most sit in channels, where the current runs harder than in a sheltered anchorage nearby.
 struct CurrentStation: Codable, Equatable {
     let id: String
     let name: String
     let lat: Double
     let lng: Double
+    var provider: CurrentProvider
+    var stationCode: String?
+
+    init(id: String, name: String, lat: Double, lng: Double,
+         provider: CurrentProvider = .noaa, stationCode: String? = nil) {
+        self.id = id
+        self.name = name
+        self.lat = lat
+        self.lng = lng
+        self.provider = provider
+        self.stationCode = stationCode
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, name, lat, lng, provider, stationCode }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        lat = try c.decode(Double.self, forKey: .lat)
+        lng = try c.decode(Double.self, forKey: .lng)
+        provider = try c.decodeIfPresent(CurrentProvider.self, forKey: .provider) ?? .noaa
+        stationCode = try c.decodeIfPresent(String.self, forKey: .stationCode)
+    }
+
     var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: lat, longitude: lng) }
+    var providerName: String { provider.displayName }
 }
 
 /// One predicted slack, strongest flood or strongest ebb. Velocity in knots, positive flooding and negative
@@ -45,11 +77,86 @@ enum CurrentMath {
     /// The station list, one entry per station (it repeats each station for every depth it measures).
     static func parseStations(_ data: Data) throws -> [CurrentStation] {
         struct Reply: Decodable { let stations: [Row] }
-        struct Row: Decodable { let id: String; let name: String; let lat: Double; let lng: Double }
+        struct Row: Decodable {
+            let id: String; let name: String; let lat: Double; let lng: Double
+            let type: String?
+        }
         var seen = Set<String>()
         return try JSONDecoder().decode(Reply.self, from: data).stations.compactMap { row in
+            // NOAA labels weak-and-variable stations "W"; those have no usable predictions.
+            if row.type == "W" { return nil }
             guard seen.insert(row.id).inserted else { return nil }
             return CurrentStation(id: row.id, name: row.name, lat: row.lat, lng: row.lng)
+        }
+    }
+
+    static func parseCHSStations(_ data: Data) throws -> [CurrentStation] {
+        struct Row: Decodable {
+            let id: String; let code: String; let officialName: String
+            let latitude: Double; let longitude: Double
+            let timeSeries: [Series]?
+            struct Series: Decodable { let code: String }
+        }
+        return try JSONDecoder().decode([Row].self, from: data)
+            .filter { $0.timeSeries?.contains { $0.code == "wcp1-events" } == true }
+            .map { CurrentStation(id: $0.id, name: $0.officialName, lat: $0.latitude, lng: $0.longitude,
+                                  provider: .chs, stationCode: $0.code) }
+    }
+
+    /// CHS current predictions are supplied as signed flood/ebb events and a separate direction series.
+    /// CHS current-direction values are bearings of flow toward true north, in degrees.
+    static func parseCHSPredictions(events eventData: Data, directions directionData: Data) throws -> [CurrentEvent] {
+        struct EventRow: Decodable {
+            let eventDate: String
+            let qualifier: String
+            let value: Double
+            let qcFlagCode: String?
+        }
+        struct DirectionRow: Decodable {
+            let eventDate: String
+            let value: Double
+            let qcFlagCode: String?
+        }
+        let iso = ISO8601DateFormatter()
+        let rawEvents = try JSONDecoder().decode([EventRow].self, from: eventData)
+            .compactMap { row -> (time: Date, qualifier: String, speed: Double)? in
+                guard row.qcFlagCode != "3", let time = iso.date(from: row.eventDate) else { return nil }
+                return (time, row.qualifier, row.value)
+            }
+            .sorted { $0.time < $1.time }
+        let directions = try JSONDecoder().decode([DirectionRow].self, from: directionData)
+            .compactMap { row -> (time: Date, bearing: Double)? in
+                guard row.qcFlagCode != "3", let time = iso.date(from: row.eventDate), row.value.isFinite,
+                      row.value >= 0, row.value <= 360 else { return nil }
+                return (time, row.value.truncatingRemainder(dividingBy: 360))
+            }
+            .sorted { $0.time < $1.time }
+        guard rawEvents.count >= 2, !directions.isEmpty else { return [] }
+
+        func direction(at time: Date) -> Double? {
+            directions.min(by: { abs($0.time.timeIntervalSince(time)) < abs($1.time.timeIntervalSince(time)) })
+                .flatMap { abs($0.time.timeIntervalSince(time)) <= 45 * 60 ? $0.bearing : nil }
+        }
+        func circularMean(_ values: [Double]) -> Double? {
+            guard !values.isEmpty else { return nil }
+            let radians = values.map { $0 * .pi / 180 }
+            let x = radians.map(cos).reduce(0, +)
+            let y = radians.map(sin).reduce(0, +)
+            return (atan2(y, x) * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
+        }
+
+        let floodDirections = rawEvents.compactMap { $0.qualifier == "EXTREMA_FLOOD" ? direction(at: $0.time) : nil }
+        let ebbDirections = rawEvents.compactMap { $0.qualifier == "EXTREMA_EBB" ? direction(at: $0.time) : nil }
+        guard let floodToward = circularMean(floodDirections), let ebbToward = circularMean(ebbDirections) else { return [] }
+        return rawEvents.compactMap { row in
+            let velocity: Double
+            switch row.qualifier {
+            case "EXTREMA_FLOOD": velocity = abs(row.speed)
+            case "EXTREMA_EBB": velocity = -abs(row.speed)
+            case "SLACK": velocity = 0
+            default: return nil
+            }
+            return CurrentEvent(time: row.time, velocity: velocity, floodToward: floodToward, ebbToward: ebbToward)
         }
     }
 
@@ -77,17 +184,34 @@ enum CurrentMath {
     }
 }
 
-/// NOAA tidal current predictions for the station nearest the boat. US waters only; nil where there's no
-/// station close enough to mean anything.
+/// NOAA and CHS tidal-current prediction snapshots for a nearby station. Saved predictions survive offline.
 enum CurrentService {
     /// Farther than this, a station's current says little about the anchorage.
     static let maxDistance = 25_000.0
 
+    static func stationsForOverlay() async -> [CurrentStation] {
+        let all = await allStations()
+        var seen = Set<String>()
+        return all.filter { seen.insert($0.provider.rawValue + ":" + $0.id).inserted }
+            .filter { CLLocationCoordinate2DIsValid($0.coordinate) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
     static func snapshot(near point: CLLocationCoordinate2D, now: Date = Date()) async throws -> CurrentSnapshot? {
-        guard let stations = try await stations(),
-              let station = stations.min(by: { Geo.distance($0.coordinate, point) < Geo.distance($1.coordinate, point) }),
+        guard let station = await allStations().min(by: {
+            Geo.distance($0.coordinate, point) < Geo.distance($1.coordinate, point)
+        }),
               Geo.distance(station.coordinate, point) <= maxDistance else { return nil }
-        if let saved = load(CurrentSnapshot.self, "currents-\(station.id).json"),
+        return try await snapshot(for: station, now: now)
+    }
+
+    static func cachedSnapshot(for station: CurrentStation) -> CurrentSnapshot? {
+        load(CurrentSnapshot.self, cacheName(for: station))
+    }
+
+    static func snapshot(for station: CurrentStation, now: Date = Date()) async throws -> CurrentSnapshot {
+        let cacheName = cacheName(for: station)
+        if let saved = load(CurrentSnapshot.self, cacheName),
            now.timeIntervalSince(saved.fetched) < 6 * 3600,
            (saved.events.last?.time ?? .distantPast) > now.addingTimeInterval(30 * 3600) {
             var cached = saved
@@ -95,20 +219,17 @@ enum CurrentService {
             return cached
         }
         do {
-            let day = DateFormatter()
-            day.locale = Locale(identifier: "en_US_POSIX")
-            day.timeZone = TimeZone(identifier: "UTC")
-            day.dateFormat = "yyyyMMdd"
-            let url = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=currents_predictions&application=AnchorWatch"
-                + "&station=\(station.id)&begin_date=\(day.string(from: now.addingTimeInterval(-24 * 3600)))&range=96"
-                + "&interval=MAX_SLACK&units=english&time_zone=gmt&format=json"
-            let events = try CurrentMath.parsePredictions(try await download(url))
+            let events: [CurrentEvent]
+            switch station.provider {
+            case .noaa: events = try await fetchNOAA(station: station, now: now)
+            case .chs: events = try await fetchCHS(station: station, now: now)
+            }
             guard events.count >= 2 else { throw URLError(.cannotParseResponse) }
             let fresh = CurrentSnapshot(station: station, events: events, fetched: now)
-            save(fresh, "currents-\(station.id).json")
+            save(fresh, cacheName)
             return fresh
         } catch {
-            if var saved = load(CurrentSnapshot.self, "currents-\(station.id).json") {
+            if var saved = load(CurrentSnapshot.self, cacheName) {
                 saved.fromCache = true
                 return saved
             }
@@ -116,12 +237,55 @@ enum CurrentService {
         }
     }
 
-    private static func stations() async throws -> [CurrentStation]? {
-        if let cached = load([CurrentStation].self, "current-stations.json") { return cached }
-        let list = try CurrentMath.parseStations(
-            try await download("https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations.json?type=currentpredictions"))
-        save(list, "current-stations.json")
-        return list
+    private static func cacheName(for station: CurrentStation) -> String {
+        station.provider == .chs ? "currents-chs-\(station.id).json" : "currents-\(station.id).json"
+    }
+
+    private static func allStations() async -> [CurrentStation] {
+        async let noaa: [CurrentStation] = stations(provider: .noaa)
+        async let chs: [CurrentStation] = stations(provider: .chs)
+        return await noaa + chs
+    }
+
+    private static func stations(provider: CurrentProvider) async -> [CurrentStation] {
+        let filename = "current-stations-\(provider.rawValue).json"
+        if let cached = load([CurrentStation].self, filename) { return cached }
+        do {
+            let list: [CurrentStation]
+            switch provider {
+            case .noaa:
+                list = try CurrentMath.parseStations(try await download(
+                    "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations.json?type=currentpredictions"))
+            case .chs:
+                list = try CurrentMath.parseCHSStations(try await download(
+                    "https://api-iwls.dfo-mpo.gc.ca/api/v1/stations?chs-region-code=PAC&time-series-code=wcp1-events"))
+            }
+            save(list, filename)
+            return list
+        } catch {
+            return []
+        }
+    }
+
+    private static func fetchNOAA(station: CurrentStation, now: Date) async throws -> [CurrentEvent] {
+        let day = DateFormatter()
+        day.locale = Locale(identifier: "en_US_POSIX")
+        day.timeZone = TimeZone(identifier: "UTC")
+        day.dateFormat = "yyyyMMdd"
+        let url = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=currents_predictions&application=AnchorWatch"
+            + "&station=\(station.id)&begin_date=\(day.string(from: now.addingTimeInterval(-24 * 3600)))&range=96"
+            + "&interval=MAX_SLACK&units=english&time_zone=gmt&format=json"
+        return try CurrentMath.parsePredictions(try await download(url))
+    }
+
+    private static func fetchCHS(station: CurrentStation, now: Date) async throws -> [CurrentEvent] {
+        let iso = ISO8601DateFormatter()
+        let from = iso.string(from: now.addingTimeInterval(-24 * 3600))
+        let to = iso.string(from: now.addingTimeInterval(28 * 24 * 3600))
+        let root = "https://api-iwls.dfo-mpo.gc.ca/api/v1/stations/\(station.id)/data"
+        async let events = download("\(root)?time-series-code=wcp1-events&from=\(from)&to=\(to)")
+        async let directions = download("\(root)?time-series-code=wcdp1&from=\(from)&to=\(to)&resolution=FIFTEEN_MINUTES")
+        return try CurrentMath.parseCHSPredictions(events: await events, directions: await directions)
     }
 
     private static func download(_ url: String) async throws -> Data {

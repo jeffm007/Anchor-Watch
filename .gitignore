@@ -5,3 +5,11 @@ xcuserdata/
 .smbdelete*
 
 .DS_Store
+
+# Android / Kotlin local build state
+.gradle/
+.kotlin/
+**/build/
+android/local.properties
+*.jks
+*.keystore

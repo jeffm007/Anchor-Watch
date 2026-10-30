@@ -222,7 +222,7 @@ enum ObservationService {
     static func fetchNearbyResult(_ point: CLLocationCoordinate2D, now: Date = Date(),
                                   noaa: (() async throws -> [StationObservation])? = nil,
                                   canada: (() async throws -> [StationObservation])? = nil) async throws -> NearbyResult {
-        func attempt(_ fetch: () async throws -> [StationObservation]) async -> Result<[StationObservation], Error> {
+        @Sendable func attempt(_ fetch: () async throws -> [StationObservation]) async -> Result<[StationObservation], Error> {
             do { return .success(try await fetch()) } catch { return .failure(error) }
         }
         async let us = attempt(noaa ?? {

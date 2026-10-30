@@ -10,7 +10,6 @@ final class EstimateAnnotation: MKPointAnnotation {}
 final class HazardAnnotation: MKPointAnnotation {
     var hazard: Hazard?
 }
-
 /// Faded anchor at the original drop spot once the anchor has been moved from it.
 final class OriginalAnchorAnnotation: MKPointAnnotation {}
 /// Labels on the lines from the boat to the new anchor spot and to the original one.
@@ -25,6 +24,30 @@ final class MeasureAnnotation: MKPointAnnotation {
     var isBeingDragged = false
 }
 final class StationAnnotation: MKPointAnnotation {}
+final class TideStationMapAnnotation: MKPointAnnotation {
+    var station: TideStation
+    init(station: TideStation) {
+        self.station = station
+        super.init()
+        coordinate = station.coordinate
+        title = station.name
+        if let forecastCode = station.forecastSeriesCode {
+            subtitle = "\(station.sourceName) · water-level forecast available (\(forecastCode)) · \(station.id)"
+        } else {
+            subtitle = "\(station.sourceName) tide prediction station · \(station.id)"
+        }
+    }
+}
+final class CurrentStationMapAnnotation: MKPointAnnotation {
+    var station: CurrentStation
+    init(station: CurrentStation) {
+        self.station = station
+        super.init()
+        coordinate = station.coordinate
+        title = station.name
+        subtitle = "\(station.providerName) current prediction station · \(station.stationCode ?? station.id)"
+    }
+}
 final class WindAnnotation: MKPointAnnotation {
     var speed = 0.0
     var from = 0.0
@@ -70,14 +93,25 @@ final class ChartMapContainer: UIView {
     }
 }
 
+/// Retain camera state, not a hidden MapKit rendering surface.
+@MainActor
+final class ChartMapViewportState {
+    var camera: MKMapCamera?
+    var recenterTick = 0
+    var zoomTick = 0
+}
+
 /// UIKit map wrapped for SwiftUI because SwiftUI's Map can't host tile overlays.
 struct ChartMapView: UIViewRepresentable {
+    @EnvironmentObject var navigation: NavigationStore
     @ObservedObject var engine: AnchorWatchEngine
+    var viewportState: ChartMapViewportState? = nil
 
-    func makeCoordinator() -> Coordinator { Coordinator(engine) }
+    func makeCoordinator() -> Coordinator { Coordinator(engine, viewportState: viewportState, navigation: navigation) }
 
     func makeUIView(context: Context) -> ChartMapContainer {
         let container = ChartMapContainer(frame: .zero)
+        context.coordinator.chartContainer = container
         let map = container.map
         map.delegate = context.coordinator
         map.showsCompass = true
@@ -96,6 +130,7 @@ struct ChartMapView: UIViewRepresentable {
         press.minimumPressDuration = 0.5
         press.delegate = context.coordinator
         map.addGestureRecognizer(press)
+        context.coordinator.restoreViewport(map)
         return container
     }
 
@@ -104,13 +139,60 @@ struct ChartMapView: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ container: ChartMapContainer, coordinator: Coordinator) {
+        coordinator.saveViewport(container.map)
         container.map.delegate = nil
     }
 
     @MainActor
     final class Coordinator: NSObject, MKMapViewDelegate, UIGestureRecognizerDelegate {
         let engine: AnchorWatchEngine
-        init(_ engine: AnchorWatchEngine) { self.engine = engine }
+        weak var chartContainer: ChartMapContainer?
+        private let viewportState: ChartMapViewportState?
+        private let navigation: NavigationStore
+        private var navigationPins: [MKPointAnnotation] = []
+        private var navigationLine: MKPolyline?
+        private var displayedWaypoints: [NavigationWaypoint] = []
+        private var navigationStart: CLLocationCoordinate2D?
+        private var navigationTarget: NavigationWaypoint?
+        init(_ engine: AnchorWatchEngine, viewportState: ChartMapViewportState? = nil, navigation: NavigationStore) {
+            self.navigation = navigation
+            self.engine = engine; self.viewportState = viewportState
+        }
+        private func syncNavigation(_ map: MKMapView) {
+            if displayedWaypoints != navigation.waypoints {
+                map.removeAnnotations(navigationPins)
+                displayedWaypoints = navigation.waypoints
+                navigationPins = navigation.waypoints.map { waypoint in
+                    let pin = NavigationMapPin(); pin.coordinate = waypoint.coordinate; pin.title = waypoint.name; return pin
+                }
+                map.addAnnotations(navigationPins)
+            }
+            let start = NavigationMetrics.usable(engine.rawFix, now: Date()) ? engine.rawFix?.coordinate : nil
+            let changed = start?.latitude != navigationStart?.latitude || start?.longitude != navigationStart?.longitude || navigationTarget != navigation.active
+            guard changed else { return }
+            navigationStart = start; navigationTarget = navigation.active
+            if let navigationLine { map.removeOverlay(navigationLine) }
+            navigationLine = nil
+            if let start, let destination = navigation.active {
+                var coordinates = [start, destination.coordinate]
+                let line = MKGeodesicPolyline(coordinates: &coordinates, count: 2)
+                line.title = "navigation-go-to"
+                navigationLine = line; map.addOverlay(line, level: .aboveLabels)
+            }
+        }
+        func saveViewport(_ map: MKMapView) {
+            viewportState?.camera = map.camera.copy() as? MKMapCamera
+            viewportState?.recenterTick = lastRecenter
+            viewportState?.zoomTick = lastZoomTick
+        }
+        func restoreViewport(_ map: MKMapView) {
+            guard let state = viewportState, let camera = state.camera,
+                  state.recenterTick == engine.recenterTick else { return }
+            map.setCamera(camera, animated: false)
+            framedOnce = true
+            lastRecenter = state.recenterTick
+            lastZoomTick = state.zoomTick
+        }
 
         private var layer: ChartLayer?
         private var tiles: [MKTileOverlay] = []
@@ -181,12 +263,21 @@ struct ChartMapView: UIViewRepresentable {
         private var windKey = ""
         private var stationKey = ""
         private var stationPins: [StationAnnotation] = []
+        private var tideStationPins: [TideStationMapAnnotation] = []
+        private var tideStationKey = ""
+        private var currentStationPins: [CurrentStationMapAnnotation] = []
+        private var currentStationKey = ""
+        private weak var activeTidePopup: TideStationCalloutView?
+        private var activeTideStationKey: String?
+        private weak var activeCurrentPopup: CurrentStationCalloutView?
+        private var activeCurrentStationKey: String?
         private var lastFitTick = 0
         private var windPins: [WindAnnotation] = []
         private var windWasOn = false
         private var windMapHeading = 0.0
 
         func sync(_ map: MKMapView) {
+            syncNavigation(map)
             if layer != engine.mapLayer { installLayer(map) }
             if !pinsAdded { map.addAnnotations([anchorPin, boatPin]); pinsAdded = true }
 
@@ -231,6 +322,8 @@ struct ChartMapView: UIViewRepresentable {
             applyZoomCommand(map)
             syncWind(map)
             syncStations(map)
+            syncTideStationAnnotations(map)
+            syncCurrentStationAnnotations(map)
         }
 
         /// Blue badges for the observation stations, shown with the wind overlay.
@@ -252,6 +345,50 @@ struct ChartMapView: UIViewRepresentable {
                 }
             }
             fitStationsIfRequested(map)
+        }
+
+        /// Tide symbols are limited to the visible chart area, keeping the map responsive with global station lists.
+        private func syncTideStationAnnotations(_ map: MKMapView) {
+            guard engine.tideStationsOverlayOn else {
+                dismissTidePopup()
+                if !tideStationPins.isEmpty { map.removeAnnotations(tideStationPins); tideStationPins = []; tideStationKey = "" }
+                return
+            }
+            guard !engine.chartTideStations.isEmpty else {
+                engine.loadTideStationsForOverlay()
+                return
+            }
+            let rect = map.visibleMapRect.insetBy(dx: -map.visibleMapRect.width * 0.08,
+                                                  dy: -map.visibleMapRect.height * 0.08)
+            let visible = engine.chartTideStations.filter { rect.contains(MKMapPoint($0.coordinate)) }
+            let key = visible.map { $0.source + ":" + $0.id }.joined(separator: ",")
+            guard key != tideStationKey else { return }
+            tideStationKey = key
+            map.removeAnnotations(tideStationPins)
+            tideStationPins = visible.map { TideStationMapAnnotation(station: $0) }
+            map.addAnnotations(tideStationPins)
+        }
+
+        /// Current prediction stations are shown only in the visible chart area.
+        private func syncCurrentStationAnnotations(_ map: MKMapView) {
+            guard engine.currentStationsOverlayOn else {
+                dismissCurrentPopup()
+                if !currentStationPins.isEmpty {
+                    map.removeAnnotations(currentStationPins)
+                    currentStationPins = []
+                    currentStationKey = ""
+                }
+                return
+            }
+            let rect = map.visibleMapRect.insetBy(dx: -map.visibleMapRect.width * 0.08,
+                                                  dy: -map.visibleMapRect.height * 0.08)
+            let visible = engine.chartCurrentStations.filter { rect.contains(MKMapPoint($0.coordinate)) }
+            let key = visible.map { $0.provider.rawValue + ":" + $0.id }.joined(separator: ",")
+            guard key != currentStationKey else { return }
+            currentStationKey = key
+            map.removeAnnotations(currentStationPins)
+            currentStationPins = visible.map { CurrentStationMapAnnotation(station: $0) }
+            map.addAnnotations(currentStationPins)
         }
 
         private func fitStationsIfRequested(_ map: MKMapView) {
@@ -356,6 +493,8 @@ struct ChartMapView: UIViewRepresentable {
         func mapView(_ map: MKMapView, regionDidChangeAnimated animated: Bool) {
             clampZoom(map)
             if engine.windOverlayOn { engine.requestWindGrid(for: map.region) }
+            syncTideStationAnnotations(map)
+            syncCurrentStationAnnotations(map)
         }
 
         private var tileGeneration = UUID()
@@ -462,7 +601,7 @@ struct ChartMapView: UIViewRepresentable {
 
         private func syncEstimate(_ map: MKMapView) {
             // Shown only while it disagrees with the mark; once the anchor is moved there, just the anchor shows.
-            let estimate = engine.anchor == nil || engine.anchorAgreesWithSwing ? nil : engine.anchorEstimate
+            let estimate = engine.anchor == nil || engine.anchorAgreesWithSwing || engine.anchorEstimate?.method != .free || engine.anchorEstimate?.windAgrees == false ? nil : engine.anchorEstimate
             let key = estimate.map { [$0.center.latitude, $0.center.longitude, $0.semiMajor, $0.semiMinor, $0.majorBearing] } ?? []
             guard key != estimateKey else { return }
             estimateKey = key
@@ -594,7 +733,7 @@ struct ChartMapView: UIViewRepresentable {
                 map.removeAnnotation(originalMark)
                 return
             }
-            if engine.anchor != nil, let estimate = engine.anchorEstimate, !engine.anchorAgreesWithSwing {
+            if engine.anchor != nil, let estimate = engine.anchorEstimate, estimate.method == .free, estimate.windAgrees != false, !engine.anchorAgreesWithSwing {
                 let marker = map.convert(estimate.center, toPointTo: map)
                 if hypot(marker.x - point.x, marker.y - point.y) <= 36 { moveToEstimate(map); return }
             }
@@ -609,6 +748,126 @@ struct ChartMapView: UIViewRepresentable {
             // Anywhere else: mark a hazard here.
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             engine.pendingHazard = .init(coordinate: map.convert(point, toCoordinateFrom: map))
+        }
+
+        func mapView(_ map: MKMapView, didSelect view: MKAnnotationView) {
+            if let pin = view.annotation as? TideStationMapAnnotation {
+                // Suppress MapKit's marker-anchored bubble after selection; the chart overlay below is centered.
+                view.canShowCallout = false
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                showTidePopup(for: pin, on: map)
+            } else if let pin = view.annotation as? CurrentStationMapAnnotation {
+                view.canShowCallout = false
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                showCurrentPopup(for: pin, on: map)
+            }
+        }
+
+        private func showCurrentPopup(for pin: CurrentStationMapAnnotation, on map: MKMapView) {
+            guard let container = chartContainer else { return }
+            dismissTidePopup()
+            let key = pin.station.provider.rawValue + ":" + pin.station.id
+            guard activeCurrentStationKey != key else { return }
+            activeCurrentPopup?.removeFromSuperview()
+            let popup = CurrentStationCalloutView()
+            popup.onClose = { [weak self] in self?.dismissCurrentPopup() }
+            activeCurrentPopup = popup
+            activeCurrentStationKey = key
+            container.addSubview(popup)
+            NSLayoutConstraint.activate([
+                popup.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+                popup.centerYAnchor.constraint(equalTo: container.centerYAnchor)
+            ])
+            container.bringSubviewToFront(popup)
+            let station = pin.station
+            popup.show(station: station, snapshot: CurrentService.cachedSnapshot(for: station), loading: true)
+            Task { @MainActor in
+                do {
+                    let result = try await CurrentService.snapshot(for: station)
+                    if self.activeCurrentPopup === popup {
+                        popup.show(station: station, snapshot: result, loading: false)
+                    }
+                } catch {
+                    if self.activeCurrentPopup === popup {
+                        popup.show(station: station, snapshot: nil, loading: false,
+                                   error: error.localizedDescription)
+                    }
+                }
+            }
+        }
+
+        private func dismissCurrentPopup() {
+            activeCurrentPopup?.removeFromSuperview()
+            activeCurrentPopup = nil
+            activeCurrentStationKey = nil
+        }
+
+        private func dismissTidePopup() {
+            activeTidePopup?.removeFromSuperview()
+            activeTidePopup = nil
+            activeTideStationKey = nil
+        }
+
+        private func showTidePopup(for pin: TideStationMapAnnotation, on map: MKMapView) {
+            guard let container = chartContainer else { return }
+            dismissCurrentPopup()
+            let key = pin.station.source + ":" + pin.station.id
+            guard activeTideStationKey != key else { return }
+            activeTidePopup?.removeFromSuperview()
+            let popup = TideStationCalloutView()
+            popup.onClose = { [weak self] in self?.dismissTidePopup() }
+            activeTidePopup = popup
+            activeTideStationKey = key
+            container.addSubview(popup)
+            NSLayoutConstraint.activate([
+                popup.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+                popup.centerYAnchor.constraint(equalTo: container.centerYAnchor)
+            ])
+            container.bringSubviewToFront(popup)
+            let station = pin.station
+            var visibleSnapshot = TideService.cachedSnapshot(for: station)
+            let hasWeatherAwareForecast = station.source == TideStation.noaa || station.forecastSeriesCode != nil
+            popup.show(station: station, snapshot: visibleSnapshot, loading: true, units: engine.units,
+                       ofsLoading: hasWeatherAwareForecast)
+            Task { @MainActor in
+                var tideError: String?
+                do {
+                    let result = try await TideService.snapshot(for: station)
+                    visibleSnapshot = result.snapshot
+                } catch {
+                    tideError = error.localizedDescription
+                }
+                guard self.activeTidePopup === popup else { return }
+                popup.show(station: station, snapshot: visibleSnapshot, loading: false, units: engine.units,
+                           error: tideError, ofsLoading: hasWeatherAwareForecast, preserveScroll: true)
+                guard hasWeatherAwareForecast else { return }
+                do {
+                    let result: (series: WaterLevelForecastSeries, fromCache: Bool)
+                    if station.source == TideStation.noaa {
+                        result = try await TideService.ofsWaterLevel(for: station)
+                    } else {
+                        result = try await TideService.chsWaterLevelForecast(for: station)
+                    }
+                    guard self.activeTidePopup === popup else { return }
+                    popup.show(station: station, snapshot: visibleSnapshot, loading: false, units: engine.units,
+                               error: tideError, ofsForecast: result.series, ofsFromCache: result.fromCache,
+                               preserveScroll: true)
+                } catch {
+                    guard self.activeTidePopup === popup else { return }
+                    popup.show(station: station, snapshot: visibleSnapshot, loading: false, units: engine.units,
+                               error: tideError, ofsError: error.localizedDescription, preserveScroll: true)
+                }
+            }
+        }
+
+        func mapView(_ map: MKMapView, didDeselect view: MKAnnotationView) {
+            if view.annotation is TideStationMapAnnotation {
+                // Keep the centered panel open across annotation refreshes and selection changes.
+                view.canShowCallout = true
+            } else if view.annotation is CurrentStationMapAnnotation {
+                // The centered panel is independent of pin selection so chart refreshes don't dismiss it.
+                view.canShowCallout = true
+            }
         }
 
         func mapView(_ map: MKMapView, annotationView view: MKAnnotationView, calloutAccessoryControlTapped control: UIControl) {
@@ -627,7 +886,36 @@ struct ChartMapView: UIViewRepresentable {
         }
 
         @objc func tapped(_ gesture: UITapGestureRecognizer) {
+            if navigation.placing, let map = gesture.view as? MKMapView {
+                navigation.pick(map.convert(gesture.location(in: map), toCoordinateFrom: map))
+                return
+            }
             engine.pokeControls()
+            if let map = gesture.view as? MKMapView {
+                let point = gesture.location(in: map)
+                if let pin = tideStationPins.first(where: { pin in
+                    map.view(for: pin)?.frame.insetBy(dx: -18, dy: -18).contains(point) == true
+                }) {
+                    showTidePopup(for: pin, on: map)
+                    map.selectAnnotation(pin, animated: false)
+                    return
+                }
+                if let pin = currentStationPins.first(where: { pin in
+                    map.view(for: pin)?.frame.insetBy(dx: -18, dy: -18).contains(point) == true
+                }) {
+                    showCurrentPopup(for: pin, on: map)
+                    map.selectAnnotation(pin, animated: false)
+                    return
+                }
+                if activeCurrentPopup != nil {
+                    dismissCurrentPopup()
+                    return
+                }
+                if activeTidePopup != nil {
+                    dismissTidePopup()
+                    return
+                }
+            }
             if let map = gesture.view as? MKMapView, let pin = pressedMeasureLabel(map, at: gesture.location(in: map)),
                let view = map.view(for: pin), gesture.location(in: view).x >= view.bounds.width - MeasureLabel.closeWidth - 8 {
                 // The ✕ at the end of a label closes that label and its line.
@@ -950,6 +1238,36 @@ struct ChartMapView: UIViewRepresentable {
                 view.displayPriority = .required
                 view.collisionMode = .none
                 return view
+            case let pin as NavigationMapPin:
+                let view = MKMarkerAnnotationView(annotation: pin, reuseIdentifier: "navigationWaypoint")
+                view.markerTintColor = .systemBlue; view.glyphImage = UIImage(systemName: "mappin")
+                view.canShowCallout = true
+                return view
+            case let pin as TideStationMapAnnotation:
+                let view = MKMarkerAnnotationView(annotation: pin, reuseIdentifier: "tideStation")
+                view.markerTintColor = pin.station.source == TideStation.chs ? .systemTeal : .systemBlue
+                view.glyphImage = UIImage(systemName: pin.station.forecastSeriesCode == nil ? "water.waves" : "chart.xyaxis.line")
+                view.glyphTintColor = .white
+                view.canShowCallout = true
+                view.displayPriority = .defaultLow
+                view.collisionMode = .circle
+                view.clusteringIdentifier = "tideStations"
+                return view
+            case let pin as CurrentStationMapAnnotation:
+                let view = MKMarkerAnnotationView(annotation: pin, reuseIdentifier: "currentStation")
+                view.markerTintColor = pin.station.provider == .chs ? .systemTeal : .systemIndigo
+                view.glyphImage = UIImage(systemName: "water.waves")
+                view.glyphTintColor = .white
+                view.canShowCallout = true
+                view.displayPriority = .defaultLow
+                view.collisionMode = .circle
+                view.clusteringIdentifier = "currentStations"
+                if let snapshot = engine.currents, snapshot.station == pin.station,
+                   let flow = CurrentMath.at(Date(), events: snapshot.events) {
+                    pin.subtitle = String(format: "%.1f kt toward %@ · %@", flow.speed,
+                                          Compass.name(flow.toward), pin.station.providerName)
+                }
+                return view
             case let pin as StationAnnotation:
                 let view = MKAnnotationView(annotation: pin, reuseIdentifier: "station")
                 let speed = engine.observations.first { StationName.short($0.name) == pin.title }?.windSpeed
@@ -991,6 +1309,10 @@ struct ChartMapView: UIViewRepresentable {
 
         func mapView(_ map: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             switch overlay {
+            case let line as MKPolyline where line.title == "navigation-go-to":
+                let renderer = MKPolylineRenderer(polyline: line)
+                renderer.strokeColor = .systemOrange; renderer.lineWidth = 2; renderer.lineDashPattern = [7, 5]
+                return renderer
             case let tile as MKTileOverlay:
                 return MKTileOverlayRenderer(tileOverlay: tile)
             case let circle as MKCircle where circle.title == "hazard":
@@ -1410,3 +1732,618 @@ enum StationIcon {
         return image
     }
 }
+@MainActor
+final class TideStationCalloutView: UIView {
+    private let scroll = UIScrollView()
+    private let rows = UIStackView()
+    private let closeButton = UIButton(type: .system)
+    var onClose: (() -> Void)?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        translatesAutoresizingMaskIntoConstraints = false
+        backgroundColor = .secondarySystemBackground
+        layer.cornerRadius = 14
+        layer.borderWidth = 1
+        layer.borderColor = UIColor.separator.cgColor
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.3
+        layer.shadowRadius = 14
+        layer.shadowOffset = CGSize(width: 0, height: 5)
+        clipsToBounds = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        rows.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
+        closeButton.tintColor = .secondaryLabel
+        closeButton.accessibilityLabel = "Close tide station predictions"
+        closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
+        rows.axis = .vertical
+        rows.spacing = 0
+        rows.isLayoutMarginsRelativeArrangement = true
+        rows.layoutMargins = UIEdgeInsets(top: 0, left: 14, bottom: 0, right: 14)
+        scroll.addSubview(rows)
+        addSubview(scroll)
+        addSubview(closeButton)
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 320),
+            heightAnchor.constraint(equalToConstant: 390),
+            closeButton.topAnchor.constraint(equalTo: topAnchor, constant: 7),
+            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            closeButton.widthAnchor.constraint(equalToConstant: 28),
+            closeButton.heightAnchor.constraint(equalToConstant: 28),
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: topAnchor, constant: 34),
+            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            rows.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            rows.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            rows.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            rows.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            rows.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor)
+        ])
+        scroll.alwaysBounceVertical = true
+        scroll.showsVerticalScrollIndicator = true
+        isAccessibilityElement = false
+        accessibilityLabel = "Tide station predictions"
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func closeTapped() { onClose?() }
+
+    func show(station: TideStation, snapshot: TideSnapshot?, loading: Bool, units: Units,
+              error: String? = nil, ofsForecast: OFSWaterLevelSeries? = nil,
+              ofsFromCache: Bool = false, ofsLoading: Bool = false, ofsError: String? = nil,
+              preserveScroll: Bool = false) {
+        let previousOffset = scroll.contentOffset
+        rows.arrangedSubviews.forEach { view in
+            rows.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        func addText(_ text: String, size: CGFloat = 13, weight: UIFont.Weight = .regular,
+                     color: UIColor = .label) {
+            let label = UILabel()
+            label.text = text
+            label.font = .systemFont(ofSize: size, weight: weight)
+            label.textColor = color
+            label.numberOfLines = 0
+            label.adjustsFontForContentSizeCategory = true
+            label.textAlignment = .left
+            label.isAccessibilityElement = true
+            label.accessibilityLabel = text
+            label.setContentCompressionResistancePriority(.required, for: .vertical)
+            rows.addArrangedSubview(label)
+            let separator = UIView()
+            separator.backgroundColor = .separator
+            separator.translatesAutoresizingMaskIntoConstraints = false
+            separator.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
+            rows.addArrangedSubview(separator)
+        }
+
+        func addDateGap() {
+            let spacer = UIView()
+            spacer.backgroundColor = .clear
+            spacer.translatesAutoresizingMaskIntoConstraints = false
+            spacer.heightAnchor.constraint(equalToConstant: 9).isActive = true
+            rows.addArrangedSubview(spacer)
+        }
+
+        func columnLabel(_ text: String, width: CGFloat, weight: UIFont.Weight = .regular,
+                         color: UIColor = .label) -> UILabel {
+            let label = UILabel()
+            label.text = text
+            label.font = .systemFont(ofSize: 12, weight: weight)
+            label.textColor = color
+            // Keep every value anchored to the same physical left edge.
+            label.textAlignment = .left
+            label.semanticContentAttribute = .forceLeftToRight
+            label.lineBreakMode = .byTruncatingTail
+            label.adjustsFontForContentSizeCategory = true
+            label.widthAnchor.constraint(equalToConstant: width).isActive = true
+            label.isAccessibilityElement = true
+            label.accessibilityLabel = text
+            return label
+        }
+
+        func addColumns(_ first: String, _ second: String, _ third: String,
+                        header: Bool = false) {
+            let row = UIStackView(arrangedSubviews: [
+                columnLabel(first, width: 132, weight: header ? .semibold : .regular,
+                            color: header ? .secondaryLabel : .label),
+                columnLabel(second, width: 54, weight: header ? .semibold : .semibold,
+                            color: header ? .secondaryLabel : .label),
+                columnLabel(third, width: 72, weight: header ? .semibold : .regular,
+                            color: header ? .secondaryLabel : .label)
+            ])
+            row.axis = .horizontal
+            row.semanticContentAttribute = .forceLeftToRight
+            row.alignment = .firstBaseline
+            row.distribution = .fill
+            row.spacing = 4
+            row.isLayoutMarginsRelativeArrangement = true
+            row.layoutMargins = UIEdgeInsets(top: 5, left: 8, bottom: 5, right: 8)
+            row.isAccessibilityElement = false
+            row.accessibilityLabel = "\(first), \(second), \(third)"
+            rows.addArrangedSubview(row)
+            let separator = UIView()
+            separator.backgroundColor = .separator
+            separator.translatesAutoresizingMaskIntoConstraints = false
+            separator.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
+            rows.addArrangedSubview(separator)
+        }
+
+        let datum = station.source == TideStation.noaa ? "MLLW" : "local chart datum"
+        addText(station.name, size: 15, weight: .bold)
+        addText("\(station.sourceName) · heights above \(datum)", size: 12,
+                weight: .semibold, color: .secondaryLabel)
+        if let snapshot {
+            addText("Predicted water level · 24 hours", size: 12,
+                    weight: .semibold, color: .secondaryLabel)
+            addText("Blue solid: predicted tide · teal dashed: weather-aware water-level forecast",
+                    size: 10, color: .secondaryLabel)
+            let graph = TidePredictionGraphView()
+            graph.configure(snapshot: snapshot, units: units, ofsForecast: ofsForecast)
+            rows.addArrangedSubview(graph)
+            if station.source == TideStation.noaa {
+                let modelStatus: String
+                if let ofsForecast {
+                    let source = ofsFromCache ? "Saved NOAA model data" : "NOAA model data"
+                    modelStatus = "\(source) · retrieved \(ofsForecast.fetched.formatted(date: .abbreviated, time: .shortened))"
+                } else if ofsLoading {
+                    modelStatus = "Loading NOAA weather-aware forecast…"
+                } else {
+                    modelStatus = "NOAA weather-aware forecast unavailable" + (ofsError.map { ": \($0)" } ?? ".")
+                }
+                addText(modelStatus, size: 11, color: ofsForecast == nil && !ofsLoading ? .systemOrange : .secondaryLabel)
+            } else if let forecast = ofsForecast {
+                let source = ofsFromCache ? "Saved CHS forecast" : "CHS forecast"
+                addText("\(source) · \(forecast.seriesCode) · retrieved \(forecast.fetched.formatted(date: .abbreviated, time: .shortened))",
+                        size: 11, color: .secondaryLabel)
+            } else if station.forecastSeriesCode == nil {
+                addText("CHS does not publish a water-level forecast for this station; showing tide predictions.",
+                        size: 11, color: .secondaryLabel)
+            } else if ofsLoading {
+                addText("Loading CHS water-level forecast…", size: 11, color: .secondaryLabel)
+            } else {
+                addText("CHS water-level forecast unavailable" + (ofsError.map { ": \($0)" } ?? "."),
+                        size: 11, color: .systemOrange)
+            }
+            if let height = TideMath.height(at: Date(), snapshot: snapshot) {
+                addText("Estimated now: \(units.formatTenths(height))", weight: .semibold, color: .systemBlue)
+            }
+            addText(loading ? "Refreshing predictions…" : "Updated \(snapshot.fetched.formatted(date: .abbreviated, time: .shortened))",
+                    size: 12, color: .secondaryLabel)
+            let upcoming = TideMath.upcoming(snapshot.events, after: Date(), limit: 96)
+            if upcoming.isEmpty {
+                addText("No upcoming high/low events are cached.", color: .secondaryLabel)
+            } else {
+                addColumns("Time", "Tide", "Height", header: true)
+            }
+            var previousDay: Date?
+            for event in upcoming {
+                let day = Calendar.current.startOfDay(for: event.time)
+                if let previousDay, day != previousDay { addDateGap() }
+                previousDay = day
+                let phase = event.isHigh ? "High" : "Low"
+                let time = event.time.formatted(.dateTime.month(.abbreviated).day().hour().minute())
+                addColumns(time, phase, units.formatTenths(event.height))
+            }
+        } else if loading {
+            addText("Loading station predictions…", color: .secondaryLabel)
+        } else {
+            addText(error ?? "Tide predictions are unavailable. Move the chart online and select this station again.",
+                    color: .secondaryLabel)
+        }
+        if preserveScroll {
+            scroll.setContentOffset(previousOffset, animated: false)
+        } else {
+            scroll.setContentOffset(.zero, animated: false)
+        }
+        invalidateIntrinsicContentSize()
+    }
+}
+
+/// Compact 24-hour tide curve based on the same station snapshot and height model as the event table.
+@MainActor
+final class TidePredictionGraphView: UIView, UIGestureRecognizerDelegate {
+    private var snapshot: TideSnapshot?
+    private var units: Units = .meters
+    private var referenceNow = Date()
+    private var selectedTime: Date?
+    private var ofsForecast: OFSWaterLevelSeries?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        translatesAutoresizingMaskIntoConstraints = false
+        backgroundColor = .clear
+        heightAnchor.constraint(equalToConstant: 150).isActive = true
+        isAccessibilityElement = true
+        accessibilityLabel = "Tide prediction graph for the next 24 hours"
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(scrubTime(_:)))
+        pan.delegate = self
+        pan.cancelsTouchesInView = false
+        addGestureRecognizer(pan)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(snapshot: TideSnapshot, units: Units, ofsForecast: OFSWaterLevelSeries? = nil) {
+        self.snapshot = snapshot
+        self.units = units
+        self.ofsForecast = ofsForecast
+        referenceNow = Date()
+        selectedTime = nil
+        updateAccessibilityValue()
+        setNeedsDisplay()
+    }
+
+    private var visibleStart: Date { referenceNow.addingTimeInterval(-6 * 3600) }
+    private var visibleEnd: Date { referenceNow.addingTimeInterval(18 * 3600) }
+
+    private func plotRect(in rect: CGRect) -> CGRect {
+        CGRect(x: 42, y: 12, width: rect.width - 50, height: rect.height - 38)
+    }
+
+    private func time(at x: CGFloat) -> Date {
+        let plot = plotRect(in: bounds)
+        let fraction = min(max((x - plot.minX) / plot.width, 0), 1)
+        return visibleStart.addingTimeInterval(visibleEnd.timeIntervalSince(visibleStart) * Double(fraction))
+    }
+
+    private func x(for time: Date, in plot: CGRect) -> CGFloat {
+        plot.minX + plot.width * CGFloat(time.timeIntervalSince(visibleStart) / visibleEnd.timeIntervalSince(visibleStart))
+    }
+
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
+        let velocity = pan.velocity(in: self)
+        guard abs(velocity.x) > abs(velocity.y) else { return false }
+        let touch = pan.location(in: self)
+        let plot = plotRect(in: bounds)
+        let cursor = selectedTime ?? referenceNow
+        return plot.insetBy(dx: -20, dy: 0).contains(touch) && abs(touch.x - x(for: cursor, in: plot)) <= 24
+    }
+
+    @objc private func scrubTime(_ gesture: UIPanGestureRecognizer) {
+        guard gesture.state == .began || gesture.state == .changed || gesture.state == .ended else { return }
+        selectedTime = time(at: gesture.location(in: self).x)
+        updateAccessibilityValue()
+        setNeedsDisplay()
+    }
+
+    private func updateAccessibilityValue() {
+        guard let snapshot else {
+            accessibilityValue = "Tide prediction unavailable at selected time"
+            return
+        }
+        let time = selectedTime ?? referenceNow
+        guard let height = TideMath.height(at: time, snapshot: snapshot) else {
+            accessibilityValue = "Tide prediction unavailable at selected time"
+            return
+        }
+        let tideValue = String(format: "%.1f", height * units.perMeter)
+        if let modelHeight = ofsForecast?.height(at: time) {
+            let modelValue = String(format: "%.1f", modelHeight * units.perMeter)
+            let forecastName = ofsForecast?.stationSource == TideStation.chs ? "CHS forecast" : "NOAA model"
+            accessibilityValue = "\(time.formatted(date: .omitted, time: .shortened)), tide \(tideValue), \(forecastName) \(modelValue) \(units.symbol)"
+        } else {
+            accessibilityValue = "\(time.formatted(date: .omitted, time: .shortened)), tide \(tideValue) \(units.symbol)"
+        }
+    }
+
+    override func draw(_ rect: CGRect) {
+        guard let snapshot, let context = UIGraphicsGetCurrentContext(), rect.width > 100, rect.height > 80 else { return }
+        let now = referenceNow
+        let start = visibleStart
+        let end = visibleEnd
+        let left: CGFloat = 42, right: CGFloat = 8, top: CGFloat = 12, bottom: CGFloat = 26
+        let plot = CGRect(x: left, y: top, width: rect.width - left - right, height: rect.height - top - bottom)
+        guard plot.width > 0, plot.height > 0 else { return }
+        let samples: [(Date, Double)] = stride(from: start.timeIntervalSince1970,
+                                                through: end.timeIntervalSince1970,
+                                                by: 15 * 60).compactMap { timestamp in
+            let time = Date(timeIntervalSince1970: timestamp)
+            return TideMath.height(at: time, snapshot: snapshot).map { (time, $0 * units.perMeter) }
+        }
+        let modelSamples: [(Date, Double)] = stride(from: start.timeIntervalSince1970,
+                                                      through: end.timeIntervalSince1970,
+                                                      by: 15 * 60).compactMap { timestamp in
+            let time = Date(timeIntervalSince1970: timestamp)
+            return ofsForecast?.height(at: time).map { (time, $0 * units.perMeter) }
+        }
+        let allValues = samples.map(\.1) + modelSamples.map(\.1)
+        guard samples.count > 1,
+              let minValue = allValues.min(), let maxValue = allValues.max() else { return }
+        let span = max(maxValue - minValue, 0.2)
+        let padding = max(span * 0.12, 0.1)
+        let low = minValue - padding, high = maxValue + padding
+        func point(_ time: Date, _ value: Double) -> CGPoint {
+            let xFraction = CGFloat(time.timeIntervalSince(start) / end.timeIntervalSince(start))
+            let yFraction = CGFloat((value - low) / (high - low))
+            let x = plot.minX + plot.width * xFraction
+            let y = plot.maxY - plot.height * yFraction
+            return CGPoint(x: x, y: y)
+        }
+
+        context.saveGState()
+        let grid = UIColor.separator.withAlphaComponent(0.7).cgColor
+        context.setStrokeColor(grid)
+        context.setLineWidth(0.5)
+        (units.symbol as NSString).draw(at: CGPoint(x: 1, y: 0), withAttributes: [
+            .font: UIFont.systemFont(ofSize: 9, weight: .semibold), .foregroundColor: UIColor.secondaryLabel
+        ])
+        for fraction in [0.0, 0.5, 1.0] {
+            let y = plot.minY + plot.height * fraction
+            context.move(to: CGPoint(x: plot.minX, y: y))
+            context.addLine(to: CGPoint(x: plot.maxX, y: y))
+            context.strokePath()
+            let value = high - (high - low) * fraction
+            let label = String(format: "%.1f", value)
+            (label as NSString).draw(at: CGPoint(x: 1, y: y - 7), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 9), .foregroundColor: UIColor.secondaryLabel
+            ])
+        }
+
+        let offsets: [Double] = [-6, 0, 6, 12, 18]
+        for offset in offsets {
+            let time = now.addingTimeInterval(offset * 3600)
+            let x = x(for: time, in: plot)
+            let label = offset == 0 ? "Now" : String(format: "%+dh", Int(offset))
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 9, weight: offset == 0 ? .semibold : .regular),
+                .foregroundColor: offset == 0 ? UIColor.systemGreen : UIColor.secondaryLabel
+            ]
+            let size = (label as NSString).size(withAttributes: attrs)
+            let labelX = min(max(x - size.width / 2, plot.minX - 4), plot.maxX - size.width + 4)
+            (label as NSString).draw(at: CGPoint(x: labelX, y: plot.maxY + 5), withAttributes: attrs)
+        }
+
+        let cursorTime = selectedTime ?? now
+        let cursorX = x(for: cursorTime, in: plot)
+        context.setStrokeColor((selectedTime == nil ? UIColor.systemGreen : UIColor.systemOrange).withAlphaComponent(0.95).cgColor)
+        context.setLineWidth(1.5)
+        context.move(to: CGPoint(x: cursorX, y: plot.minY))
+        context.addLine(to: CGPoint(x: cursorX, y: plot.maxY))
+        context.strokePath()
+
+        let curve = UIBezierPath()
+        for (index, sample) in samples.enumerated() {
+            let p = point(sample.0, sample.1)
+            if index == 0 { curve.move(to: p) } else { curve.addLine(to: p) }
+        }
+        curve.lineWidth = 2
+        UIColor.systemBlue.setStroke()
+        curve.stroke()
+
+        if modelSamples.count > 1 {
+            let modelCurve = UIBezierPath()
+            for (index, sample) in modelSamples.enumerated() {
+                let p = point(sample.0, sample.1)
+                if index == 0 { modelCurve.move(to: p) } else { modelCurve.addLine(to: p) }
+            }
+            modelCurve.lineWidth = 2
+            modelCurve.lineCapStyle = .round
+            modelCurve.lineJoinStyle = .round
+            context.saveGState()
+            context.setLineDash(phase: 0, lengths: [5, 3])
+            UIColor.systemTeal.setStroke()
+            modelCurve.stroke()
+            context.restoreGState()
+        }
+
+        if let height = TideMath.height(at: cursorTime, snapshot: snapshot) {
+            let displayHeight = height * units.perMeter
+            let marker = point(cursorTime, displayHeight)
+            UIColor.systemBackground.setFill()
+            UIBezierPath(ovalIn: CGRect(x: marker.x - 4, y: marker.y - 4, width: 8, height: 8)).fill()
+            (selectedTime == nil ? UIColor.systemGreen : UIColor.systemOrange).setStroke()
+            let markerRing = UIBezierPath(ovalIn: CGRect(x: marker.x - 4, y: marker.y - 4, width: 8, height: 8))
+            markerRing.lineWidth = 2
+            markerRing.stroke()
+
+            let modelValue = ofsForecast?.height(at: cursorTime).map { $0 * units.perMeter }
+            if let modelValue {
+                let modelMarker = point(cursorTime, modelValue)
+                UIColor.systemTeal.setFill()
+                UIBezierPath(ovalIn: CGRect(x: modelMarker.x - 3.5, y: modelMarker.y - 3.5, width: 7, height: 7)).fill()
+                UIColor.systemBackground.setStroke()
+                let modelRing = UIBezierPath(ovalIn: CGRect(x: modelMarker.x - 3.5, y: modelMarker.y - 3.5, width: 7, height: 7))
+                modelRing.lineWidth = 1.5
+                modelRing.stroke()
+            }
+
+            let clock = cursorTime.formatted(date: .omitted, time: .shortened)
+            let value = String(format: "%.1f", displayHeight)
+            let modelText = modelValue.map { String(format: " / %.1f", $0) } ?? ""
+            let text = (selectedTime == nil ? "Now" : clock) + " · " + value + modelText + " " + units.symbol
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 10, weight: .semibold),
+                .foregroundColor: UIColor.label
+            ]
+            let textSize = (text as NSString).size(withAttributes: attributes)
+            let bubbleSize = CGSize(width: textSize.width + 12, height: 20)
+            let bubbleX = min(max(cursorX - bubbleSize.width / 2, plot.minX), plot.maxX - bubbleSize.width)
+            let bubble = CGRect(x: bubbleX, y: 0, width: bubbleSize.width, height: bubbleSize.height)
+            let bubblePath = UIBezierPath(roundedRect: bubble, cornerRadius: 7)
+            UIColor.secondarySystemBackground.setFill()
+            bubblePath.fill()
+            UIColor.separator.setStroke()
+            bubblePath.lineWidth = 0.5
+            bubblePath.stroke()
+            (text as NSString).draw(at: CGPoint(x: bubble.minX + 6, y: bubble.minY + 3), withAttributes: attributes)
+        }
+        context.restoreGState()
+    }
+}
+
+@MainActor
+final class CurrentStationCalloutView: UIView {
+    private let scroll = UIScrollView()
+    private let rows = UIStackView()
+    private let closeButton = UIButton(type: .system)
+    var onClose: (() -> Void)?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        translatesAutoresizingMaskIntoConstraints = false
+        backgroundColor = .secondarySystemBackground
+        layer.cornerRadius = 14
+        layer.borderWidth = 1
+        layer.borderColor = UIColor.separator.cgColor
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.3
+        layer.shadowRadius = 14
+        layer.shadowOffset = CGSize(width: 0, height: 5)
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        rows.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
+        closeButton.tintColor = .secondaryLabel
+        closeButton.accessibilityLabel = "Close current station predictions"
+        closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
+        rows.axis = .vertical
+        rows.spacing = 0
+        rows.isLayoutMarginsRelativeArrangement = true
+        rows.layoutMargins = UIEdgeInsets(top: 0, left: 14, bottom: 0, right: 14)
+        scroll.addSubview(rows)
+        addSubview(scroll)
+        addSubview(closeButton)
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 320),
+            heightAnchor.constraint(equalToConstant: 270),
+            closeButton.topAnchor.constraint(equalTo: topAnchor, constant: 7),
+            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            closeButton.widthAnchor.constraint(equalToConstant: 28),
+            closeButton.heightAnchor.constraint(equalToConstant: 28),
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: topAnchor, constant: 34),
+            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            rows.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            rows.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            rows.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            rows.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            rows.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor)
+        ])
+        scroll.alwaysBounceVertical = true
+        scroll.showsVerticalScrollIndicator = true
+        accessibilityLabel = "Current station predictions"
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func closeTapped() { onClose?() }
+
+    func show(station: CurrentStation, snapshot: CurrentSnapshot?, loading: Bool, error: String? = nil) {
+        rows.arrangedSubviews.forEach { view in
+            rows.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        func addText(_ text: String, size: CGFloat = 13, weight: UIFont.Weight = .regular,
+                     color: UIColor = .label) {
+            let label = UILabel()
+            label.text = text
+            label.font = .systemFont(ofSize: size, weight: weight)
+            label.textColor = color
+            label.numberOfLines = 0
+            label.textAlignment = .left
+            label.adjustsFontForContentSizeCategory = true
+            label.setContentCompressionResistancePriority(.required, for: .vertical)
+            rows.addArrangedSubview(label)
+            let separator = UIView()
+            separator.backgroundColor = .separator
+            separator.translatesAutoresizingMaskIntoConstraints = false
+            separator.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
+            rows.addArrangedSubview(separator)
+        }
+
+        func addDateGap() {
+            let spacer = UIView()
+            spacer.backgroundColor = .clear
+            spacer.translatesAutoresizingMaskIntoConstraints = false
+            spacer.heightAnchor.constraint(equalToConstant: 9).isActive = true
+            rows.addArrangedSubview(spacer)
+        }
+
+        func addColumns(_ first: String, _ second: String, _ third: String, _ fourth: String,
+                        header: Bool = false) {
+            func column(_ text: String, width: CGFloat) -> UILabel {
+                let label = UILabel()
+                label.text = text
+                label.font = .systemFont(ofSize: 11, weight: header ? .semibold : .regular)
+                label.textColor = header ? .secondaryLabel : .label
+                label.textAlignment = .left
+                label.semanticContentAttribute = .forceLeftToRight
+                label.lineBreakMode = .byTruncatingTail
+                label.adjustsFontForContentSizeCategory = true
+                label.widthAnchor.constraint(equalToConstant: width).isActive = true
+                label.isAccessibilityElement = true
+                label.accessibilityLabel = text
+                return label
+            }
+            let row = UIStackView(arrangedSubviews: [
+                column(first, width: 104), column(second, width: 46),
+                column(third, width: 50), column(fourth, width: 64)
+            ])
+            row.axis = .horizontal
+            row.alignment = .firstBaseline
+            row.distribution = .fill
+            row.spacing = 3
+            row.semanticContentAttribute = .forceLeftToRight
+            row.isAccessibilityElement = false
+            row.accessibilityLabel = "\(first), \(second), \(third), \(fourth)"
+            row.layoutMargins = UIEdgeInsets(top: 5, left: 0, bottom: 5, right: 0)
+            row.isLayoutMarginsRelativeArrangement = true
+            rows.addArrangedSubview(row)
+            let separator = UIView()
+            separator.backgroundColor = .separator
+            separator.translatesAutoresizingMaskIntoConstraints = false
+            separator.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
+            rows.addArrangedSubview(separator)
+        }
+
+        addText(station.name, size: 15, weight: .bold)
+        addText("\(station.providerName) current station · \(station.stationCode ?? station.id)",
+                size: 12, weight: .semibold, color: .secondaryLabel)
+        if let snapshot {
+            if let flow = CurrentMath.at(Date(), events: snapshot.events) {
+                addText(String(format: "Now: %.1f kt toward %@", flow.speed, Compass.name(flow.toward)),
+                        weight: .semibold, color: station.provider == .chs ? .systemTeal : .systemIndigo)
+            } else {
+                addText("No current estimate for this time.", color: .secondaryLabel)
+            }
+            let cacheText = snapshot.fromCache == true ? "Saved offline data" : "Updated data"
+            addText("\(cacheText) · \(snapshot.fetched.formatted(date: .abbreviated, time: .shortened))",
+                    size: 12, color: .secondaryLabel)
+            let events = snapshot.events.filter { $0.time >= Date().addingTimeInterval(-30 * 60) }.prefix(48)
+            if events.isEmpty {
+                addText("No upcoming current events are available.", color: .secondaryLabel)
+            } else {
+                addText("Upcoming slack and maximum current", size: 12, weight: .semibold,
+                        color: .secondaryLabel)
+                addColumns("Time", "Event", "Speed", "Toward", header: true)
+            }
+            var previousDay: Date?
+            for event in events {
+                let day = Calendar.current.startOfDay(for: event.time)
+                if let previousDay, day != previousDay { addDateGap() }
+                previousDay = day
+                let phase = event.isSlack ? "Slack" : (event.velocity > 0 ? "Flood" : "Ebb")
+                let speed = event.isSlack ? "—" : String(format: "%.1f kt", abs(event.velocity))
+                let direction = event.isSlack ? "—" : Compass.name(event.velocity > 0 ? event.floodToward : event.ebbToward)
+                let time = event.time.formatted(.dateTime.month(.abbreviated).day().hour().minute())
+                addColumns(time, phase, speed, direction)
+            }
+            if loading { addText("Refreshing predictions…", size: 12, color: .secondaryLabel) }
+        } else if loading {
+            addText("Loading current predictions…", color: .secondaryLabel)
+        } else {
+            addText(error ?? "Current predictions are unavailable. Connect to the internet and select this station again.",
+                    color: .secondaryLabel)
+        }
+        scroll.setContentOffset(.zero, animated: false)
+    }
+}
+
+private final class NavigationMapPin: MKPointAnnotation {}

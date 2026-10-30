@@ -35,6 +35,12 @@
 		A13B0F5D607182930415B627 /* Outlook.swift in Sources */ = {isa = PBXBuildFile; fileRef = A03B0F5D607182930415B627 /* Outlook.swift */; };
 		A34C1060718293041526C738 /* CurrentService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A24C1060718293041526C738 /* CurrentService.swift */; };
 		A706D395010CF287A42BB757 /* LiveActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 155D9E41B3F2AF484AB3143F /* LiveActivityController.swift */; };
+		A9E100000000000000000011 /* OfflineChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9E100000000000000000001 /* OfflineChart.swift */; };
+		A9E100000000000000000012 /* OfflineENCView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9E100000000000000000002 /* OfflineENCView.swift */; };
+		A9E100000000000000000013 /* ZipInflate.c in Sources */ = {isa = PBXBuildFile; fileRef = A9E100000000000000000003 /* ZipInflate.c */; };
+		A9E100000000000000000014 /* anchorwatch-s57-bridge.js in Resources */ = {isa = PBXBuildFile; fileRef = A9E100000000000000000005 /* anchorwatch-s57-bridge.js */; };
+		A9E100000000000000000015 /* LICENSE-s57-parser.txt in Resources */ = {isa = PBXBuildFile; fileRef = A9E100000000000000000006 /* LICENSE-s57-parser.txt */; };
+		A9E100000000000000000017 /* S57_DECODER_VERSION.txt in Resources */ = {isa = PBXBuildFile; fileRef = A9E100000000000000000007 /* S57_DECODER_VERSION.txt */; };
 		B1B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfile.swift */; };
 		B2B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2B2C3D4E5F6A7B8C9D0E1F2 /* BoatProfileView.swift */; };
 		B3B2C3D4E5F6A7B8C9D0E1F2 /* AnchoringModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3B2C3D4E5F6A7B8C9D0E1F2 /* AnchoringModel.swift */; };
@@ -44,7 +50,11 @@
 		B6B2C3D4E5F6A7B8C9D0E1F2 /* AnchorEstimate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6B2C3D4E5F6A7B8C9D0E1F2 /* AnchorEstimate.swift */; };
 		B7B2C3D4E5F6A7B8C9D0E1F2 /* AnchorDrift.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7B2C3D4E5F6A7B8C9D0E1F2 /* AnchorDrift.swift */; };
 		B9ABD4E905D08404E0F68166 /* SimulatedLocationSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1265034A4830D9C31F477C7B /* SimulatedLocationSource.swift */; };
+		BCDA7A202610210000000002 /* ValidatedBCTides.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCDA7A202610210000000001 /* ValidatedBCTides.swift */; };
+		BCDA7A202610210000000003 /* SlackwaterKit in Frameworks */ = {isa = PBXBuildFile; productRef = BCDA7A202610210000000006 /* SlackwaterKit */; };
 		BD6AEC2BB300D775F0B3B9C6 /* LocationSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 227DDA1B10737D49F8445A4F /* LocationSource.swift */; };
+		C0FFEE221026220000000001 /* PugetSoundTideTables.html in Resources */ = {isa = PBXBuildFile; fileRef = C0FFEE221026220000000002 /* PugetSoundTideTables.html */; };
+		C0FFEE221026220000000003 /* puget-sound-tide-data.json in Resources */ = {isa = PBXBuildFile; fileRef = C0FFEE221026220000000004 /* puget-sound-tide-data.json */; };
 		C60B095B35E4EE3D58578657 /* AlertService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46714C3CA4280837AF4C84A3 /* AlertService.swift */; };
 		C76E3282930415263748E95A /* Barometer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C66E3282930415263748E95A /* Barometer.swift */; };
 		D6B671F291694E4BC420E6E2 /* AnchorWatchWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3EA9BEFC1867B9885B867A6 /* AnchorWatchWatchApp.swift */; };
@@ -142,10 +152,20 @@
 		A5B2C3D4E5F6A7B8C9D0E1F2 /* AnchorMathGuide.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorMathGuide.swift; sourceTree = "<group>"; };
 		A6B2C3D4E5F6A7B8C9D0E1F2 /* AnchorEstimate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorEstimate.swift; sourceTree = "<group>"; };
 		A7B2C3D4E5F6A7B8C9D0E1F2 /* AnchorDrift.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorDrift.swift; sourceTree = "<group>"; };
+		A9E100000000000000000001 /* OfflineChart.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineChart.swift; sourceTree = "<group>"; };
+		A9E100000000000000000002 /* OfflineENCView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineENCView.swift; sourceTree = "<group>"; };
+		A9E100000000000000000003 /* ZipInflate.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ZipInflate.c; sourceTree = "<group>"; };
+		A9E100000000000000000004 /* ZipInflate.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ZipInflate.h; sourceTree = "<group>"; };
+		A9E100000000000000000005 /* anchorwatch-s57-bridge.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = "anchorwatch-s57-bridge.js"; sourceTree = "<group>"; };
+		A9E100000000000000000006 /* LICENSE-s57-parser.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "LICENSE-s57-parser.txt"; sourceTree = "<group>"; };
+		A9E100000000000000000007 /* S57_DECODER_VERSION.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = S57_DECODER_VERSION.txt; sourceTree = "<group>"; };
 		AD5BCEE030753079CB5A646E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		B02D26A41C1A0E9775D33DCA /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B45D2171829304152637D849 /* AnchorPhysics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorPhysics.swift; sourceTree = "<group>"; };
 		B554637FC10A7BDCFB171EA2 /* ScopeCalculator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScopeCalculator.swift; sourceTree = "<group>"; };
+		BCDA7A202610210000000001 /* ValidatedBCTides.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ValidatedBCTides.swift; sourceTree = "<group>"; };
+		C0FFEE221026220000000002 /* PugetSoundTideTables.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; path = PugetSoundTideTables.html; sourceTree = "<group>"; };
+		C0FFEE221026220000000004 /* puget-sound-tide-data.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "puget-sound-tide-data.json"; sourceTree = "<group>"; };
 		C33A4095E0E5048A68AF7BF9 /* ChartLayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartLayer.swift; sourceTree = "<group>"; };
 		C3EA9BEFC1867B9885B867A6 /* AnchorWatchWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorWatchWatchApp.swift; sourceTree = "<group>"; };
 		C66E3282930415263748E95A /* Barometer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Barometer.swift; sourceTree = "<group>"; };
@@ -156,6 +176,17 @@
 		EA804504B52637485960AB7C /* AnchorageLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorageLogView.swift; sourceTree = "<group>"; };
 		FA4B61D973A1B644C580A7B8 /* AnchorWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorWatchApp.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		BCDA7A202610210000000004 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BCDA7A202610210000000003 /* SlackwaterKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		117606E9C7B3AFB1450B6D3C /* AnchorWatchWidgets */ = {
@@ -195,9 +226,22 @@
 			path = AnchorWatchShared;
 			sourceTree = "<group>";
 		};
+		A9E100000000000000000016 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				A9E100000000000000000005 /* anchorwatch-s57-bridge.js */,
+				A9E100000000000000000006 /* LICENSE-s57-parser.txt */,
+				A9E100000000000000000007 /* S57_DECODER_VERSION.txt */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
 		AF49954A30E45A846DF38967 /* Core */ = {
 			isa = PBXGroup;
 			children = (
+				A9E100000000000000000001 /* OfflineChart.swift */,
+				A9E100000000000000000003 /* ZipInflate.c */,
+				A9E100000000000000000004 /* ZipInflate.h */,
 				705EED813313B8D0B67999F1 /* AlarmPlayer.swift */,
 				46714C3CA4280837AF4C84A3 /* AlertService.swift */,
 				A7B2C3D4E5F6A7B8C9D0E1F2 /* AnchorDrift.swift */,
@@ -214,6 +258,7 @@
 				B554637FC10A7BDCFB171EA2 /* ScopeCalculator.swift */,
 				1265034A4830D9C31F477C7B /* SimulatedLocationSource.swift */,
 				16802792B90A9D0C484ED686 /* TideService.swift */,
+				BCDA7A202610210000000001 /* ValidatedBCTides.swift */,
 				DAFFFDEC7904D731E2FE40D0 /* WatchLink.swift */,
 				8042BD3549063EE7B6947580 /* Retrieval.swift */,
 				A03B0F5D607182930415B627 /* Outlook.swift */,
@@ -229,6 +274,9 @@
 		B61715D3D163A2314E1ED3C3 /* AnchorWatch */ = {
 			isa = PBXGroup;
 			children = (
+				A9E100000000000000000016 /* Resources */,
+				C0FFEE221026220000000004 /* puget-sound-tide-data.json */,
+				C0FFEE221026220000000002 /* PugetSoundTideTables.html */,
 				3FAD1B53A5976FDE9AE58713 /* AnchorWatch.entitlements */,
 				5CBC271D43FD64AD6968EF0F /* Assets.xcassets */,
 				AD5BCEE030753079CB5A646E /* Info.plist */,
@@ -271,6 +319,7 @@
 		FC072D619EC0232B1723485C /* UI */ = {
 			isa = PBXGroup;
 			children = (
+				A9E100000000000000000002 /* OfflineENCView.swift */,
 				C33A4095E0E5048A68AF7BF9 /* ChartLayer.swift */,
 				327C9AD8EF18FF2A6CA929DD /* ChartMapView.swift */,
 				A5B2C3D4E5F6A7B8C9D0E1F2 /* AnchorMathGuide.swift */,
@@ -328,6 +377,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = B606D19188E07AB88DC27B6B /* Build configuration list for PBXNativeTarget "AnchorWatch" */;
 			buildPhases = (
+				BCDA7A202610210000000004 /* Frameworks */,
 				8D3A2ABAA59F8D5A52D30676 /* Sources */,
 				DF636054244E70EAF9078011 /* Resources */,
 				00F35F8721CD88FB0A9524A8 /* Embed Foundation Extensions */,
@@ -341,6 +391,7 @@
 			);
 			name = AnchorWatch;
 			packageProductDependencies = (
+				BCDA7A202610210000000006 /* SlackwaterKit */,
 			);
 			productName = AnchorWatch;
 			productReference = 96F3FF089F11507C073DCE25 /* AnchorWatch.app */;
@@ -400,6 +451,9 @@
 			);
 			mainGroup = 887AFCD0F3515A239EE1EE8E;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				BCDA7A202610210000000005 /* XCRemoteSwiftPackageReference "slackwater" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = E0F4B3DA6BDBF7A529D1C3DC /* Products */;
 			projectDirPath = "";
@@ -426,6 +480,11 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A9E100000000000000000014 /* anchorwatch-s57-bridge.js in Resources */,
+				A9E100000000000000000015 /* LICENSE-s57-parser.txt in Resources */,
+				A9E100000000000000000017 /* S57_DECODER_VERSION.txt in Resources */,
+				C0FFEE221026220000000003 /* puget-sound-tide-data.json in Resources */,
+				C0FFEE221026220000000001 /* PugetSoundTideTables.html in Resources */,
 				558ABB443A2DC84412EEB12E /* Assets.xcassets in Resources */,
 				3E783633E64A539FE481BF06 /* PrivacyInfo.xcprivacy in Resources */,
 			);
@@ -438,6 +497,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A9E100000000000000000011 /* OfflineChart.swift in Sources */,
+				A9E100000000000000000012 /* OfflineENCView.swift in Sources */,
+				A9E100000000000000000013 /* ZipInflate.c in Sources */,
+				BCDA7A202610210000000002 /* ValidatedBCTides.swift in Sources */,
 				FC2DE08B2DF4CCF97AB61094 /* AlarmPlayer.swift in Sources */,
 				C60B095B35E4EE3D58578657 /* AlertService.swift in Sources */,
 				90F5AAB21EF15B9B6A6CFE34 /* AnchorActivity.swift in Sources */,
@@ -559,7 +622,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 29;
+				CURRENT_PROJECT_VERSION = 30;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = FD52K7B8M3;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -614,6 +677,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -661,7 +725,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 29;
+				CURRENT_PROJECT_VERSION = 30;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = FD52K7B8M3;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -708,6 +772,10 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lz",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.jeffmitchell.anchorwatch;
 				SDKROOT = iphoneos;
 				SWIFT_OBJC_BRIDGING_HEADER = AnchorWatch/Core/AudioSignal.h;
@@ -725,6 +793,10 @@
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lz",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.jeffmitchell.anchorwatch;
 				SDKROOT = iphoneos;
@@ -753,6 +825,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -853,6 +926,25 @@
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		BCDA7A202610210000000005 /* XCRemoteSwiftPackageReference "slackwater" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/openwatersio/slackwater.git";
+			requirement = {
+				kind = revision;
+				revision = 27d66edee3444d773ca5dfcc54e33eb2de05c53e;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		BCDA7A202610210000000006 /* SlackwaterKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BCDA7A202610210000000005 /* XCRemoteSwiftPackageReference "slackwater" */;
+			productName = SlackwaterKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 30DFF4D143DFF0B445536A40 /* Project object */;
 }

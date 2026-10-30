@@ -1,0 +1,5 @@
+S-57 decoder: @s57-parser/s57 0.3.0 (MIT License)
+Source: https://github.com/devladpopov/s57-parser
+Source commit: 6cd7b32b9616fc1a254b61b9317fcc3b7e1cd478
+Bundled entry point: anchorwatch-s57-bridge.js
+The JavaScript bundle decodes S-57 records into a Swift-owned local chart model. Swift draws the chart.

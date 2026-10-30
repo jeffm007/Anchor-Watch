@@ -50,6 +50,9 @@ enum AnchorDrift {
         let window = track.filter { $0.timestamp >= from }
         guard case .success(let r) = AnchorEstimate.fit(window, mark: mark, modelRadius: modelRadius, minutes: rollingMinutes,
                                                         windFrom: nil, windKnots: nil, timeScale: scale) else { return nil }
+        // A constrained radius can move the inferred center when the boat merely falls back or sheers.
+        // Only independently fitted centers can serve as evidence that the anchor itself moved.
+        guard r.method == .free else { return nil }
         return Sample(minute: latest.timeIntervalSince(dropped) * scale / 60, center: r.center, semiMajor: r.semiMajor)
     }
 

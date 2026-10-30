@@ -1,36 +1,86 @@
 import SwiftUI
+import CoreLocation
 
-/// The four pages along the bottom. Settings, Boat Profile, Testing and the guide are under the gear on Watch.
+/// Navigation-first tabs; legacy engine destinations still route to the right conditions page.
 struct RootView: View {
     @EnvironmentObject var engine: AnchorWatchEngine
-
+    @State private var showingMore = false
+    @State private var showingPlan = false
+    @StateObject private var navigation = NavigationStore()
+    private var selection: Binding<Int> {
+        Binding(get: { showingPlan ? 4 : showingMore ? 3 : (engine.tab == .watch ? 0 : engine.tab == .anchor ? 1 : 2) }, set: { value in
+            showingMore = value == 3
+            showingPlan = value == 4
+            switch value {
+            case 0: engine.tab = .watch
+            case 1: engine.tab = .anchor
+            case 2: if engine.tab != .water && engine.tab != .weather { engine.tab = .water }
+            default: break
+            }
+        })
+    }
     var body: some View {
-        TabView(selection: $engine.tab) {
-            ContentView()
-                .tabItem { Label("Watch", systemImage: "map") }
-                .tag(AnchorWatchEngine.Tab.watch)
+        TabView(selection: selection) {
+            ContentView().tabItem { Label("Charts", systemImage: "map") }.tag(0)
+            WaypointPlanView(openCharts: { showingPlan = false; showingMore = false; engine.tab = .watch }).tabItem { Label("Plan", systemImage: "mappin.and.ellipse") }.tag(4)
             AnchoringView()
-                .tabItem { Label { Text("Anchor") } icon: { Image(uiImage: AnchorTabIcon.image) } }
-                .tag(AnchorWatchEngine.Tab.anchor)
-            WaterView()
-                .tabItem { Label("Water", systemImage: "water.waves") }
-                .tag(AnchorWatchEngine.Tab.water)
-            ConditionsView()
-                .tabItem { Label("Weather", systemImage: "wind") }
-                .tag(AnchorWatchEngine.Tab.weather)
+                .tabItem { Label { Text("Anchor") } icon: { Image(uiImage: AnchorTabIcon.image) } }.tag(1)
+            VStack(spacing: 0) {
+                Picker("Conditions", selection: Binding(get: { engine.tab == .weather }, set: { engine.tab = $0 ? .weather : .water })) {
+                    Text("Water").tag(false)
+                    Text("Weather").tag(true)
+                }.pickerStyle(.segmented).padding(.horizontal).padding(.top, 8)
+                if engine.tab == .weather { ConditionsView() } else { WaterView() }
+            }.tabItem { Label("Conditions", systemImage: "water.waves") }.tag(2)
+            NavigationMoreView(openCharts: { showingMore = false; engine.tab = .watch }).tabItem { Label("More", systemImage: "ellipsis.circle") }.tag(3)
         }
+        .environmentObject(navigation)
+        .sheet(item: $navigation.draft) { waypoint in WaypointEditor(waypoint: waypoint).environmentObject(navigation) }
+        .onChange(of: engine.rawFix) { _, fix in navigation.ingest(fix) }
+        .onChange(of: navigation.activeID) { _, id in if id != nil { showingPlan = false; showingMore = false; engine.tab = .watch } }
+        .onChange(of: navigation.placing) { _, placing in if placing { showingPlan = false; showingMore = false; engine.tab = .watch } }
         .preferredColorScheme(.dark)
-        // Retrieving can start from the Watch or the Anchor tab.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let alarm = engine.alarm {
+                AlarmBanner(reason: alarm).padding(.horizontal, 12).padding(.vertical, 4)
+            } else if engine.anchor != nil && (showingPlan || showingMore || engine.tab != .anchor) {
+                Button { showingPlan = false; showingMore = false; engine.tab = .anchor } label: {
+                    Label(engine.monitoring.title, systemImage: engine.monitoring.icon)
+                        .font(.caption.bold()).foregroundStyle(engine.monitoring.color)
+                        .frame(maxWidth: .infinity).padding(6).background(.thinMaterial)
+                }.accessibilityLabel("Open anchor monitoring")
+            }
+        }
+        .onChange(of: engine.tab) { _, _ in showingMore = false; showingPlan = false }
         .fullScreenCover(isPresented: Binding(get: { engine.retrieveTarget != nil },
                                               set: { if !$0 { engine.endRetrieval() } })) { RetrieveView() }
         .onAppear {
-            // Dev aids for screenshots: open a page at launch.
             let args = ProcessInfo.processInfo.arguments
             if args.contains("-showAnchoring") { engine.tab = .anchor }
             if args.contains("-showDepth") { engine.tab = .water }
             if args.contains("-showConditions") { engine.tab = .weather }
             if args.contains("-showNudge") { engine.showNudgePad = true }
         }
+    }
+}
+
+private struct NavigationMoreView: View {
+    var openCharts: () -> Void
+    @EnvironmentObject var engine: AnchorWatchEngine
+    @State private var settings = false
+    var body: some View {
+        NavigationStack {
+            List {
+                Button { settings = true } label: { Label("Settings", systemImage: "gearshape") }
+                NavigationLink { BoatProfileView() } label: { Label("Boat profile", systemImage: "sailboat") }
+                Button {
+                    engine.mapLayer = .offlineENC
+                    openCharts()
+                } label: { Label("Offline charts · library and imports", systemImage: "map") }
+                NavigationLink { UserGuideView() } label: { Label("User guide", systemImage: "book") }
+                NavigationLink { QuickGuideView() } label: { Label("Quick guide", systemImage: "questionmark.circle") }
+            }.navigationTitle("More")
+        }.sheet(isPresented: $settings) { SettingsView() }
     }
 }
 
@@ -102,6 +152,8 @@ enum AnchorTabIcon {
 }
 
 struct ContentView: View {
+    @EnvironmentObject var navigation: NavigationStore
+    @State private var chartViewport = ChartMapViewportState()
     @EnvironmentObject var engine: AnchorWatchEngine
     @Environment(\.dynamicTypeSize) private var textSize
     // `-showSettings` opens the settings sheet at launch, for screenshots.
@@ -126,64 +178,31 @@ struct ContentView: View {
 
     @AppStorage("anchorwatch.dashboardExpanded") private var dashboardExpanded = true
     @State private var watchPanelHeights: [String: CGFloat] = [:]
+    @State private var offlineENCZoom: CGFloat = 1
 
     var body: some View {
-        GeometryReader { _ in ZStack {
-            Color(red: 0.06, green: 0.09, blue: 0.15).ignoresSafeArea()
-            VStack(spacing: 8) {
-                if !textSize.isAccessibilitySize {
-                    DashboardHeader()
-                    dashboard
-                }
-                GeometryReader { mapArea in
-                    ScrollView {
-                        VStack(spacing: 10) {
-                            VStack(spacing: 10) {
-                                if textSize.isAccessibilitySize {
-                                    DashboardHeader()
-                                    dashboard
-                                }
-                                if let error = engine.settingsError { Text(error).font(.caption).foregroundStyle(.orange) }
-                                if let error = engine.persistenceError {
-                                    VStack(alignment: .leading) {
-                                        Text(error).foregroundStyle(.orange)
-                                        Button("Retry anchorage log") { engine.retrySavingAnchorages() }
-                                    }.font(.caption)
-                                }
-                                MonitoringActionCard(openWatchCheck: { showWatchCheck = true })
-                                if !engine.hideWarningBanners { OutlookBanner() }
-                            }
-                            .background {
-                                GeometryReader { panel in
-                                    Color.clear.preference(key: WatchPanelHeightKey.self, value: ["top": panel.size.height])
-                                }
-                            }
-                            chartPanel.frame(height: max(220, mapArea.size.height - (watchPanelHeights["top"] ?? 0) - (watchPanelHeights["bottom"] ?? 0) - 20))
-                                .transaction { transaction in
-                                    transaction.animation = nil
-                                    transaction.disablesAnimations = true
-                                }
-                            secondaryDetails
-                                .background {
-                                    GeometryReader { panel in
-                                        Color.clear.preference(key: WatchPanelHeightKey.self, value: ["bottom": panel.size.height])
-                                    }
-                                }
-                        }
+        VStack(spacing: 0) {
+            HStack {
+                Text("Charts").font(.headline)
+                Spacer()
+                Button { engine.tab = .anchor } label: { Text("Anchor") }
+                Menu {
+                    Picker("Chart source", selection: $engine.mapLayer) {
+                        ForEach(ChartLayer.allCases) { Text($0.displayName).tag($0) }
                     }
-                    .onPreferenceChange(WatchPanelHeightKey.self) { watchPanelHeights = $0 }
-                }
-                if engine.sideButtonsVisible {
-                    controlRow.transition(.opacity.combined(with: .move(edge: .bottom)))
-                }
+                } label: { Label("Source", systemImage: "map") }
+            }.padding(.horizontal).padding(.vertical, 8)
+            if engine.sourceKind == .simulator {
+                Text("Simulated GPS · not your real position").font(.caption.bold()).foregroundStyle(.yellow)
             }
-            .padding(.horizontal, 12).padding(.bottom, 4)
-        } }
-        .animation(.easeInOut(duration: 0.6), value: engine.sideButtonsVisible)
-        .animation(.easeInOut(duration: 0.2), value: dashboardExpanded)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let alarm = engine.alarm { AlarmBanner(reason: alarm).padding(.horizontal, 12).padding(.vertical, 4) }
+            if navigation.placing {
+                HStack { Text("Tap chart to save a waypoint"); Button("Cancel") { navigation.placing = false } }.font(.caption).padding(8)
+            }
+            chartPanel.frame(maxWidth: .infinity, maxHeight: .infinity)
+            NavigationReadout().padding(.horizontal, 8)
+            if engine.mapLayer != .offlineENC { controlRow.padding(.horizontal, 8).padding(.vertical, 4) }
         }
+        .background(Color(red: 0.06, green: 0.09, blue: 0.15))
         .preferredColorScheme(.dark)
         // Coming back from a sheet shows the buttons again, rather than leaving them faded.
         .onChange(of: showSettings) { _, open in if !open { engine.pokeControls() } }
@@ -228,10 +247,16 @@ struct ContentView: View {
         }
     }
 
-    /// The real chart in a rounded panel, with the anchor controls fading over its lower edge.
+    /// The chart with status, wind-time and anchor-placement overlays.
     private var chartPanel: some View {
         ZStack(alignment: .bottom) {
-            ChartMapView(engine: engine)
+            Group {
+                if engine.mapLayer == .offlineENC {
+                    OfflineENCView(engine: engine, zoom: $offlineENCZoom, fullScreen: true)
+                } else {
+                    ChartMapView(engine: engine, viewportState: chartViewport)
+                }
+            }
             VStack(spacing: 8) {
                 if let status = engine.chartStatus {
                     Text(status).font(.caption).padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
@@ -251,12 +276,7 @@ struct ContentView: View {
                     }
                     .padding(8).padding(.horizontal, 6).background(.thinMaterial, in: Capsule())
                 }
-                if engine.anchor == nil {
-                    ControlsPanel()
-                        .opacity(engine.controlsVisible ? 1 : 0)
-                        .allowsHitTesting(engine.controlsVisible)   // taps fall through to the map, which brings it back
-                        .animation(.easeInOut(duration: 0.6), value: engine.controlsVisible)
-                }
+
             }
             .padding(8)
         }
@@ -280,21 +300,34 @@ struct ContentView: View {
             Group {
                 RoundButton(icon: "gearshape", label: "Settings") { showSettings = true }
                 Menu {
+                    Button { engine.mapLayer = .offlineENC } label: {
+                        Label("Charts", systemImage: "map.fill")
+                    }
+                    Divider()
                     Picker("Map", selection: $engine.mapLayer) {
-                        ForEach(ChartLayer.allCases) { Text($0.rawValue).tag($0) }
+                        ForEach(ChartLayer.allCases) { Text($0.displayName).tag($0) }
                     }
                 } label: { RoundIcon(icon: "map") }.accessibilityLabel("Chart layer")
                 Button { engine.windOverlayOn.toggle() } label: {
                     RoundIcon(icon: "wind", active: engine.windOverlayOn)
                 }.accessibilityLabel(engine.windOverlayOn ? "Hide wind overlay" : "Show wind overlay")
+                Button { engine.toggleTideStationsOverlay() } label: {
+                    RoundIcon(icon: "water.waves", active: engine.tideStationsOverlayOn)
+                }.accessibilityLabel(engine.tideStationsOverlayOn ? "Hide tide stations" : "Show tide stations")
                 RoundButton(icon: "scope", label: "Recenter chart") { engine.recenter() }
                 RoundButton(icon: "moon.fill", label: "Night mode") { showNight = true }
-                RoundButton(icon: "plus", label: "Zoom in") { engine.zoom(by: 0.5) }
-                RoundButton(icon: "minus", label: "Zoom out") { engine.zoom(by: 2) }
+                RoundButton(icon: "plus", label: "Zoom in") {
+                    if engine.mapLayer == .offlineENC { offlineENCZoom = min(24, offlineENCZoom * 2) }
+                    else { engine.zoom(by: 0.5) }
+                }
+                RoundButton(icon: "minus", label: "Zoom out") {
+                    if engine.mapLayer == .offlineENC { offlineENCZoom = max(0.5, offlineENCZoom / 2) }
+                    else { engine.zoom(by: 2) }
+                }
             }
             .frame(maxWidth: .infinity)
         }
-        .allowsHitTesting(engine.sideButtonsVisible)
+        .allowsHitTesting(true)
         // Using a button restarts the fade timer.
         .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in engine.pokeControls() })
     }
@@ -349,48 +382,6 @@ struct AlarmBanner: View {
         .padding(12)
         .background(.red, in: RoundedRectangle(cornerRadius: 12))
         .foregroundStyle(.white)
-    }
-}
-
-/// Over the chart before anchoring: rode to pay out, GPS quality and the Drop button.
-/// Once anchored, the radius and anchor controls live on the Anchoring page (`AnchorRadiusControls`).
-struct ControlsPanel: View {
-    @EnvironmentObject var engine: AnchorWatchEngine
-    @State private var choosingMoment = false
-    @State private var showScope = false
-
-    var body: some View {
-        VStack(spacing: 10) {
-                Button { showScope = true } label: {
-                    Label("Scope: pay out \(engine.units.format(engine.rodeToPayOut)) of rode", systemImage: "ruler")
-                }.font(.footnote)
-                if !engine.hasFreshPosition {
-                    Text(engine.gpsFreshnessText).font(.footnote).foregroundStyle(.secondary)
-                } else if engine.gpsIsUnusable, let fix = engine.rawFix {
-                    Label("GPS accuracy is only ±\(engine.units.format(fix.accuracy)), too poor to set an anchor. Wait, or move the phone near a window.",
-                          systemImage: "exclamationmark.octagon.fill")
-                        .font(.footnote).foregroundStyle(.red)
-                } else if engine.gpsIsPoor, let fix = engine.rawFix {
-                    Label("GPS accuracy is only ±\(engine.units.format(fix.accuracy)). The anchor point may be off; waiting a minute usually helps.",
-                          systemImage: "exclamationmark.triangle.fill")
-                        .font(.footnote).foregroundStyle(.orange)
-                }
-                Button { choosingMoment = true } label: {
-                    Label(engine.gpsIsPoor ? "Drop Anchor Anyway" : "Drop Anchor Here", systemImage: "arrow.down.to.line")
-                        .frame(maxWidth: .infinity)
-                }
-                .sheet(isPresented: $choosingMoment) { DropAnchorSheet() }
-                .buttonStyle(.borderedProminent).controlSize(.large)
-                .tint(engine.gpsIsPoor ? .orange : .accentColor)
-                .disabled(engine.fix == nil || engine.gpsIsUnusable)
-        }
-        .padding(12)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
-        .padding(.bottom, 8)
-        // Any touch inside the panel restarts the fade timer.
-        .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in engine.pokeControls() })
-        .onChange(of: showScope) { _, _ in engine.pokeControls() }
-        .sheet(isPresented: $showScope) { ScopeView() }
     }
 }
 
@@ -456,7 +447,10 @@ struct AnchorRadiusControls: View {
         if let estimate = engine.anchorEstimate, let anchor = engine.anchor {
             let off = Geo.distance(anchor, estimate.center)
             let error = units.format(estimate.semiMajor)
-            if off <= estimate.semiMajor {
+            if estimate.method == .fixedRadius {
+                Text("Not enough swing to locate the anchor independently. This estimate assumes the rode reach; the anchor mark stays fixed.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if off <= estimate.semiMajor {
                 Label("Swing agrees with your anchor mark (±\(error))", systemImage: "checkmark.circle")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
@@ -465,8 +459,10 @@ struct AnchorRadiusControls: View {
                           systemImage: "scope")
                         .font(.caption).foregroundStyle(.purple)
                     Spacer(minLength: 4)
-                    Button("Move there") { engine.moveAnchorToEstimate() }
-                        .font(.caption.bold()).buttonStyle(.bordered).tint(.purple)
+                    if estimate.windAgrees != false {
+                        Button("Move there") { engine.moveAnchorToEstimate() }
+                            .font(.caption.bold()).buttonStyle(.bordered).tint(.purple)
+                    }
                 }
             }
             if estimate.windAgrees == false {
@@ -848,6 +844,11 @@ struct DepthSections: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(tide.station.name).font(.subheadline.bold())
                 Text(String(format: "%.0f km away · ", km) + "\(tide.station.sourceName) · heights above chart datum").font(.caption).foregroundStyle(.secondary)
+                if tide.heightModelID != nil {
+                    Text("Offline harmonic heights · CHS chart datum. High/low events: CHS.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(ValidatedBCTides.attribution).font(.caption2).foregroundStyle(.secondary)
+                }
             }
             if let now = engine.tideNow {
                 LabeledContent("Right now (estimated)", value: units.formatTenths(now))
@@ -868,6 +869,8 @@ struct DepthSections: View {
                     .font(.footnote).foregroundStyle(.orange)
             }
         } else if engine.tideStatus.isEmpty == false {
+            Label("Tides unavailable", systemImage: "exclamationmark.triangle")
+                .font(.subheadline.bold())
             Text(engine.tideStatus).font(.footnote).foregroundStyle(.secondary)
         }
         if let record = engine.environmentRecords["tide"] { Text(record.description(at: Date())).font(.caption).foregroundStyle(.secondary) }
@@ -1220,5 +1223,99 @@ struct NumericAdjustment: View {
             value = min(range.upperBound, max(range.lowerBound, number))
         }
         refreshDraft()
+    }
+}
+
+
+struct WaypointPlanView: View {
+    var openCharts: () -> Void
+    @EnvironmentObject var navigation: NavigationStore
+    @EnvironmentObject var engine: AnchorWatchEngine
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Add waypoint") {
+                    Button("Choose on chart") { engine.placingAnchor = false; navigation.placing = true }
+                    Button("Use GPS position") { if let fix = engine.rawFix { navigation.pick(fix.coordinate) } }
+                        .disabled(!NavigationMetrics.usable(engine.rawFix, now: Date()))
+                    Button("Enter coordinates") { navigation.draft = .init(name: "Waypoint", latitude: 0, longitude: 0) }
+                }
+                if let error = navigation.error { Text(error).foregroundStyle(.orange) }
+                Section("Saved waypoints") {
+                    if navigation.waypoints.isEmpty { Text("No saved waypoints yet").foregroundStyle(.secondary) }
+                    ForEach(navigation.waypoints) { waypoint in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(waypoint.name).font(.headline)
+                            Text(String(format: "%.5f°, %.5f°", waypoint.latitude, waypoint.longitude)).font(.caption)
+                            HStack {
+                                Button("Go To") { navigation.activeID = waypoint.id; openCharts() }
+                                Spacer()
+                                Button("Edit") { navigation.draft = waypoint }
+                            }.buttonStyle(.bordered)
+                        }.swipeActions { Button("Delete", role: .destructive) { navigation.delete(waypoint) } }
+                    }
+                }
+                Text("Go To draws a direct bearing line. It does not check depths, land, hazards, or safe passage.").font(.footnote).foregroundStyle(.secondary)
+            }.navigationTitle("Plan")
+        }
+    }
+}
+
+struct WaypointEditor: View {
+    @EnvironmentObject var navigation: NavigationStore
+    @Environment(\.dismiss) private var dismiss
+    let waypoint: NavigationWaypoint
+    @State private var name = ""
+    @State private var latitude = ""
+    @State private var longitude = ""
+    @State private var validation: String?
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("Name", text: $name)
+                TextField("Latitude, decimal degrees", text: $latitude).keyboardType(.numbersAndPunctuation)
+                TextField("Longitude, decimal degrees", text: $longitude).keyboardType(.numbersAndPunctuation)
+                Text("North/east are positive; south/west are negative. Example: 48.75, -123.25.").font(.caption)
+                if let validation { Text(validation).foregroundStyle(.orange) }
+            }.navigationTitle("Waypoint")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                    ToolbarItem(placement: .confirmationAction) { Button("Save") {
+                        guard let lat = Double(latitude), let lon = Double(longitude) else { validation = "Enter decimal-degree coordinates."; return }
+                        var updated = waypoint; updated.name = name.trimmingCharacters(in: .whitespacesAndNewlines); updated.latitude = lat; updated.longitude = lon
+                        if navigation.save(updated) { dismiss() } else { validation = navigation.error }
+                    } }
+                }
+        }.onAppear { name = waypoint.name; latitude = String(format: "%.6f", waypoint.latitude); longitude = String(format: "%.6f", waypoint.longitude) }
+    }
+}
+
+struct NavigationReadout: View {
+    @EnvironmentObject var navigation: NavigationStore
+    @EnvironmentObject var engine: AnchorWatchEngine
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { timeline in
+            let valid = NavigationMetrics.usable(engine.rawFix, now: timeline.date)
+            let speed = valid ? navigation.speed : nil
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("SOG " + (speed.map { String(format: "%.1f kt", $0 * 1.943844) } ?? "—"))
+                    Spacer()
+                    let course = valid && (speed ?? 0) >= 0.5 ? engine.rawFix?.course : nil
+                    Text("COG " + (course.map { String(format: "%.0f°T", $0) } ?? "—"))
+                }
+                if let destination = navigation.active {
+                    HStack { Text("To " + destination.name).bold(); Spacer(); Button("Stop") { navigation.activeID = nil } }
+                    if let metrics = NavigationMetrics.calculate(fix: engine.rawFix, destination: destination, speed: speed, now: timeline.date) {
+                        Text(String(format: "%.2f NM · Bearing %.0f°T", metrics.distance / 1852, metrics.bearing))
+                        if let seconds = metrics.seconds, seconds < 86400 * 30 {
+                            Text("Time \(Int(seconds / 3600))h \(Int(seconds / 60) % 60)m · ETA \(timeline.date.addingTimeInterval(seconds).formatted(date: .abbreviated, time: .shortened))")
+                        } else { Text("Time / ETA unavailable at this speed") }
+                        Text("Direct line · ETA assumes recent SOG · not a safe route").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                if !valid { Text("Waiting for a recent, usable GPS position").foregroundStyle(.orange) }
+            }.font(.caption.monospacedDigit()).padding(8).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        }
     }
 }

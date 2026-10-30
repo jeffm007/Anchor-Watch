@@ -1,0 +1,73 @@
+# AnchorWatch Cline Project Rules
+
+## Mandatory Test Execution After Code Changes
+
+After modifying ANY source files, you MUST run the appropriate test suite before considering work complete:
+
+### Quick Commands (Use These)
+
+```bash
+# Run all tests (recommended for most changes)
+./scripts/test-all.sh
+
+# Or run individual suites:
+./scripts/test-ios.sh      # iOS Swift unit tests (~240+ tests, ~30s)
+./scripts/test-shared.sh   # Shared Kotlin JVM tests (~15s)
+./scripts/test-android.sh  # Android JUnit + parity tests (~20s)
+```
+
+### When to Run Which Tests
+
+| Modified Files | Required Test Suite |
+|----------------|---------------------|
+| `AnchorWatch/Core/*.swift` | `test-ios.sh` |
+| `shared/src/commonMain/**/*.kt` | `test-shared.sh` AND `test-android.sh` |
+| `android/app/src/main/**/*.kt` | `test-android.sh` |
+| Multiple platforms affected | `test-all.sh` (REQUIRED) |
+
+### Test Failure Protocol
+
+1. **Do NOT weaken tests** to make them pass
+2. **Do NOT change signing settings** or skip required checks
+3. Fix the underlying code issue causing test failure
+4. Re-run tests until all pass before marking task complete
+
+### Verification Checklist Before Completion
+
+- [ ] All automated tests pass (`test-all.sh` returns exit code 0)
+- [ ] No new compiler warnings introduced
+- [ ] Test output shows expected test counts (iOS ~240+, Kotlin suites complete)
+
+## Notes
+
+- Tests run in simulator/JVM mode only; no physical device required for local verification
+- iOS tests use `CODE_SIGNING_ALLOWED=NO` to avoid signing issues
+- Shared/Android tests validate cross-platform calculation parity via CSV fixtures
+
+## Focused Reading and Task Scope
+
+- Read `docs/PROJECT_MAP.md` once at the start of a project task. Treat it as navigation, not proof of current behavior; verify relevant source and tests.
+- Inspect Git status before editing. Preserve unrelated staged, unstaged, and untracked work; never reset, stash, clean, or commit it without authorization.
+- State the task's acceptance criteria and likely affected modules. For broad reviews, start with one platform or subsystem and deliver a bounded overview first.
+- Search filenames and symbols before reading file contents. Read relevant functions or line ranges; avoid dumping whole repositories, generated output, dependencies, binary assets, or large data fixtures into context.
+- Keep a short list of files/ranges already read and findings. Do not reread unchanged ranges unless a specific missing detail requires it; explain that reason. Read different ranges when needed.
+- Aim for an initial useful answer within 10 read/search tool calls. At that checkpoint, summarize findings, uncertainties, and the next targeted check. This is a progress checkpoint, not permission to omit checks necessary for an authorized task.
+- If two consecutive tool calls add no useful evidence, change the approach or report the blocker instead of repeating them.
+- After compaction, use the retained task summary and file references; do not restart a whole-project review. Update the map only when relevant structure or commands actually change.
+
+## Web Search and Evidence
+
+- Use Tavily for current external facts or documentation needed by the task. Keep local code analysis local.
+- Send only public topic/API names in searches. Do not send source code, local paths, secrets, private project details, or precise location without explicit authorization.
+- Prefer official documentation and primary sources. Record source URL and relevant date; distinguish sourced facts, local observations, and inference.
+- Inspect the actual tool response, including structured error fields even if `isError` is false. An empty result, quota error, authentication error, or failed fetch is not evidence for an answer.
+- When search fails, report the actual error and any retry guidance. Clearly label remembered information as unverified; do not invent citations, current rankings, or a successful search.
+- Do not repeatedly retry a quota failure. Never sign up, pay, submit bonus-credit questionnaires, add credentials, or change search providers without authorization.
+
+## Edit, Review, and Test Workflow
+
+- Follow `docs/CLINE_WORKFLOW.md` for a focused coding task. Prefer the smallest change that satisfies acceptance criteria; avoid unrelated refactors.
+- Respect the user's current approval settings and explicit task scope. Rules are instructions, not a sandbox; never change permissions or auto-approval settings to complete a task.
+- Inspect the proposed diff before accepting an agent-generated edit and inspect commands before running them when approval is required. Preserve tests; add regression coverage for meaningful behavior changes.
+- Follow the source-change test requirements above. For documentation-only changes, validate paths, commands against their definitions, and the diff; application test suites are not required unless executable behavior changed.
+- Report what changed, the actual commands/results, remaining limitations, and anything not tested. Do not quote historical test counts or timings as fresh results.

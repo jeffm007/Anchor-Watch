@@ -376,7 +376,7 @@ private enum AnchorMathGuide {
         .bullets([
             "A **purple ring with an anchor** on the chart marks the estimate, inside its dashed purple error ellipse. Tap it for the ± and how many minutes of swing went in.",
             "If the estimate is within its own ± of your mark, the panel says the swing **agrees**.",
-            "Otherwise it says how far and which way, with **Move there**. That moves the anchor mark (and the alarm circle) to the estimate; the dotted orange circle becomes the ellipse's long axis.",
+            "Only an independent center-and-radius fit can offer **Move there**; a narrow assumed-radius fit cannot relocate the mark. For a qualified independent fit it says how far and which way. That moves the anchor mark (and the alarm circle) to the estimate; the dotted orange circle becomes the ellipse's long axis.",
             "This fit uses the whole swing since the drop, so a dragging anchor blurs it rather than tracking it. Section 16 watches for that.",
         ]),
     ]
@@ -389,7 +389,7 @@ private enum AnchorMathGuide {
         .heading("16. Is the anchor dragging?"),
         .text("The drag alarm only sounds once the boat leaves the circle. An anchor that's slowly ploughing downwind can take a long time to get there. This check watches the **anchor** instead of the boat, and can warn much sooner."),
         .heading("Rolling fits"),
-        .text("Once a minute, the swing fit from section 14 is run again on just the last **\(Int(Dr.rollingMinutes)) minutes** of track (after the \(Int(AnchorEstimate.settleMinutes))-minute settle). Each gives a centre cₖ at time tₖ, with its error ellipse's long axis aₖ. They're kept for \(Int(Dr.windowMinutes * 2)) minutes."),
+        .text("Once a minute, the swing fit from section 14 is run again on just the last **\(Int(Dr.rollingMinutes)) minutes** of track (after the \(Int(AnchorEstimate.settleMinutes))-minute settle). Only fits that independently solve both center and radius contribute a center cₖ at time tₖ, with error ellipse long axis aₖ; constrained-radius centers are excluded. They're kept for \(Int(Dr.windowMinutes * 2)) minutes."),
         .text("A holding anchor's centres scatter round one spot. A dragging anchor's centres march steadily one way."),
         .heading("A line through the centres"),
         .text("Take the centres from the last **\(Int(Dr.windowMinutes)) minutes** (at least \(Dr.minSamples)), in metres east and north, and fit a straight line against time by least squares. Its slope is the anchor's velocity:"),

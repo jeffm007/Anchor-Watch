@@ -64,7 +64,15 @@ struct AnchorPhysics {
         var holding: Double              // N the anchor can take before it creeps
     }
 
-    var boat: Boat
+    var boat: Boat {
+        didSet {
+            if boat.rode != oldValue.rode || boat.chainWeight != oldValue.chainWeight || boat.bowHeight != oldValue.bowHeight {
+                table = nil
+                // Model hauled-in rode without an artificial over-stretched first step/anchor impulse.
+                constrainBow(depth: boat.depth + weather.tide(time))
+            }
+        }
+    }
     var weather: SimWeather
     /// Anchor and bow, metres east/north of the drop; bow velocity, m/s.
     var anchor = AnchorEstimate.Point(x: 0, y: 0)
@@ -85,6 +93,13 @@ struct AnchorPhysics {
         let away = (w.from + 180).radians
         let lie = max(0, slack(depth: boat.depth)) * 0.8
         bow = AnchorEstimate.Point(x: lie * sin(away), y: lie * cos(away))
+    }
+
+    /// Engine settings supply depth now; this integrator stores depth at its tide origin.
+    mutating func updateBoat(_ updated: Boat) {
+        var value = updated
+        value.depth -= weather.tide(time)
+        boat = value
     }
 
     /// Wind at the boat right now, with gusts: speed (knots) and where it's from.
@@ -123,6 +138,20 @@ struct AnchorPhysics {
         let a = rows[i - 1], b = rows[i]
         let f = (distance - a.reach) / max(b.reach - a.reach, 1e-6)
         return a.pull + f * (b.pull - a.pull)
+    }
+
+    private mutating func constrainBow(depth: Double) {
+        let h = depth + boat.bowHeight
+        let taut = boat.rode > h ? (boat.rode * boat.rode - h * h).squareRoot() : 0
+        var ex = bow.x - anchor.x, ey = bow.y - anchor.y
+        let e = (ex * ex + ey * ey).squareRoot()
+        if e > taut, e > 0 {
+            ex /= e; ey /= e
+            bow = AnchorEstimate.Point(x: anchor.x + ex * taut, y: anchor.y + ey * taut)
+            let out = velocity.x * ex + velocity.y * ey
+            if out > 0 { velocity.x -= out * ex; velocity.y -= out * ey }
+        }
+
     }
 
     /// Reach (horizontal distance anchor to bow) for a range of pulls.
@@ -191,16 +220,7 @@ struct AnchorPhysics {
         bow.y += velocity.y * dt
 
         // The rode can't stretch past taut: hold the bow on the circle and take out the outward speed.
-        let h = depth + boat.bowHeight
-        let taut = boat.rode > h ? (boat.rode * boat.rode - h * h).squareRoot() : 0
-        var ex = bow.x - anchor.x, ey = bow.y - anchor.y
-        let e = (ex * ex + ey * ey).squareRoot()
-        if e > taut, e > 0 {
-            ex /= e; ey /= e
-            bow = AnchorEstimate.Point(x: anchor.x + ex * taut, y: anchor.y + ey * taut)
-            let out = velocity.x * ex + velocity.y * ey
-            if out > 0 { velocity.x -= out * ex; velocity.y -= out * ey }
-        }
+        constrainBow(depth: depth)
 
         // More pull than the anchor holds: it creeps toward the boat.
         let hold = boat.holding * weather.holdingFactor

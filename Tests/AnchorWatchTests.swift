@@ -1,5 +1,8 @@
+import struct SwiftUI.Path
 import CoreLocation
+import CryptoKit
 import MapKit
+import JavaScriptCore
 import XCTest
 @testable import AnchorWatch
 
@@ -13,6 +16,21 @@ final class GeoTests: XCTestCase {
 }
 
 final class ScopeTests: XCTestCase {
+    func testSharedAndroidScopeFixtures() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let csv = try String(contentsOf: root.appendingPathComponent("fixtures/scope.csv"), encoding: .utf8)
+        let rows = csv.split(separator: "\n").dropFirst()
+        XCTAssertFalse(rows.isEmpty)
+        for row in rows {
+            let cells = row.split(separator: ",").map(String.init)
+            let values = try cells.dropFirst().map { try XCTUnwrap(Double($0)) }
+            let settings = ScopeSettings(depth: values[0], tideRise: values[1], bowHeight: values[2],
+                                         boatLength: values[3], scopeRatio: values[4], margin: values[5])
+            XCTAssertEqual(ScopeCalculator.rode(settings), values[6], accuracy: 1e-8, cells[0])
+            XCTAssertEqual(ScopeCalculator.suggestedRadius(settings), values[7], accuracy: 1e-8, cells[0])
+        }
+    }
+
     func testFiveToOneInThreeMetres() {
         let s = ScopeSettings(depth: 3, bowHeight: 1.2, boatLength: 12, scopeRatio: 5, margin: 3)
         XCTAssertEqual(ScopeCalculator.rode(s), 21, accuracy: 0.001)
@@ -807,6 +825,45 @@ final class TideTests: XCTestCase {
         XCTAssertTrue(events[1].isHigh)
         XCTAssertEqual(events[1].time.timeIntervalSince(events[0].time), (8 * 60 + 18) * 60, accuracy: 1)
     }
+
+    func testParsesNOAAOFSLevelsAndInterpolates() throws {
+        let json = #"{"data":[{"t":"2026-10-22 12:00","v":"1.25","f":"","q":"p"},{"t":"2026-10-22 12:06","v":"1.55","f":"","q":"p"}]}"#.data(using: .utf8)!
+        let fetched = ISO8601DateFormatter().date(from: "2026-10-22T12:00:00Z")!
+        let series = try TideService.parseOFSWaterLevels(json, stationID: "9447130", fetched: fetched)
+        XCTAssertEqual(series.stationID, "9447130")
+        XCTAssertEqual(series.datum, "MLLW")
+        XCTAssertEqual(series.samples.count, 2)
+        XCTAssertEqual(series.height(at: fetched.addingTimeInterval(180))!, 1.4, accuracy: 0.001)
+        XCTAssertNil(series.height(at: fetched.addingTimeInterval(-1)))
+    }
+
+    func testOFSRequestUsesMLLWAndExpectedStationAndForecastRange() throws {
+        let now = ISO8601DateFormatter().date(from: "2026-10-22T12:00:00Z")!
+        let station = TideStation(id: "9447130", name: "Seattle", lat: 47.6, lng: -122.3)
+        let url = try XCTUnwrap(TideService.noaaOFSWaterLevelURL(station: station, now: now))
+        let items = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
+        XCTAssertEqual(items.first(where: { $0.name == "product" })?.value, "ofs_water_level")
+        XCTAssertEqual(items.first(where: { $0.name == "datum" })?.value, "MLLW")
+        XCTAssertEqual(items.first(where: { $0.name == "station" })?.value, station.id)
+        XCTAssertEqual(items.first(where: { $0.name == "time_zone" })?.value, "gmt")
+        XCTAssertEqual(items.first(where: { $0.name == "end_date" })?.value, "20261025 12:00")
+        XCTAssertNil(TideService.noaaOFSWaterLevelURL(
+            station: TideStation(id: "chs-1", name: "Canada", lat: 49, lng: -123, source: TideStation.chs), now: now))
+    }
+
+    func testOFSCacheRequiresMatchingStationDatumAndFreshForecastCoverage() throws {
+        let now = ISO8601DateFormatter().date(from: "2026-10-22T12:00:00Z")!
+        let station = TideStation(id: "9447130", name: "Seattle", lat: 47.6, lng: -122.3)
+        let samples = (-6...72).map { hour in
+            OFSWaterLevelSample(time: now.addingTimeInterval(Double(hour) * 3600), height: Double(hour) / 10)
+        }
+        let series = OFSWaterLevelSeries(stationID: station.id, datum: "MLLW", fetched: now, samples: samples)
+        XCTAssertTrue(TideService.usableOFSWaterLevel(series, station: station, now: now, maximumAge: 6 * 3600))
+        let wrongStation = OFSWaterLevelSeries(stationID: "other", datum: "MLLW", fetched: now, samples: samples)
+        XCTAssertFalse(TideService.usableOFSWaterLevel(wrongStation, station: station, now: now, maximumAge: 6 * 3600))
+        let old = OFSWaterLevelSeries(stationID: station.id, datum: "MLLW", fetched: now.addingTimeInterval(-25 * 3600), samples: samples)
+        XCTAssertFalse(TideService.usableOFSWaterLevel(old, station: station, now: now, maximumAge: 24 * 3600))
+    }
 }
 
 final class WindTests: XCTestCase {
@@ -1015,13 +1072,56 @@ final class ObservationTests: XCTestCase {
 final class CanadianDataTests: XCTestCase {
     func testCHSStationsKeepOnlyThoseWithPredictions() throws {
         let json = #"""
-        [{"id":"abc","officialName":"Sidney","latitude":48.649,"longitude":-123.393,"timeSeries":[{"code":"wlo"},{"code":"wlp-hilo"}]},
+        [{"id":"abc","officialName":"Sidney","latitude":48.649,"longitude":-123.393,"timeSeries":[{"code":"wlo"},{"code":"wlp-hilo"},{"code":"wlf"}]},
+         {"id":"def2","officialName":"SPINE Gauge","latitude":49.0,"longitude":-123.0,"timeSeries":[{"code":"wlp-hilo"},{"code":"wlf-spine"}]},
          {"id":"def","officialName":"Gauge Only","latitude":49.0,"longitude":-123.0,"timeSeries":[{"code":"wlo"}]},
          {"id":"ghi","officialName":"No Series","latitude":49.0,"longitude":-123.0}]
         """#.data(using: .utf8)!
         let stations = try TideService.parseCHSStations(json)
-        XCTAssertEqual(stations.map(\.name), ["Sidney"])
+        XCTAssertEqual(stations.map(\.name), ["Sidney", "SPINE Gauge"])
         XCTAssertEqual(stations[0].source, TideStation.chs)
+        XCTAssertEqual(stations[0].forecastSeriesCode, "wlf")
+        XCTAssertEqual(stations[1].forecastSeriesCode, "wlf-spine")
+    }
+
+    func testCHSForecastURLUsesStationAdvertisedSeriesAnd48HourWindow() throws {
+        let now = ISO8601DateFormatter().date(from: "2026-10-22T12:00:00Z")!
+        let station = TideStation(id: "station-id", name: "Aero Trading", lat: 54, lng: -130,
+                                  source: TideStation.chs, forecastSeriesCode: "wlf")
+        let url = try XCTUnwrap(TideService.chsWaterLevelForecastURL(station: station, now: now))
+        let items = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
+        XCTAssertEqual(items.first(where: { $0.name == "time-series-code" })?.value, "wlf")
+        XCTAssertEqual(items.first(where: { $0.name == "from" })?.value, "2026-10-22T06:00:00Z")
+        XCTAssertEqual(items.first(where: { $0.name == "to" })?.value, "2026-10-24T12:00:00Z")
+        XCTAssertNil(TideService.chsWaterLevelForecastURL(
+            station: TideStation(id: "prediction-only", name: "Campbell River", lat: 50, lng: -125,
+                                 source: TideStation.chs), now: now))
+    }
+
+    func testCHSForecastParserAndCacheValidation() throws {
+        let now = ISO8601DateFormatter().date(from: "2026-10-22T12:00:00Z")!
+        let station = TideStation(id: "station-id", name: "Aero Trading", lat: 54, lng: -130,
+                                  source: TideStation.chs, forecastSeriesCode: "wlf")
+        let json = #"""
+        [{"eventDate":"2026-10-22T06:00:00Z","value":1.2,"qcFlagCode":"1"},
+         {"eventDate":"2026-10-22T12:00:00Z","value":1.4,"qcFlagCode":"2"},
+         {"eventDate":"2026-10-23T12:00:00Z","value":1.1,"qcFlagCode":1},
+         {"eventDate":"2026-10-24T12:00:00Z","value":0.9,"qcFlagCode":"1"},
+         {"eventDate":"2026-10-24T13:00:00Z","value":999.0,"qcFlagCode":"3"}]
+        """#.data(using: .utf8)!
+        let series = try TideService.parseCHSWaterLevelForecast(json, station: station, fetched: now)
+        XCTAssertEqual(series.samples.count, 4, "Questionable/suspect values must not enter the forecast curve")
+        XCTAssertEqual(series.stationSource, TideStation.chs)
+        XCTAssertEqual(series.datum, "CHS chart datum")
+        XCTAssertEqual(series.seriesCode, "wlf")
+        // 3 hours along the 24-hour interval from 1.4 m to 1.1 m.
+        XCTAssertEqual(series.height(at: now.addingTimeInterval(3 * 3600))!, 1.3625, accuracy: 0.001)
+        XCTAssertTrue(TideService.usableWaterLevelForecast(series, station: station, now: now, maximumAge: 6 * 3600,
+                                                            expectedDatum: "CHS chart datum", expectedCode: "wlf"))
+        XCTAssertFalse(TideService.usableWaterLevelForecast(series, station: station, now: now, maximumAge: 6 * 3600,
+                                                             expectedDatum: "MLLW", expectedCode: "wlf"))
+        XCTAssertFalse(TideService.usableWaterLevelForecast(series, station: station, now: now, maximumAge: 6 * 3600,
+                                                             expectedDatum: "CHS chart datum", expectedCode: "wlf-spine"))
     }
 
     /// Real Sidney, BC data: a mixed tide, with a near-flat pair of heights at the start.
@@ -1671,8 +1771,35 @@ final class CurrentTests: XCTestCase {
     }
 
     func testStationListKeepsOneEntryPerStation() throws {
-        let json = #"{"stations":[{"id":"PUG1719","name":"Spieden Channel","lat":48.6,"lng":-123.1,"currbin":19},{"id":"PUG1719","name":"Spieden Channel","lat":48.6,"lng":-123.1,"currbin":7}]}"#
+        let json = #"{"stations":[{"id":"PUG1719","name":"Spieden Channel","lat":48.6,"lng":-123.1,"currbin":19,"type":"H"},{"id":"PUG1719","name":"Spieden Channel","lat":48.6,"lng":-123.1,"currbin":7,"type":"H"},{"id":"PUG1720","name":"Weak current","lat":48.6,"lng":-123.1,"currbin":1,"type":"W"}]}"#
         XCTAssertEqual(try CurrentMath.parseStations(Data(json.utf8)).count, 1)
+    }
+
+    func testParsesCHSCurrentStationsAndRequiresPredictionEvents() throws {
+        let json = #"[{"id":"chs-uuid","code":"08108","officialName":"Seymour Narrows","latitude":50.133333,"longitude":-125.35,"timeSeries":[{"code":"wcp1-events"},{"code":"wcdp1"}]},{"id":"tide-only","code":"00001","officialName":"Tide Only","latitude":50.0,"longitude":-125.0,"timeSeries":[{"code":"wlp-hilo"}]}]"#
+        let stations = try CurrentMath.parseCHSStations(Data(json.utf8))
+        XCTAssertEqual(stations.count, 1)
+        XCTAssertEqual(stations.first?.id, "chs-uuid")
+        XCTAssertEqual(stations.first?.stationCode, "08108")
+        XCTAssertEqual(stations.first?.provider, .chs)
+    }
+
+    func testParsesCHSFloodEbbSlackAndFlowDirections() throws {
+        let eventJSON = #"[{"eventDate":"2026-10-22T01:13:00Z","qcFlagCode":"2","qualifier":"EXTREMA_EBB","value":8.232},{"eventDate":"2026-10-22T04:24:00Z","qcFlagCode":"2","qualifier":"SLACK","value":0.0},{"eventDate":"2026-10-22T07:14:00Z","qcFlagCode":"2","qualifier":"EXTREMA_FLOOD","value":6.714},{"eventDate":"2026-10-22T10:19:00Z","qcFlagCode":"2","qualifier":"SLACK","value":0.0},{"eventDate":"2026-10-22T13:29:00Z","qcFlagCode":"2","qualifier":"EXTREMA_EBB","value":7.202}]"#
+        let directionJSON = #"[{"eventDate":"2026-10-22T01:15:00Z","qcFlagCode":"2","value":0.0},{"eventDate":"2026-10-22T07:15:00Z","qcFlagCode":"2","value":180.0},{"eventDate":"2026-10-22T13:30:00Z","qcFlagCode":"2","value":0.0}]"#
+        let parsed = try CurrentMath.parseCHSPredictions(events: Data(eventJSON.utf8), directions: Data(directionJSON.utf8))
+        XCTAssertEqual(parsed.count, 5)
+        XCTAssertEqual(parsed[0].velocity, -8.232, accuracy: 0.001)
+        XCTAssertEqual(parsed[1].velocity, 0)
+        XCTAssertEqual(parsed[2].velocity, 6.714, accuracy: 0.001)
+        XCTAssertEqual(parsed[2].floodToward, 180, accuracy: 0.001)
+        XCTAssertEqual(parsed[2].ebbToward, 0, accuracy: 0.001)
+    }
+
+    func testOldCachedCurrentStationDefaultsToNOAA() throws {
+        let json = #"{"id":"PUG1719","name":"Spieden Channel","lat":48.6,"lng":-123.1}"#
+        let station = try JSONDecoder().decode(CurrentStation.self, from: Data(json.utf8))
+        XCTAssertEqual(station.provider, .noaa)
     }
 }
 
@@ -2517,7 +2644,7 @@ final class EnvironmentalConfidenceTests: XCTestCase {
         XCTAssertNil(e.environmentCoverage.tideThrough)
         XCTAssertNil(e.environmentCoverage.currentThrough)
         tides = tide(point); currents = current(point)
-        tides.fetched = now - 7 * 3600; currents.fetched = now - 7 * 3600
+        tides.fetched = now - 29 * 86400; currents.fetched = now - 7 * 3600
         await e.refreshTide(); await e.refreshCurrent()
         XCTAssertNil(e.environmentCoverage.tideThrough)
         XCTAssertNil(e.environmentCoverage.currentThrough)
@@ -2635,7 +2762,7 @@ final class IntegratedReviewFixTests: XCTestCase {
         XCTAssertFalse(e.waterForecast.isEmpty, "GPS interruption does not expire valid environmental predictions")
         now += 1
         e.ingest(Fix(coordinate: point, accuracy: 3, course: nil, speed: nil, timestamp: now))
-        var expired = tide(at: originalTime, point: point); expired.fetched = now - 7 * 3600
+        var expired = tide(at: originalTime, point: point); expired.fetched = now - 29 * 86400
         e.applyTideSnapshot(expired)
         XCTAssertEqual(e.watchState, .holding, "Forecast confidence does not suspend fresh position monitoring")
         XCTAssertTrue(e.waterForecast.isEmpty)
@@ -3173,5 +3300,1615 @@ final class WarningPreferencesTests: XCTestCase {
         XCTAssertNotNil(engine.alarm)
         XCTAssertTrue(player.sirenSounding)
         XCTAssertTrue(player.armed)
+    }
+}
+
+@MainActor
+final class RodeChangeRegressionTests: XCTestCase {
+    func testRodeChangeDiscardsOldSwingEvidenceButKeepsAnchorAndTrack() throws {
+        var now = Date(timeIntervalSince1970: 1_800_000_000)
+        let origin = CLLocationCoordinate2D(latitude: 48.6, longitude: -123.15)
+        let engine = AnchorWatchEngine(player: SilentAlarm(), liveActivity: NoLiveActivity(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false, clock: { now })
+        engine.ingest(Fix(coordinate: origin, accuracy: 2, course: 0, speed: 0, timestamp: now))
+        engine.dropAnchor(rode: 60)
+        let anchor = try XCTUnwrap(engine.anchor)
+        engine.setRadiusByHand(200)
+        for i in 1...240 {
+            now += 10
+            let bearing = 180 + 70 * sin(Double(i) / 60 * .pi)
+            engine.ingest(Fix(coordinate: Geo.destination(from: anchor, bearing: bearing, meters: 62), accuracy: 2, course: nil, speed: nil, timestamp: now))
+        }
+        engine.updateAnchorEstimate()
+        XCTAssertNotNil(engine.anchorEstimate)
+        let mark = try XCTUnwrap(engine.anchor), count = engine.track.count
+        engine.confirmRode(35)
+        XCTAssertNil(engine.anchorEstimate, "Old-radius track must not remain an actionable anchor estimate")
+        engine.updateAnchorEstimate()
+        XCTAssertNil(engine.anchorEstimate, "Do not fit old track using the new rode radius")
+        XCTAssertEqual(engine.anchor, mark)
+        XCTAssertEqual(engine.track.count, count, "Keep the visible track")
+        XCTAssertEqual(engine.radius, 200, "Manual radius stays fixed")
+        XCTAssertNil(engine.anchorDrift)
+        XCTAssertNil(engine.distanceTrend)
+    }
+}
+
+extension AnchorPhysicsTests {
+    func testRodeChangeRebuildsCatenaryWithoutMovingAnchor() {
+        var p = AnchorPhysics(boat: boat, weather: SimDays.calm)
+        _ = p.pull(at: 55, depth: 11)
+        let anchor = p.anchor
+        p.boat.rode = 90
+        XCTAssertEqual(p.pull(at: 55, depth: 11), 0, "New longer chain is slack here; the old cached force curve is invalid")
+        p.boat.rode = 40
+        var fresh = AnchorPhysics(boat: p.boat, weather: SimDays.calm)
+        XCTAssertEqual(p.pull(at: 35, depth: 11), fresh.pull(at: 35, depth: 11), accuracy: 0.001)
+        XCTAssertEqual(p.anchor.x, anchor.x)
+        XCTAssertEqual(p.anchor.y, anchor.y)
+    }
+}
+
+extension RodeChangeRegressionTests {
+    private final class Clock { var now = Date(timeIntervalSince1970: 1_800_000_000) }
+    private func session(rode: Double = 60) throws -> (AnchorWatchEngine, Clock, CLLocationCoordinate2D) {
+        let clock = Clock()
+        let engine = AnchorWatchEngine(player: SilentAlarm(), liveActivity: NoLiveActivity(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false, clock: { clock.now })
+        engine.ingest(Fix(coordinate: CLLocationCoordinate2D(latitude: 48.6, longitude: -123.15), accuracy: 2, course: nil, speed: nil, timestamp: clock.now))
+        engine.dropAnchor(rode: rode)
+        return (engine, clock, try XCTUnwrap(engine.anchor))
+    }
+    private func feed(_ engine: AnchorWatchEngine, _ clock: Clock, center: CLLocationCoordinate2D, radius: Double, bearing: Double) {
+        clock.now += 10
+        engine.ingest(Fix(coordinate: Geo.destination(from: center, bearing: bearing, meters: radius), accuracy: 2, course: nil, speed: nil, timestamp: clock.now))
+    }
+
+    func testFallingBackOnLongerRodeDoesNotBecomeDragOrRelocateAnchor() throws {
+        let (engine, clock, anchor) = try session(rode: 35)
+        for _ in 0..<120 { feed(engine, clock, center: anchor, radius: 35, bearing: 180) }
+        engine.confirmRode(90)
+        for i in 0..<240 {
+            // Pay out over ten minutes, then hold on the longer rode with only a narrow sheer.
+            let radius = min(90, 35 + Double(i) * 55 / 60)
+            feed(engine, clock, center: anchor, radius: radius, bearing: 180 + 10 * sin(Double(i) / 20))
+            if i % 6 == 5 { engine.updateAnchorEstimate() }
+            XCTAssertNil(engine.distanceTrend, "Normal outward movement within the new reach is not drag")
+            XCTAssertNil(engine.anchorDrift)
+            XCTAssertEqual(engine.anchor, anchor)
+            XCTAssertNil(engine.anchorCorrection)
+        }
+        XCTAssertTrue(engine.circleMonitoringAvailable)
+        XCTAssertNil(engine.alarm)
+    }
+
+    func testNarrowSwingWithWrongAssumedRadiusNeverOffersAMove() throws {
+        let (engine, clock, anchor) = try session(rode: 35)
+        // A short arc on a smaller physical circle biases a fixed-radius center toward the arc.
+        for i in 0..<240 {
+            feed(engine, clock, center: anchor, radius: 20, bearing: 180 + 10 * sin(Double(i) / 20))
+        }
+        engine.updateAnchorEstimate()
+        XCTAssertEqual(engine.anchor, anchor)
+        XCTAssertNil(engine.anchorCorrection)
+        if let estimate = engine.anchorEstimate {
+            XCTAssertEqual(estimate.method, .fixedRadius)
+            engine.moveAnchorToEstimate()
+            XCTAssertEqual(engine.anchor, anchor, "An assumed-radius fit cannot relocate the anchor")
+        }
+        XCTAssertNil(engine.anchorDrift)
+    }
+
+    func testGenuineDragIsDetectedAgainAfterRodeChange() throws {
+        let (engine, clock, anchor) = try session()
+        engine.confirmRode(50)
+        engine.setRadiusByHand(200)
+        var warnedBeforeDrag = false
+        for i in 0..<(65 * 6) {
+            let minute = Double(i) / 6
+            let pivot = Geo.destination(from: anchor, bearing: 90, meters: max(0, minute - 30))
+            feed(engine, clock, center: pivot, radius: 52, bearing: 270 + 60 * sin(minute / 10 * 2 * .pi))
+            if i % 6 == 5 {
+                engine.updateAnchorEstimate()
+                if minute < 30 && engine.anchorDrift != nil { warnedBeforeDrag = true }
+            }
+        }
+        XCTAssertFalse(warnedBeforeDrag)
+        XCTAssertNotNil(engine.anchorDrift, "Fresh post-change swing must still detect a genuinely moving center")
+        XCTAssertEqual(engine.anchor, anchor, "Do not move the alarm center along with a dragging anchor")
+    }
+
+    func testRodeEditDoesNotStopAnActiveCircleAlarm() throws {
+        let (engine, clock, anchor) = try session()
+        engine.setRadiusByHand(40)
+        for _ in 0..<3 { feed(engine, clock, center: anchor, radius: 100, bearing: 180) }
+        XCTAssertNotNil(engine.alarm)
+        engine.confirmRode(80)
+        XCTAssertNotNil(engine.alarm)
+        XCTAssertEqual(engine.radius, 40)
+        XCTAssertTrue(engine.circleMonitoringAvailable)
+        XCTAssertEqual(engine.anchor, anchor)
+    }
+
+    func testConfirmingUnchangedRodeKeepsExistingSwingEvidence() throws {
+        let (engine, clock, anchor) = try session()
+        for i in 0..<240 { feed(engine, clock, center: anchor, radius: 62, bearing: 180 + 70 * sin(Double(i) / 60 * .pi)) }
+        engine.updateAnchorEstimate()
+        let estimate = try XCTUnwrap(engine.anchorEstimate)
+        engine.confirmRode(engine.rodeOut)
+        XCTAssertEqual(engine.anchorEstimate?.center, estimate.center)
+    }
+}
+
+extension AnchorPhysicsTests {
+    func testShorteningRodeDoesNotInjectAnArtificialDragImpulse() {
+        var p = AnchorPhysics(boat: boat, weather: SimDays.calm)
+        p.boat.rode = 25
+        let anchor = p.anchor
+        let maximum = sqrt(25.0 * 25 - pow(boat.depth + boat.bowHeight, 2))
+        XCTAssertLessThanOrEqual(distance(p), maximum + 0.001)
+        p.step()
+        XCTAssertEqual(p.anchor.x, anchor.x, accuracy: 0.001)
+        XCTAssertEqual(p.anchor.y, anchor.y, accuracy: 0.001)
+    }
+    func testChangingChainWeightRebuildsTheForceCurve() {
+        var p = AnchorPhysics(boat: boat, weather: SimDays.calm)
+        let old = p.pull(at: 55, depth: 11)
+        p.boat.chainWeight *= 2
+        var fresh = AnchorPhysics(boat: p.boat, weather: SimDays.calm)
+        XCTAssertEqual(p.pull(at: 55, depth: 11), fresh.pull(at: 55, depth: 11), accuracy: 0.001)
+        XCTAssertGreaterThan(p.pull(at: 55, depth: 11), old)
+    }
+}
+
+extension AnchorPhysicsTests {
+    func testUpdatingRodeUsesCurrentDepthWithoutAddingTheTideTwice() {
+        var p = AnchorPhysics(boat: boat, weather: SimDays.calm)
+        for _ in 0..<3600 { p.step() }
+        let currentDepth = p.boat.depth + p.weather.tide(p.time)
+        var update = p.boat
+        update.rode = 90
+        update.depth = currentDepth
+        let anchor = p.anchor
+        p.updateBoat(update)
+        XCTAssertEqual(p.boat.depth + p.weather.tide(p.time), currentDepth, accuracy: 0.000001)
+        XCTAssertEqual(p.anchor.x, anchor.x)
+        XCTAssertEqual(p.anchor.y, anchor.y)
+    }
+}
+
+
+final class ValidatedBCTideIntegrationTests: XCTestCase {
+    private let now = ISO8601DateFormatter().date(from: "2026-02-01T00:00:00Z")!
+    private func station(_ code: String = "08074") -> TideStation {
+        let r = ValidatedBCTides.records.first { $0.code == code }!
+        return TideStation(id: r.chsID, name: r.name, lat: r.latitude, lng: r.longitude, source: TideStation.chs)
+    }
+    private func cached(age: TimeInterval = 0) -> TideSnapshot {
+        TideSnapshot(station: station(), events: [
+            TideEvent(time: now - 3600, height: 0.21, isHigh: false),
+            TideEvent(time: now + 3600, height: 4.42, isHigh: true),
+            TideEvent(time: now + 12 * 3600, height: 0.25, isHigh: false),
+            TideEvent(time: now + 30 * 3600, height: 4.1, isHigh: true)
+        ], fetched: now - age)
+    }
+
+    func testAllTenProductionHeightsMatchValidatedReferenceWithCHSConstant() throws {
+        let expected: [(String, Double)] = [
+            ("07120", 1.7839384417114408),
+            ("07735", 4.122924043800365),
+            ("07917", 4.10381077598605),
+            ("08074", 3.7307551654396742),
+            ("08408", 1.617728268182056),
+            ("08976", 1.542157113541153),
+            ("09354", 2.910466536177952),
+            ("09130", 1.9241987970739507),
+            ("07330", 2.7791716152085364),
+            ("08545", 0.7316237596539701),
+        ]
+        XCTAssertEqual(ValidatedBCTides.records.count, 10)
+        for (code, value) in expected {
+            XCTAssertEqual(try XCTUnwrap(ValidatedBCTides.height(at: now, station: station(code))), value, accuracy: 0.01, code)
+        }
+        let campbell = try XCTUnwrap(ValidatedBCTides.record(for: station()))
+        XCTAssertEqual(campbell.meanWaterLevel, 2.780, accuracy: 0.000001)
+        XCTAssertEqual(campbell.constituents.count, 50) // Published model only; no diagnostic fit.
+    }
+
+    func testOverridesRequireExactProviderStationIdentityAndPosition() {
+        let good = station()
+        XCTAssertNil(ValidatedBCTides.record(for: TideStation(id: good.id, name: good.name, lat: good.lat, lng: good.lng)))
+        XCTAssertNil(ValidatedBCTides.record(for: TideStation(id: "other", name: good.name, lat: good.lat, lng: good.lng, source: TideStation.chs)))
+        XCTAssertNil(ValidatedBCTides.record(for: TideStation(id: good.id, name: good.name, lat: 49, lng: -125, source: TideStation.chs)))
+    }
+
+    func testPublishedCHSEventsAreNotShiftedOrRegenerated() async throws {
+        let saved = cached()
+        let result = try await TideService.snapshot(for: station(), now: now, cached: saved, fetch: { _, _ in
+            XCTFail("Fresh cached CHS events should work without a download")
+            throw URLError(.notConnectedToInternet)
+        })
+        XCTAssertTrue(result.fromCache)
+        XCTAssertEqual(result.snapshot.events, saved.events)
+        XCTAssertEqual(result.snapshot.events[0].height, 0.21)
+        let turns = try XCTUnwrap(TideMath.extremes(from: now, hours: 24, snapshot: result.snapshot))
+        XCTAssertEqual(turns.high.time, saved.events[1].time)
+        XCTAssertEqual(turns.high.height, 4.42) // No +0.161 m correction to an already referenced CHS event.
+    }
+
+    func testCoveredOldCacheSurvivesNetworkFailureButExpiredOrWrongStationDoesNot() async throws {
+        let saved = cached(age: 10 * 86400)
+        let result = try await TideService.snapshot(for: station(), now: now, cached: saved, fetch: { _, _ in throw URLError(.notConnectedToInternet) })
+        XCTAssertTrue(result.fromCache)
+        XCTAssertEqual(result.snapshot, saved)
+        var expired = saved
+        expired.events = Array(expired.events.prefix(2))
+        XCTAssertNil(TideService.usableCache(expired, station: station(), now: now))
+        XCTAssertNil(TideService.usableCache(saved, station: station("07917"), now: now))
+        do {
+            _ = try await TideService.snapshot(for: station(), now: now, cached: expired, fetch: { _, _ in throw URLError(.notConnectedToInternet) })
+            XCTFail("Out-of-coverage cache must not be returned")
+        } catch { XCTAssertNotNil(error as? TideService.TideError) }
+    }
+
+    func testMalformedCacheAndInsufficientFreshCoverageAreRejected() async {
+        var duplicate = cached(); duplicate.events.insert(duplicate.events[0], at: 0)
+        XCTAssertNil(TideService.usableCache(duplicate, station: station(), now: now))
+        var nonfinite = cached(); nonfinite.events[0] = TideEvent(time: now - 3600, height: .nan, isHigh: false)
+        XCTAssertNil(TideService.usableCache(nonfinite, station: station(), now: now))
+        do {
+            _ = try await TideService.snapshot(for: station(), now: now, cached: nil, fetch: { _, _ in Array(self.cached().events.prefix(2)) })
+            XCTFail("Short network response must not replace a usable forecast")
+        } catch { }
+    }
+
+    func testLegacyDepthReferenceRebasesInsteadOfMixingHeightModels() throws {
+        let snapshot = cached()
+        let legacy = DepthReading(depth: 5, measured: now, stationID: DepthReading.stationKey(station()), tideHeight: 99)
+        XCTAssertEqual(try XCTUnwrap(legacy.depth(at: now, tide: snapshot)), 5, accuracy: 0.000001)
+        XCTAssertNil(TideMath.height(at: snapshot.events.last!.time + 1, snapshot: snapshot))
+        XCTAssertNil(TideMath.rise(from: now, hours: 48, snapshot: snapshot))
+        let encoded = try JSONEncoder().encode(legacy)
+        XCTAssertNil(try JSONDecoder().decode(DepthReading.self, from: encoded).tideModelID)
+    }
+
+    @MainActor func testCHSCachedPredictionAgeRemainsUsableWithinCoverage() {
+        let defaults = UserDefaults(suiteName: "BCTideIntegration-" + UUID().uuidString)!
+        let engine = AnchorWatchEngine(defaults: defaults, useGPSHardware: false, clock: { self.now })
+        engine.applyTideSnapshot(cached(age: 10 * 86400), cached: true)
+        XCTAssertNotNil(engine.tideNow)
+    }
+    @MainActor func testMissingOrExpiredCacheClearsPreviouslyLoadedCampbellTides() async {
+        for warm in [false, true] {
+            let engine = AnchorWatchEngine(player: SilentAlarm(), liveActivity: NoLiveActivity(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false, clock: { self.now })
+            engine.ingest(Fix(coordinate: station().coordinate, accuracy: 3, course: nil, speed: nil, timestamp: now))
+            if warm { engine.applyTideSnapshot(cached(), cached: true) }
+            engine.fetchTide = { _ in throw TideService.TideError.offline }
+            await engine.refreshTide()
+            XCTAssertNil(engine.tide)
+            XCTAssertNil(engine.tideNow)
+            XCTAssertNil(engine.tideRiseEstimate)
+            XCTAssertFalse(engine.tideIsSaved)
+            XCTAssertTrue(engine.tideStatus.contains("No saved tide predictions"))
+        }
+    }
+
+}
+
+final class NOAAOfflineMonthTests: XCTestCase {
+    func testRequestCrossesYearBoundaryAndRetainsNOAAUnitsDatumAndEvents() {
+        let now = ISO8601DateFormatter().date(from: "2026-12-20T22:00:00Z")!
+        let station = TideStation(id: "9447130", name: "Seattle", lat: 47.6, lng: -122.3)
+        let path = TideService.noaaPredictionPath(station: station, now: now)
+        let query = URLComponents(string: "https://example.com" + path)!.queryItems!
+        let values = Dictionary(uniqueKeysWithValues: query.map { ($0.name, $0.value!) })
+        XCTAssertEqual(values["begin_date"], "20261219")
+        XCTAssertEqual(values["end_date"], "20270117")
+        XCTAssertEqual(values["station"], "9447130")
+        XCTAssertEqual(values["datum"], "MLLW")
+        XCTAssertEqual(values["units"], "metric")
+        XCTAssertEqual(values["time_zone"], "gmt")
+        XCTAssertEqual(values["interval"], "hilo")
+    }
+    @MainActor func testOldNOAACacheRemainsUsableWhileCoveredButExpiresWithoutCoverage() async throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let station = TideStation(id: "9447130", name: "Seattle", lat: 47.6, lng: -122.3)
+        let snapshot = TideSnapshot(station: station, events: [
+            TideEvent(time: now - 3600, height: 1, isHigh: false),
+            TideEvent(time: now + 3600, height: 3, isHigh: true),
+            TideEvent(time: now + 25 * 3600, height: 1, isHigh: false)
+        ], fetched: now - 26 * 86400)
+        let result = try await TideService.snapshot(for: station, now: now, cached: snapshot, fetch: { _, _ in throw URLError(.notConnectedToInternet) })
+        XCTAssertTrue(result.fromCache)
+        let engine = AnchorWatchEngine(player: SilentAlarm(), liveActivity: NoLiveActivity(), defaults: UserDefaults(suiteName: UUID().uuidString)!, useGPSHardware: false, clock: { now })
+        engine.applyTideSnapshot(result.snapshot, cached: true)
+        XCTAssertNotNil(engine.tideNow)
+        XCTAssertNil(TideService.usableCache(snapshot, station: station, now: now + 7200))
+        XCTAssertNil(snapshot.heightModelID) // Validation does not enable US harmonic overrides.
+    }
+}
+
+final class OfflineENCImportTests: XCTestCase {
+    private func coverageCatalogue() -> Data {
+        let field = "CD0000000001CA271100\\CA271100.000\u{1f}\u{1f}V01X01\u{1f}BIN48.0000000\u{1f}-128.0000000\u{1f}52.0000000\u{1f}-124.0000000\u{1f}ABCDEF\u{1f}\u{1e}"
+        let base = 39
+        let leader = String(format: "%05d D     %05d   5504", base + field.utf8.count, base)
+        let directory = "CATD" + String(format: "%05d00000", field.utf8.count) + "\u{1e}"
+        return Data((leader + directory + field).utf8)
+    }
+
+    func testCatalogueProvidesBoundsWithoutOptionalCSV() throws {
+        let archive = storedZip([
+            ("ENC_ROOT/CATALOG.031", coverageCatalogue()),
+            ("ENC_ROOT/CA271100/CA271100.000", Data("base".utf8))
+        ])
+        let cells = try OfflineENCZip.cellCandidates(in: archive)
+        XCTAssertEqual(cells.count, 1)
+        XCTAssertEqual(cells.first?.bounds, OfflineENCBounds(west: -128, south: 48, east: -124, north: 52))
+        XCTAssertThrowsError(try OfflineENCZip.readCatalogueBounds(coverageCatalogue().dropLast()))
+        XCTAssertThrowsError(try OfflineENCZip.readCatalogueBounds(Data("corrupt".utf8)))
+    }
+
+    func testS57UpdateMetadataCarriesForwardOmittedBaseDSPMFields() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let bridge = try String(contentsOf: root.appendingPathComponent("AnchorWatch/Resources/anchorwatch-s57-bridge.js"), encoding: .utf8)
+        let context = try XCTUnwrap(JSContext())
+        context.evaluateScript(bridge)
+        let merge = try XCTUnwrap(context.objectForKeyedSubscript("anchorWatchMergeUpdateMetadata"))
+        let previous: [String: Any] = ["name": "CA571551.000", "edition": "1", "update": "0",
+                                       "scale": 22_000, "depthUnitCode": 1, "verticalDatumCode": 28,
+                                       "horizontalDatumCode": 2, "soundingDatumCode": 27, "dspmFields": ["CSCL", "DUNI", "VDAT", "HDAT", "SDAT"]]
+        let update: [String: Any] = ["name": "CA571551.001", "edition": "1", "update": "1",
+                                     "scale": 0, "depthUnitCode": 0, "verticalDatumCode": 0,
+                                     "horizontalDatumCode": 0, "dspmFields": [String]()]
+
+        let result = try XCTUnwrap(merge.call(withArguments: [previous, update])?.toDictionary() as? [String: Any])
+        XCTAssertEqual(result["scale"] as? Int, 22_000)
+        XCTAssertEqual(result["depthUnitCode"] as? Int, 1)
+        XCTAssertEqual(result["verticalDatumCode"] as? Int, 28)
+        XCTAssertEqual(result["soundingDatumCode"] as? Int, 27)
+        let explicit = try XCTUnwrap(merge.call(withArguments: [previous, ["soundingDatumCode": 23, "dspmFields": ["SDAT"]]])?.toDictionary() as? [String: Any])
+        XCTAssertEqual(explicit["soundingDatumCode"] as? Int, 23)
+        XCTAssertEqual(result["horizontalDatumCode"] as? Int, 2)
+        XCTAssertEqual(result["update"] as? String, "1")
+        XCTAssertEqual(result["name"] as? String, "CA571551.001")
+    }
+
+    func testCHSVancouverIslandCollectionFitsBoundedImportLimits() {
+        XCTAssertGreaterThanOrEqual(OfflineENCZip.maxArchiveBytes, 170 * 1024 * 1024)
+        XCTAssertGreaterThanOrEqual(OfflineENCZip.maxExpandedBytes, 420 * 1024 * 1024)
+    }
+
+    func testCellPickerUsesCollectionTitleAndOmitsCancelledCells() throws {
+        let listing = "Collection,Name,EDT,UPD,ISDT,UADT,SLAT,WLON,NLAT,ELON,Title\r\n" +
+            "V-PAC-A,CA570262,6,7,2024-09-04,,50.2,-125.41,50.33,-125.08,\"Okisollo Channel, British Columbia\"\r\n" +
+            "V-PAC-A,CA000001,1,0,2026-01-01,,50,-125,51,-124,Cancelled test cell\r\n"
+        let archive = storedZip([
+            ("V-PAC-A/ENC_ROOT/CATALOG.031", coverageCatalogue()),
+            ("V-PAC-A/CHS_COLLECTIONS_ENCS57_20261026.csv", Data(listing.utf8)),
+            ("V-PAC-A/ENC_ROOT/CA570262/CA570262.000", Data("active".utf8)),
+            ("V-PAC-A/Cancel_Annuler/ENC_ROOT/CA000001/CA000001.000", Data("cancelled".utf8))
+        ])
+
+        let candidates = try OfflineENCZip.cellCandidates(in: archive)
+        XCTAssertEqual(candidates.count, 1)
+        XCTAssertEqual(candidates[0].cellID, "CA570262")
+        XCTAssertEqual(candidates[0].title, "Okisollo Channel, British Columbia")
+        XCTAssertEqual(candidates[0].path, "V-PAC-A/ENC_ROOT/CA570262/CA570262.000")
+        XCTAssertEqual(candidates[0].bounds, OfflineENCBounds(west: -125.41, south: 50.2, east: -125.08, north: 50.33))
+    }
+
+    func testZipReaderAcceptsStoredExchangeSetFilesAndChecksCRC() throws {
+        let archive = storedZip([
+            ("ENC_ROOT/CATALOG.031", Data("catalog".utf8)),
+            ("ENC_ROOT/CA100001.000", Data("base-cell".utf8))
+        ])
+        let entries = try OfflineENCZip.entries(in: archive)
+        XCTAssertEqual(entries.map(\.name), ["ENC_ROOT/CATALOG.031", "ENC_ROOT/CA100001.000"])
+        XCTAssertEqual(try OfflineENCZip.contents(of: entries[0], in: archive), Data("catalog".utf8))
+        XCTAssertEqual(try OfflineENCZip.contents(of: entries[1], in: archive), Data("base-cell".utf8))
+    }
+
+    func testZipReaderInflatesDeflatedExchangeSetFiles() throws {
+        let payload = Data("catalog".utf8)
+        let archive = deflatedZip(name: "ENC_ROOT/CATALOG.031", payload: payload,
+                                  compressed: Data([75, 78, 44, 73, 204, 201, 79, 7, 0]))
+        let entry = try XCTUnwrap(OfflineENCZip.entries(in: archive).first)
+        XCTAssertEqual(entry.method, 8)
+        XCTAssertEqual(try OfflineENCZip.contents(of: entry, in: archive), payload)
+    }
+
+    func testZipReaderRejectsTraversalEncryptedAndCorruptArchives() throws {
+        XCTAssertThrowsError(try OfflineENCZip.entries(in: Data("not a zip".utf8)))
+        XCTAssertThrowsError(try OfflineENCZip.entries(in: storedZip([("../outside", Data("bad".utf8))]))) { error in
+            guard let importError = error as? OfflineENCImportError, case .unsafeArchiveEntry = importError else { return XCTFail("Unexpected error: \(error)") }
+        }
+        XCTAssertThrowsError(try OfflineENCZip.entries(in: storedZip([("cell.000", Data("encrypted".utf8))], flags: 1))) { error in
+            guard let importError = error as? OfflineENCImportError, case .encryptedArchive = importError else { return XCTFail("Unexpected error: \(error)") }
+        }
+        var corrupt = storedZip([("ENC_ROOT/CATALOG.031", Data("catalog".utf8))])
+        corrupt[30 + "ENC_ROOT/CATALOG.031".utf8.count] ^= 0xFF
+        let corruptEntry = try XCTUnwrap(OfflineENCZip.entries(in: corrupt).first)
+        XCTAssertThrowsError(try OfflineENCZip.contents(of: corruptEntry, in: corrupt))
+    }
+
+    func testUpdateFilesMustBeContiguousAndAreOrdered() throws {
+        let names = ["ENC_ROOT/CA100001.002", "ENC_ROOT/CA100001.001", "ENC_ROOT/OTHER.001"]
+        XCTAssertEqual(try OfflineENCZip.orderedUpdateSequence(baseCellFilename: "CA100001.000", entryNames: names),
+                       ["ENC_ROOT/CA100001.001", "ENC_ROOT/CA100001.002"])
+        XCTAssertThrowsError(try OfflineENCZip.orderedUpdateSequence(
+            baseCellFilename: "CA100001.000", entryNames: ["ENC_ROOT/CA100001.002"])) { error in
+                guard let importError = error as? OfflineENCImportError, case .missingUpdate = importError else { return XCTFail("Unexpected error: \(error)") }
+            }
+    }
+
+    func testGeometryBoundsAndTapCoordinatesPreserveChartCoordinates() throws {
+        let polygon = OfflineJSONValue.array([
+            .array([.array([.number(-123.2), .number(48.1)]), .array([.number(-123.0), .number(48.1)]),
+                    .array([.number(-123.0), .number(48.3)]), .array([.number(-123.2), .number(48.1)])])
+        ])
+        let feature = OfflineENCFeature(geometryType: "Polygon", coordinates: polygon,
+                                        attributes: ["OBJL": "42", "RCID": "12"], soundingDepths: [])
+        let bounds = try XCTUnwrap(OfflineENCBounds(features: [feature]))
+        XCTAssertEqual(bounds.west, -123.2, accuracy: 0.0001)
+        XCTAssertEqual(bounds.east, -123.0, accuracy: 0.0001)
+        XCTAssertEqual(bounds.south, 48.1, accuracy: 0.0001)
+        XCTAssertEqual(bounds.north, 48.3, accuracy: 0.0001)
+        XCTAssertTrue(bounds.contains(ChartCoordinate(longitude: -123.1, latitude: 48.2)))
+        XCTAssertFalse(bounds.contains(ChartCoordinate(longitude: -122.9, latitude: 48.2)))
+        XCTAssertEqual(feature.chartCoordinates().count, 4)
+    }
+
+    func testZoomToFitIgnoresS57MetadataCoverageExtent() throws {
+        func polygon(_ coordinates: [(Double, Double)]) -> OfflineJSONValue {
+            .array([.array(coordinates.map { .array([.number($0.0), .number($0.1)]) })])
+        }
+        let land = OfflineENCFeature(geometryType: "Polygon",
+                                     coordinates: polygon([(-124, 48.274), (-123.6, 48.274),
+                                                           (-123.6, 48.7), (-124, 48.7), (-124, 48.274)]),
+                                     attributes: ["OBJL": "71", "RCID": "1"], soundingDepths: [])
+        let coverage = OfflineENCFeature(geometryType: "Polygon",
+                                         coordinates: polygon([(-124, 48), (-123.6, 48),
+                                                               (-123.6, 48.7), (-124, 48.7), (-124, 48)]),
+                                         attributes: ["OBJL": "302", "RCID": "2"], soundingDepths: [])
+        let chart = OfflineENCChart(sourceName: "CHS ENC", originalFilename: "V-PAC-A.zip",
+                                    sha256: String(repeating: "b", count: 64), importedAt: Date(),
+                                    metadata: OfflineENCMetadata(cellID: "CA471209", edition: "1", update: "0",
+                                        updateDate: "", issueDate: "", exchangeStandard: "3.1",
+                                        compilationScale: 90000, depthUnitCode: 1, verticalDatumCode: 28,
+                                        horizontalDatumCode: 2, catalogPresent: true, updateFilesApplied: []),
+                                    features: [land, coverage])
+
+        let fitBounds = try XCTUnwrap(chart.bounds)
+        XCTAssertEqual(fitBounds.south, 48.274, accuracy: 0.0001)
+        XCTAssertEqual(fitBounds.north, 48.7, accuracy: 0.0001)
+        XCTAssertFalse(coverage.isPortrayed)
+        XCTAssertTrue(coverage.isMetaObject)
+    }
+
+    func testPortrayalCountsSeparateChartFeaturesFromMetadata() {
+        func feature(_ objectClass: Int, _ geometry: String) -> OfflineENCFeature {
+            OfflineENCFeature(geometryType: geometry, coordinates: nil,
+                              attributes: ["OBJL": String(objectClass)], soundingDepths: [])
+        }
+        let features = [feature(153, "Point"), feature(112, "Polygon"),
+                        feature(20, "Polygon"), feature(22, "LineString"),
+                        feature(121, "Polygon"), feature(121, "Point"),
+                        feature(302, "Polygon"),
+                        feature(308, "Polygon")]
+        XCTAssertTrue(features[0].isPortrayed)
+        XCTAssertTrue(features[1].isPortrayed)
+        XCTAssertTrue(features[2].isPortrayed)
+        XCTAssertTrue(features[3].isPortrayed)
+        XCTAssertTrue(features[4].isPortrayed)
+        XCTAssertTrue(features[5].isPortrayed)
+        XCTAssertFalse(feature(153, "LineString").isPortrayed)
+        XCTAssertFalse(feature(112, "Point").isPortrayed)
+        XCTAssertFalse(feature(20, "LineString").isPortrayed)
+        XCTAssertFalse(feature(22, "Polygon").isPortrayed)
+        XCTAssertEqual(features[0].className, "Underwater/awash rock")
+        XCTAssertEqual(features[1].className, "Restricted area")
+
+        let chart = OfflineENCChart(sourceName: "CHS ENC", originalFilename: "cell.zip",
+                                    sha256: String(repeating: "c", count: 64), importedAt: Date(),
+                                    metadata: OfflineENCMetadata(cellID: "CA571551", edition: "1", update: "0",
+                                        updateDate: "", issueDate: "", exchangeStandard: "3.1",
+                                        compilationScale: 22000, depthUnitCode: 1, verticalDatumCode: 28,
+                                        horizontalDatumCode: 2, catalogPresent: true, updateFilesApplied: []),
+                                    features: features)
+        XCTAssertEqual(chart.unportrayedFeatureCount, 0)
+        XCTAssertEqual(chart.unportrayedMetadataCount, 2)
+    }
+
+    func testRemainingInformationGeometrySupport() {
+        func f(_ code: Int, _ geometry: String) -> OfflineENCFeature {
+            .init(geometryType: geometry, coordinates: nil, attributes: ["OBJL": String(code)], soundingDepths: [])
+        }
+        XCTAssertTrue(f(21, "MultiLineString").isPortrayed)
+        XCTAssertFalse(f(21, "Polygon").isPortrayed)
+        XCTAssertTrue(f(58, "Point").isPortrayed)
+        XCTAssertFalse(f(58, "LineString").isPortrayed)
+        for code in [3, 4, 27, 138] {
+            XCTAssertTrue(f(code, "Point").isPortrayed)
+            XCTAssertTrue(f(code, "MultiPolygon").isPortrayed)
+            XCTAssertFalse(f(code, "LineString").isPortrayed)
+        }
+        XCTAssertTrue(f(1, "Polygon").isPortrayed)
+        XCTAssertFalse(f(1, "Point").isPortrayed)
+        XCTAssertTrue(f(104, "LineString").isPortrayed)
+        XCTAssertFalse(f(104, "Polygon").isPortrayed)
+    }
+
+    func testLandAndTurbulenceGeometryAndCategories() {
+        func feature(_ code: Int, _ type: String, _ category: String = "") -> OfflineENCFeature {
+            OfflineENCFeature(geometryType: type, coordinates: nil,
+                attributes: ["OBJL": String(code), "ATTL_69": category], soundingDepths: [])
+        }
+        for type in ["Point", "LineString", "MultiLineString", "Polygon", "MultiPolygon"] {
+            XCTAssertTrue(feature(156, type).isPortrayed)
+        }
+        XCTAssertFalse(feature(156, "MultiPoint").isPortrayed)
+        XCTAssertTrue(feature(72, "LineString").isPortrayed)
+        XCTAssertFalse(feature(72, "Polygon").isPortrayed)
+        XCTAssertFalse(feature(69, "Point").isPortrayed)
+        XCTAssertTrue(feature(69, "MultiPolygon").isPortrayed)
+        XCTAssertFalse(feature(126, "Point").isPortrayed)
+        XCTAssertFalse(feature(114, "Point").isPortrayed)
+        XCTAssertEqual(feature(156, "Point", "2").turbulenceDescription, "Eddies")
+        XCTAssertEqual(feature(156, "Point", "4").turbulenceDescription, "Tide rips")
+        XCTAssertEqual(feature(156, "Point", "").turbulenceDescription, "Water turbulence (type unspecified)")
+    }
+
+    func testKelpStreamsAndFerriesUseSupportedGeometryAndValidBearings() {
+        func feature(_ code: Int, _ geometry: String, _ bearing: String = "") -> OfflineENCFeature {
+            OfflineENCFeature(geometryType: geometry, coordinates: nil,
+                attributes: ["OBJL": String(code), "ATTL_117": bearing], soundingDepths: [])
+        }
+        XCTAssertTrue(feature(158, "Point").isPortrayed)
+        XCTAssertTrue(feature(158, "MultiPolygon").isPortrayed)
+        XCTAssertFalse(feature(158, "LineString").isPortrayed)
+        XCTAssertTrue(feature(53, "MultiLineString").isPortrayed)
+        XCTAssertFalse(feature(53, "Point").isPortrayed)
+        XCTAssertTrue(feature(160, "Point").isPortrayed)
+        XCTAssertFalse(feature(160, "Polygon").isPortrayed)
+        XCTAssertEqual(feature(160, "Point", "360").chartedOrientation, 0)
+        XCTAssertEqual(feature(160, "Point", "174").chartedOrientation, 174)
+        for bearing in ["", "nan", "-1", "361"] { XCTAssertNil(feature(160, "Point", bearing).chartedOrientation) }
+        XCTAssertEqual(feature(53, "LineString").ferryDescription, "Ferry (type unspecified)")
+    }
+
+    func testDepthShadingUsesMinimumRangeAndExplicitUnits() {
+        func band(_ low: String, _ high: String, _ units: Int = 1) -> OfflineENCDepthBand {
+            OfflineENCFeature(geometryType: "Polygon", coordinates: nil,
+                              attributes: ["OBJL": "42", "ATTL_87": low, "ATTL_88": high], soundingDepths: []).depthBand(unitCode: units)
+        }
+        XCTAssertEqual(band("-3", "0"), .drying)
+        XCTAssertEqual(band("-1", "3"), .intertidal)
+        XCTAssertEqual(band("0", "2"), .under2)
+        XCTAssertEqual(band("2", "5"), .under5)
+        XCTAssertEqual(band("5", "10"), .under10)
+        XCTAssertEqual(band("10", "20"), .under20)
+        XCTAssertEqual(band("20", "100"), .deep)
+        XCTAssertEqual(band("6", "10", 2), .under2)
+        XCTAssertEqual(band("6", "10", 3), .under20)
+        XCTAssertEqual(band("2", "1"), .unknown)
+        XCTAssertEqual(band("nan", "5"), .unknown)
+        XCTAssertEqual(band("", "5"), .unknown)
+        XCTAssertEqual(band("0", "5", 0), .unknown)
+    }
+
+    func testNewChartFeaturesOnlyClaimSupportedGeometry() {
+        func feature(_ code: Int, _ type: String) -> OfflineENCFeature {
+            OfflineENCFeature(geometryType: type, coordinates: nil,
+                              attributes: ["OBJL": String(code), "ATTL_75": "3, 4"], soundingDepths: [])
+        }
+        for code in [84, 95, 122] {
+            for geometry in ["Point", "LineString", "MultiLineString", "Polygon", "MultiPolygon"] {
+                XCTAssertTrue(feature(code, geometry).isPortrayed)
+            }
+        }
+        for code in OfflineENCFeature.aidClasses.union([90]) {
+            XCTAssertTrue(feature(code, "Point").isPortrayed)
+            XCTAssertFalse(feature(code, "Polygon").isPortrayed)
+        }
+        XCTAssertTrue(feature(159, "Point").isPortrayed)
+        XCTAssertTrue(feature(159, "MultiPolygon").isPortrayed)
+        XCTAssertFalse(feature(159, "LineString").isPortrayed)
+        XCTAssertEqual(feature(9, "Point").colourCodes, [3, 4])
+        XCTAssertFalse(feature(999, "Point").isPortrayed)
+    }
+
+    func testDepthUnitsAndDatumStayExplicitAndSoundingsAreNotConverted() throws {
+        let feature = OfflineENCFeature(geometryType: "Point",
+                                        coordinates: .array([.number(-123.1), .number(48.2)]),
+                                        attributes: ["OBJL": "129", "RCID": "9"], soundingDepths: [1.5])
+        XCTAssertEqual(feature.soundingDepths, [1.5])
+        let metric = OfflineENCMetadata(cellID: "CA100001", edition: "3", update: "2", updateDate: "20261021",
+                                        issueDate: "20261001", exchangeStandard: "3.1", compilationScale: 25000,
+                                        depthUnitCode: 1, verticalDatumCode: 28, horizontalDatumCode: 2,
+                                        catalogPresent: true, updateFilesApplied: ["CA100001.001", "CA100001.002"])
+        XCTAssertEqual(metric.depthUnitName, "metres")
+        XCTAssertTrue(metric.depthReferenceDescription.contains("unknown"))
+        XCTAssertFalse(metric.depthReferenceDescription.contains("28"))
+        var corrected = metric
+        corrected.soundingDatumCode = 27
+        XCTAssertTrue(corrected.depthReferenceDescription.contains("Lower low water large tide"))
+        XCTAssertEqual(corrected.verticalDatumCode, 28)
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(corrected)) as? [String: Any])
+        legacy.removeValue(forKey: "soundingDatumCode")
+        XCTAssertNil(try JSONDecoder().decode(OfflineENCMetadata.self, from: JSONSerialization.data(withJSONObject: legacy)).soundingDatumCode)
+        XCTAssertEqual(metric.updateFilesApplied.count, 2)
+        XCTAssertEqual(OfflineENCMetadata(cellID: "x", edition: "1", update: "0", updateDate: "", issueDate: "",
+                                          exchangeStandard: "3.1", compilationScale: 50000, depthUnitCode: 2,
+                                          verticalDatumCode: 0, horizontalDatumCode: 0, catalogPresent: true,
+                                          updateFilesApplied: []).depthUnitName, "feet")
+        XCTAssertEqual(OfflineENCMetadata(cellID: "x", edition: "1", update: "0", updateDate: "", issueDate: "",
+                                          exchangeStandard: "3.1", compilationScale: 50000, depthUnitCode: 3,
+                                          verticalDatumCode: 0, horizontalDatumCode: 0, catalogPresent: true,
+                                          updateFilesApplied: []).depthUnitName, "fathoms")
+    }
+
+    func testCellsFromOneExchangeSetHaveDistinctOfflineLibraryIdentity() {
+        let digest = String(repeating: "a", count: 64)
+        func chart(_ cellID: String) -> OfflineENCChart {
+            OfflineENCChart(sourceName: "CHS ENC", originalFilename: "V-PAC-A.zip", sha256: digest,
+                            importedAt: Date(),
+                            metadata: OfflineENCMetadata(cellID: cellID, edition: "1", update: "0", updateDate: "",
+                                                        issueDate: "", exchangeStandard: "3.1", compilationScale: 50000,
+                                                        depthUnitCode: 1, verticalDatumCode: 0, horizontalDatumCode: 0,
+                                                        catalogPresent: true, updateFilesApplied: []),
+                            features: [])
+        }
+        XCTAssertNotEqual(chart("CA570262").id, chart("CA570263").id)
+    }
+
+    func testMosaicBoundsCombineOnlyCellsFromTheSameExchangeSet() throws {
+        func chart(_ cellID: String, _ hash: String, _ coordinates: [Double]) -> OfflineENCChart {
+            let points = stride(from: 0, to: coordinates.count, by: 2).map { index in
+                OfflineJSONValue.array([.number(coordinates[index]), .number(coordinates[index + 1])])
+            }
+            let line = OfflineENCFeature(geometryType: "LineString",
+                                        coordinates: .array(points),
+                                        attributes: ["OBJL": "43"], soundingDepths: [])
+            // Coverage metadata can describe the rectangular cell extent,
+            // including CATCOV=2 regions much larger than actual chart data.
+            let broadCoverage = OfflineENCFeature(
+                geometryType: "Polygon",
+                coordinates: .array([.array([
+                    .array([.number(-125), .number(46)]),
+                    .array([.number(-125), .number(50)]),
+                    .array([.number(-121), .number(50)]),
+                    .array([.number(-121), .number(46)])
+                ])]),
+                attributes: ["OBJL": "302", "ATTL_18": "2"], soundingDepths: [])
+            return OfflineENCChart(sourceName: "CHS ENC", originalFilename: "V-PAC-A.zip", sha256: hash,
+                                   importedAt: Date(),
+                                   metadata: OfflineENCMetadata(cellID: cellID, edition: "1", update: "0", updateDate: "",
+                                                               issueDate: "", exchangeStandard: "3.1", compilationScale: 22000,
+                                                               depthUnitCode: 1, verticalDatumCode: 28, horizontalDatumCode: 2,
+                                                               catalogPresent: true, updateFilesApplied: []),
+                                   features: [line, broadCoverage])
+        }
+        let first = chart("CA571551", "set-a", [-123.2, 48.7, -123.1, 48.8])
+        let neighbor = chart("CA571552", "set-a", [-123.1, 48.75, -123.0, 48.9])
+        let distant = chart("CA571999", "set-a", [-125.0, 45.0, -124.9, 45.1])
+        let unrelated = chart("US000001", "set-b", [-124.0, 48.0, -123.8, 48.2])
+
+        let defaultMosaic = OfflineENCChart.mosaicCharts(in: [first, neighbor, distant, unrelated], exchangeSetHash: "set-a",
+                                                        selectedCellIDs: nil, includingCellID: first.id)
+        XCTAssertEqual(Set(defaultMosaic.map(\.id)), Set([first.id, neighbor.id, distant.id]), "Default to all imported cells in this exchange set")
+        let chosenSubset = OfflineENCChart.mosaicCharts(in: [first, neighbor, distant, unrelated], exchangeSetHash: "set-a",
+                                                       selectedCellIDs: [first.id], includingCellID: first.id)
+        XCTAssertEqual(chosenSubset.map(\.id), [first.id], "An explicit selection can show only the active cell")
+        let nearbyMosaic = OfflineENCChart.mosaicCharts(in: [first, neighbor, distant, unrelated], exchangeSetHash: "set-a",
+                                                       selectedCellIDs: [first.id, neighbor.id], includingCellID: first.id)
+        XCTAssertEqual(Set(nearbyMosaic.map(\.id)), Set([first.id, neighbor.id]))
+
+        let bounds = try XCTUnwrap(OfflineENCChart.mosaicBounds(in: nearbyMosaic, exchangeSetHash: "set-a"))
+        XCTAssertEqual(bounds.west, -123.2, accuracy: 0.0001)
+        XCTAssertEqual(bounds.east, -123.0, accuracy: 0.0001)
+        XCTAssertEqual(bounds.south, 48.7, accuracy: 0.0001)
+        XCTAssertEqual(bounds.north, 48.9, accuracy: 0.0001)
+
+        let localViewport = try XCTUnwrap(OfflineENCChart.viewportBounds(in: nearbyMosaic, focusedCellID: first.id))
+        XCTAssertEqual(localViewport.west, -123.2, accuracy: 0.0001)
+        XCTAssertEqual(localViewport.east, -123.0, accuracy: 0.0001,
+                       "Adjacent selected cells should fit together in the initial view")
+        XCTAssertEqual(localViewport.south, 48.7, accuracy: 0.0001)
+        XCTAssertEqual(localViewport.north, 48.9, accuracy: 0.0001)
+
+        let wideViewport = try XCTUnwrap(OfflineENCChart.viewportBounds(in: defaultMosaic, focusedCellID: first.id))
+        XCTAssertEqual(wideViewport.west, -123.2, accuracy: 0.0001)
+        XCTAssertEqual(wideViewport.east, -123.1, accuracy: 0.0001,
+                       "Distant imported cells should not shrink the active chart into a tiny overview")
+        XCTAssertEqual(wideViewport.south, 48.7, accuracy: 0.0001)
+        XCTAssertEqual(wideViewport.north, 48.8, accuracy: 0.0001)
+    }
+
+    private func storedZip(_ files: [(String, Data)], flags: UInt16 = 0) -> Data {
+        var archive = Data()
+        var records: [(name: Data, contents: Data, crc: UInt32, localOffset: UInt32)] = []
+        for (path, contents) in files {
+            let name = Data(path.utf8)
+            let crc = crc32(contents)
+            let localOffset = UInt32(archive.count)
+            archive.appendLE(UInt32(0x04034b50)); archive.appendLE(UInt16(20)); archive.appendLE(flags)
+            archive.appendLE(UInt16(0)); archive.appendLE(UInt16(0)); archive.appendLE(UInt16(0)); archive.appendLE(crc)
+            archive.appendLE(UInt32(contents.count)); archive.appendLE(UInt32(contents.count))
+            archive.appendLE(UInt16(name.count)); archive.appendLE(UInt16(0)); archive.append(name); archive.append(contents)
+            records.append((name, contents, crc, localOffset))
+        }
+        let centralOffset = UInt32(archive.count)
+        for entry in records {
+            archive.appendLE(UInt32(0x02014b50)); archive.appendLE(UInt16(0x0314)); archive.appendLE(UInt16(20)); archive.appendLE(flags)
+            archive.appendLE(UInt16(0)); archive.appendLE(UInt16(0)); archive.appendLE(UInt16(0)); archive.appendLE(entry.crc)
+            archive.appendLE(UInt32(entry.contents.count)); archive.appendLE(UInt32(entry.contents.count))
+            archive.appendLE(UInt16(entry.name.count)); archive.appendLE(UInt16(0)); archive.appendLE(UInt16(0)); archive.appendLE(UInt16(0))
+            archive.appendLE(UInt16(0)); archive.appendLE(UInt32(0)); archive.appendLE(entry.localOffset); archive.append(entry.name)
+        }
+        let centralSize = UInt32(archive.count) - centralOffset
+        archive.appendLE(UInt32(0x06054b50)); archive.appendLE(UInt16(0)); archive.appendLE(UInt16(0))
+        archive.appendLE(UInt16(records.count)); archive.appendLE(UInt16(records.count)); archive.appendLE(centralSize)
+        archive.appendLE(centralOffset); archive.appendLE(UInt16(0))
+        return archive
+    }
+
+    private func deflatedZip(name path: String, payload: Data, compressed: Data) -> Data {
+        let name = Data(path.utf8), crc = crc32(payload), compressedSize = UInt32(compressed.count)
+        var archive = Data()
+        archive.appendLE(UInt32(0x04034b50)); archive.appendLE(UInt16(20)); archive.appendLE(UInt16(0))
+        archive.appendLE(UInt16(8)); archive.appendLE(UInt16(0)); archive.appendLE(UInt16(0)); archive.appendLE(crc)
+        archive.appendLE(compressedSize); archive.appendLE(UInt32(payload.count)); archive.appendLE(UInt16(name.count))
+        archive.appendLE(UInt16(0)); archive.append(name); archive.append(compressed)
+        let centralOffset = UInt32(archive.count)
+        archive.appendLE(UInt32(0x02014b50)); archive.appendLE(UInt16(0x0314)); archive.appendLE(UInt16(20)); archive.appendLE(UInt16(0))
+        archive.appendLE(UInt16(8)); archive.appendLE(UInt16(0)); archive.appendLE(UInt16(0)); archive.appendLE(crc)
+        archive.appendLE(compressedSize); archive.appendLE(UInt32(payload.count)); archive.appendLE(UInt16(name.count))
+        archive.appendLE(UInt16(0)); archive.appendLE(UInt16(0)); archive.appendLE(UInt16(0)); archive.appendLE(UInt16(0))
+        archive.appendLE(UInt32(0)); archive.appendLE(UInt32(0)); archive.append(name)
+        let centralSize = UInt32(archive.count) - centralOffset
+        archive.appendLE(UInt32(0x06054b50)); archive.appendLE(UInt16(0)); archive.appendLE(UInt16(0))
+        archive.appendLE(UInt16(1)); archive.appendLE(UInt16(1)); archive.appendLE(centralSize); archive.appendLE(centralOffset)
+        archive.appendLE(UInt16(0))
+        return archive
+    }
+
+    private func crc32(_ data: Data) -> UInt32 {
+        var crc: UInt32 = 0xFFFF_FFFF
+        for byte in data {
+            crc ^= UInt32(byte)
+            for _ in 0..<8 { crc = (crc & 1) == 1 ? (crc >> 1) ^ 0xEDB8_8320 : crc >> 1 }
+        }
+        return ~crc
+    }
+}
+
+private extension Data {
+    mutating func appendLE<T: FixedWidthInteger>(_ value: T) {
+        var little = value.littleEndian
+        Swift.withUnsafeBytes(of: &little) { append(contentsOf: $0) }
+    }
+}
+
+final class OfflineCoverageAndReferenceRegressionTests: XCTestCase {
+ func testCoverageDefaultsAndReferenceMetadata() throws {
+  func collection(_ id: String, _ cells: [String]) -> OfflineENCCollection {
+   OfflineENCCollection(sourceName: "Test", originalFilename: id + ".zip", sha256: id, importedAt: Date(), cells: cells.map { .init(path: $0 + ".000", cellID: $0, title: $0, bounds: nil) })
+  }
+  let sample = collection("sample", ["CA479995"])
+  let pacific = collection("pacific", ["CA271100", "CA571548", "CA571549"])
+  for items in [[sample,pacific], [pacific,sample]] {
+   XCTAssertTrue(OfflineENCCollection.defaultCoverage(in: items, preferredID: "")?.id == "pacific")
+   XCTAssertTrue(OfflineENCCollection.defaultCoverage(in: items, preferredID: "missing")?.id == "pacific")
+   XCTAssertTrue(OfflineENCCollection.defaultCoverage(in: items, preferredID: "sample")?.id == "sample")
+  }
+  XCTAssertTrue(OfflineENCCollection.defaultCoverage(in: [], preferredID: "") == nil)
+  let context = JSContext()!
+  context.evaluateScript(try String(contentsOfFile: "/Users/jeffm007/Projects/anchor-watch/AnchorWatch/Resources/anchorwatch-s57-bridge.js", encoding: .utf8))
+  let merge = context.objectForKeyedSubscript("anchorWatchMergeUpdateMetadata")!
+  let previous: [String:Any] = ["heightUnitCode":2,"depthUnitCode":1]
+  let inherited = merge.call(withArguments:[previous,["dspmFields":[]]])!.toDictionary()!
+  XCTAssertTrue(inherited["heightUnitCode"] as? Int == 2)
+  let explicit = merge.call(withArguments:[previous,["dspmFields":["HUNI"],"heightUnitCode":1]])!.toDictionary()!
+  XCTAssertTrue(explicit["heightUnitCode"] as? Int == 1)
+  let feature = OfflineENCFeature(geometryType:"Point",coordinates:nil,attributes:["OBJL":"112","ATTL_131":"1,999"],soundingDepths:[])
+  XCTAssertTrue(feature.restrictionLabels.count == 2)
+  XCTAssertTrue(feature.restrictionLabels.last!.contains("999"))
+  XCTAssertTrue(OfflineENCReference.datum(28).contains("Higher high water large tide"))
+  let metadata = OfflineENCMetadata(cellID:"TEST", edition:"1", update:"0", updateDate:"", issueDate:"", exchangeStandard:"S-57", compilationScale:12000, depthUnitCode:1, verticalDatumCode:28, horizontalDatumCode:2, catalogPresent:true, updateFilesApplied:[], soundingDatumCode:27, heightUnitCode:2)
+  func chart(_ features:[OfflineENCFeature]) -> OfflineENCChart {
+   OfflineENCChart(sourceName:"Test",originalFilename:"test.zip",sha256:"test",importedAt:Date(),metadata:metadata,features:features)
+  }
+  XCTAssertTrue(chart([feature]).heightValue("38",for:feature) == "38 ft")
+  XCTAssertTrue(chart([feature]).heightDatum(for:feature).contains("Higher high water large tide"))
+  let local = OfflineENCFeature(geometryType:"Polygon",coordinates:nil,attributes:["OBJL":"312"],soundingDepths:[])
+  XCTAssertTrue(chart([feature,local]).heightDatum(for:feature).contains("unresolved"))
+  let explicitDatum = OfflineENCFeature(geometryType:"LineString",coordinates:nil,attributes:["OBJL":"21","ATTL_185":"3"],soundingDepths:[])
+  XCTAssertTrue(chart([explicitDatum,local]).heightDatum(for:explicitDatum).contains("feature VERDAT"))
+
+ }
+}
+
+final class OfflinePackageSessionTests: XCTestCase {
+    @MainActor
+    func testUnavailableCellIsReportedAndCancelledLoadDoesNotReplaceStatus() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = OfflineENCStore(root: root)
+        let cell = OfflineENCZip.CellCandidate(path: "ABSENT.000", cellID: "ABSENT", title: "Missing", bounds: nil)
+        let collection = OfflineENCCollection(sourceName: "Test", originalFilename: "absent.zip", sha256: "absent",
+            importedAt: Date(), cells: [cell])
+        let session = OfflineENCPackageSession()
+        await session.load([cell], collection: collection, store: store)
+        XCTAssertTrue(session.cells.isEmpty)
+        XCTAssertEqual(session.failures.count, 1)
+        XCTAssertTrue(session.failures[0].contains("ABSENT"))
+        let status = session.status
+        let task = Task { await session.load([], collection: collection, store: store) }
+        task.cancel()
+        await task.value
+        XCTAssertEqual(session.status, status)
+        XCTAssertNil(store.selectedChartID)
+    }
+}
+
+final class OfflinePackageDetailPolicyTests: XCTestCase {
+    func testOverviewPreferenceMovesBothPortrayalAndCellDetailTogether() {
+        for threshold in [3_000.0, 6_000, 12_000, 24_000] {
+            XCTAssertFalse(OfflineENCPackagePolicy.isOverview(metresAcross: threshold, overviewDistance: threshold))
+            XCTAssertTrue(OfflineENCPackagePolicy.isOverview(metresAcross: threshold + 1, overviewDistance: threshold))
+            XCTAssertEqual(OfflineENCPackagePolicy.maximumUsageBand(metresAcross: threshold, overviewDistance: threshold), 5)
+            XCTAssertEqual(OfflineENCPackagePolicy.maximumUsageBand(metresAcross: threshold + 1, overviewDistance: threshold), 4)
+        }
+        XCTAssertTrue(OfflineENCPackagePolicy.isOverview(metresAcross: 8_000))
+        XCTAssertFalse(OfflineENCPackagePolicy.isOverview(metresAcross: 8_000, overviewDistance: 12_000))
+        for invalid in [0.0, -1, Double.nan, Double.infinity] {
+            XCTAssertEqual(OfflineENCPackagePolicy.validOverviewDistance(invalid), 6_000)
+        }
+    }
+
+    func testRegionalViewsExcludeHarbourDetailAndZoomRestoresIt() {
+        XCTAssertEqual(OfflineENCPackagePolicy.maximumUsageBand(metresAcross: 400_000), 2)
+        XCTAssertEqual(OfflineENCPackagePolicy.maximumUsageBand(metresAcross: 40_000), 3)
+        XCTAssertEqual(OfflineENCPackagePolicy.maximumUsageBand(metresAcross: 10_000), 4)
+        XCTAssertEqual(OfflineENCPackagePolicy.maximumUsageBand(metresAcross: 4_000), 5)
+        XCTAssertEqual(OfflineENCPackagePolicy.maximumUsageBand(metresAcross: 1_000), 6)
+        XCTAssertTrue(OfflineENCPackagePolicy.isOverview(metresAcross: 6_001))
+        XCTAssertFalse(OfflineENCPackagePolicy.isOverview(metresAcross: 6_000))
+        XCTAssertEqual(OfflineENCPackagePolicy.maximumUsageBand(metresAcross: 6_001), 4)
+        XCTAssertEqual(OfflineENCPackagePolicy.maximumUsageBand(metresAcross: 6_000), 5)
+        XCTAssertTrue(OfflineENCPackagePolicy.showsInOverview(objectClass: 71))
+        XCTAssertFalse(OfflineENCPackagePolicy.showsInOverview(objectClass: 129))
+        XCTAssertFalse(OfflineENCPackagePolicy.showsInOverview(objectClass: 159))
+        XCTAssertEqual(OfflineENCPackagePolicy.usageBand(cellID: "CA571548"), 5)
+        XCTAssertNil(OfflineENCPackagePolicy.usageBand(cellID: "BAD"))
+    }
+}
+
+final class OfflineRasterTileTests: XCTestCase {
+    func testTilesCoverViewportAtNegativeCoordinatesAndFractionalZoom() {
+        for zoom: CGFloat in [0.5, 1, 1.7, 8, 128] {
+            let size = CGSize(width: 430, height: 932), pan = CGSize(width: -701, height: 217)
+            let tiles = OfflineENCTileAddress.visible(size: size, zoom: zoom, pan: pan)
+            XCTAssertFalse(tiles.isEmpty)
+            // 216-point tiles: at most 3 columns x 6 rows for this viewport.
+            XCTAssertLessThanOrEqual(tiles.count, 18)
+            let rasterBytes = tiles.count * Int(pow(OfflineENCTileAddress.side * 2, 2)) * 4
+            XCTAssertLessThanOrEqual(rasterBytes, 16 * 1024 * 1024)
+            for x in stride(from: CGFloat(1), to: size.width, by: 30) {
+                for y in stride(from: CGFloat(1), to: size.height, by: 30) {
+                    XCTAssertTrue(tiles.contains { $0.screenRect(size: size, liveZoom: zoom, pan: pan).contains(CGPoint(x: x, y: y)) })
+                }
+            }
+        }
+        XCTAssertTrue(OfflineENCTileAddress.visible(size: .zero, zoom: 1, pan: .zero).isEmpty)
+        XCTAssertTrue(OfflineENCTileAddress.visible(size: CGSize(width: 400, height: 800), zoom: .nan, pan: .zero).isEmpty)
+    }
+
+    @MainActor
+    func testRasterCacheBoundEvictionReuseAndCancellation() async throws {
+        let context = try XCTUnwrap(CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 32,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        let image = try XCTUnwrap(context.makeImage())
+        let cache = OfflineENCTileCache(byteLimit: 512)
+        func key(_ x: Int, scene: String = "edition-1", namespace: String = "sourceA-textOn") -> OfflineENCTileCache.Key {
+            .init(namespace: namespace, scene: scene, address: .init(level: 0, x: x, y: 0))
+        }
+        cache.insert(image, for: key(0)); cache.insert(image, for: key(1)); cache.insert(image, for: key(2))
+        XCTAssertLessThanOrEqual(cache.byteCount, 512)
+        XCTAssertNil(cache.entries[key(0)])
+        await cache.prepare(keys: [key(1), key(2)]) { _ in XCTFail("Cached images must not redraw"); return image }
+        XCTAssertEqual(cache.hitCount, 2)
+        XCTAssertEqual(cache.renderCount, 0)
+        XCTAssertNotEqual(key(1), key(1, scene: "edition-2"))
+        XCTAssertNotEqual(key(1), key(1, namespace: "sourceA-textOff"))
+        let cancelled = Task { await cache.prepare(keys: [key(9)]) { _ in XCTFail("Cancelled render"); return image } }
+        cancelled.cancel(); await cancelled.value
+        XCTAssertNil(cache.entries[key(9)])
+        cache.clear(); XCTAssertEqual(cache.byteCount, 0)
+    }
+}
+
+final class OfflineCompactCoordinateTests: XCTestCase {
+    func testCompactCoordinatesPreserveJSONAndSoundingZ() throws {
+        let source = "[[[-123.1,48.2],[-123.2,48.3,7.25],[-123.1,48.2]]]"
+        let data = Data(source.utf8)
+        let value = try JSONDecoder().decode(OfflineJSONValue.self, from: data)
+        guard case .array(let rings) = value, case .array(let points) = rings[0],
+              case .position = points[0], case .position3D(_, _, let z) = points[1] else {
+            return XCTFail("Vertices must be inline tuples")
+        }
+        XCTAssertEqual(z, 7.25)
+        var coordinates: [ChartCoordinate] = []
+        value.collectCoordinates(into: &coordinates)
+        XCTAssertEqual(coordinates.count, 3)
+        XCTAssertEqual(coordinates[1].longitude, -123.2)
+        let encoded = try JSONEncoder().encode(value)
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: encoded) as? NSArray,
+                       try JSONSerialization.jsonObject(with: data) as? NSArray)
+        XCTAssertEqual(try JSONDecoder().decode(OfflineJSONValue.self, from: encoded), value)
+    }
+    func testInvalidCoordinatesAreNotIncludedInBounds() {
+        var points: [ChartCoordinate] = []
+        OfflineJSONValue.position(181, 0).collectCoordinates(into: &points)
+        OfflineJSONValue.position3D(0, 91, 2).collectCoordinates(into: &points)
+        XCTAssertTrue(points.isEmpty)
+    }
+}
+
+final class OfflineBackgroundProjectionTests: XCTestCase {
+    func testProjectedCoordinatesMatchOriginalProjectionAndPreserveZ() throws {
+        let projector = ENCProjector(bounds: .init(west: -124, south: 48, east: -123, north: 49),
+            size: CGSize(width: 390, height: 800), zoom: 4, pan: CGSize(width: -100, height: 30))
+        let original = OfflineJSONValue.array([.array([.position3D(-123.5, 48.5, 12.75), .position(-123.4, 48.6)])])
+        let projected = try OfflineENCTilePreparation.project(original, using: projector)
+        guard case .array(let rings) = projected, case .array(let points) = rings[0],
+              case .position3D(let x, let y, let z) = points[0] else { return XCTFail("Lost ring geometry") }
+        let expected = projector.screen(ChartCoordinate(longitude: -123.5, latitude: 48.5))
+        XCTAssertEqual(x, expected.x); XCTAssertEqual(y, expected.y); XCTAssertEqual(z, 12.75)
+        var passthrough = projector; passthrough.coordinatesAreProjected = true
+        XCTAssertEqual(passthrough.screen(ChartCoordinate(longitude: x, latitude: y)), expected)
+    }
+    func testCancelledPreparationDoesNotReturnGeometry() async {
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await OfflineENCTilePreparation.prepare(cells: [], featureBounds: [:],
+                projector: ENCProjector(bounds: .init(west: 0, south: 0, east: 1, north: 1),
+                    size: CGSize(width: 390, height: 800), zoom: 1, pan: .zero), overview: false)
+        }
+        task.cancel()
+        do { _ = try await task.value; XCTFail("Cancelled preparation returned") }
+        catch { XCTAssertTrue(error is CancellationError) }
+    }
+}
+
+final class OfflinePortrayalBudgetTests: XCTestCase {
+    func testCellBudgetRejectsOversizeAndReleasesDepartingCells() {
+        var budget = OfflineENCWorkingSetBudget(limit: 100)
+        XCTAssertTrue(budget.admit("overview", bytes: 30))
+        XCTAssertTrue(budget.admit("detailA", bytes: 60))
+        XCTAssertFalse(budget.admit("detailB", bytes: 20))
+        XCTAssertEqual(budget.usedBytes, 90)
+        XCTAssertFalse(budget.admit("oversize", bytes: 101))
+        XCTAssertFalse(budget.admit("invalid", bytes: -1))
+        budget.retain(["overview"])
+        XCTAssertEqual(budget.usedBytes, 30)
+        XCTAssertTrue(budget.admit("detailB", bytes: 70))
+        XCTAssertEqual(budget.usedBytes, 100)
+        XCTAssertTrue(budget.admit("detailB", bytes: 40))
+        XCTAssertEqual(budget.usedBytes, 70)
+        budget.removeAll()
+        XCTAssertEqual(budget.usedBytes, 0)
+    }
+    func testLayoutCacheReusesAndEvictsLeastRecentlyUsed() {
+        var cache = OfflineENCBoundedCache<String, Int>(limit: 2)
+        var builds = 0
+        func make() -> Int { builds += 1; return builds }
+        XCTAssertEqual(cache.value(for: "a", make: make), 1)
+        XCTAssertEqual(cache.value(for: "b", make: make), 2)
+        XCTAssertEqual(cache.value(for: "a", make: make), 1)
+        XCTAssertEqual(cache.value(for: "c", make: make), 3)
+        XCTAssertEqual(cache.count, 2)
+        XCTAssertEqual(cache.value(for: "b", make: make), 4)
+        XCTAssertEqual(cache.hits, 1)
+        cache.clear(); XCTAssertEqual(cache.count, 0)
+    }
+    @MainActor
+    func testTextCacheSeparatesStylesAndColors() {
+        let a = OfflineENCPortrayalCache.TextKey(text: "12", style: "depth8", color: .black)
+        XCTAssertNotEqual(a, .init(text: "12", style: "depth9", color: .black))
+        XCTAssertNotEqual(a, .init(text: "12", style: "depth8", color: .red))
+    }
+    func testGeometryEstimateGrowsWithVertexCount() {
+        let point = OfflineJSONValue.position(-123, 48)
+        let small = OfflineJSONValue.array([point, point])
+        let large = OfflineJSONValue.array(Array(repeating: point, count: 1000))
+        XCTAssertGreaterThan(large.estimatedStorageBytes, small.estimatedStorageBytes * 100)
+        XCTAssertGreaterThanOrEqual(large.estimatedStorageBytes, 1000 * MemoryLayout<OfflineJSONValue>.stride)
+    }
+}
+
+final class OfflineViewportIndexTests: XCTestCase {
+    private func fixture() -> OfflineENCChart {
+        func point(_ x: Double, _ y: Double) -> OfflineJSONValue { .position(x, y) }
+        func feature(_ id: String, _ cls: Int, _ type: String, _ coordinates: OfflineJSONValue, depths: [Double] = []) -> OfflineENCFeature {
+            OfflineENCFeature(geometryType: type, coordinates: coordinates,
+                attributes: ["OBJL": String(cls), "RCID": id, "ATTL_18": "1"], soundingDepths: depths)
+        }
+        let exterior = OfflineJSONValue.array([point(-5,-5), point(5,-5), point(5,5), point(-5,5), point(-5,-5)])
+        let hole = OfflineJSONValue.array([point(-0.5,-0.5), point(0.5,-0.5), point(0.5,0.5), point(-0.5,-0.5)])
+        let features = [feature("1",129,"Point",.position3D(0,0,12.75),depths:[12.75]),
+                        feature("2",129,"Point",point(8,8),depths:[9]),
+                        feature("3",30,"LineString",.array([point(-4,0),point(4,0)])),
+                        feature("4",71,"Polygon",.array([exterior,hole])),
+                        feature("5",302,"Polygon",.array([exterior]))]
+        let metadata = OfflineENCMetadata(cellID:"TEST",edition:"1",update:"2",updateDate:"20261001",issueDate:"20260901",
+            exchangeStandard:"S-57",compilationScale:12000,depthUnitCode:1,verticalDatumCode:28,horizontalDatumCode:2,
+            catalogPresent:true,updateFilesApplied:["TEST.001","TEST.002"],soundingDatumCode:27,heightUnitCode:1)
+        return OfflineENCChart(sourceName:"Test",originalFilename:"original.zip",sha256:"source-hash",importedAt:Date(),metadata:metadata,features:features)
+    }
+    func testSpatialReadsKeepCrossingLinesHolesMetadataAndDepths() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = fixture()
+        try OfflineENCFeatureIndex.build(chart: source, directory: root)
+        let window = OfflineENCBounds(west:-1,south:-1,east:1,north:1)
+        let first = try OfflineENCFeatureIndex.read(directory: root, viewport: window, overview: false)
+        XCTAssertEqual(Set(first.chart.features.map(\.id)), ["129-1","30-3","71-4","302-5"])
+        XCTAssertEqual(first.chart.features.first { $0.id == "71-4" }?.coordinates, source.features[3].coordinates)
+        XCTAssertEqual(first.chart.features.first { $0.id == "30-3" }?.coordinates, source.features[2].coordinates)
+        XCTAssertEqual(first.chart.features.first { $0.id == "129-1" }?.soundingDepths, [12.75])
+        XCTAssertEqual(first.chart.metadata, source.metadata)
+        XCTAssertEqual(first.chart.sha256, source.sha256)
+        let second = try OfflineENCFeatureIndex.read(directory: root, viewport: .init(west:7,south:7,east:9,north:9), overview: false)
+        XCTAssertEqual(Set(second.chart.features.map(\.id)), ["129-2","302-5"])
+        let again = try OfflineENCFeatureIndex.read(directory: root, viewport: window, overview: false)
+        XCTAssertEqual(first.chart.features, again.chart.features)
+        XCTAssertLessThan(second.estimatedBytes, OfflineENCWorkingSetBudget.estimate(source))
+        let overview = try OfflineENCFeatureIndex.read(directory: root, viewport: window, overview: true)
+        XCTAssertFalse(overview.chart.features.contains { $0.objectClass == 129 })
+        XCTAssertTrue(overview.chart.features.contains { $0.objectClass == 302 })
+    }
+    func testTruncatedRecordsFailClearly() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try OfflineENCFeatureIndex.build(chart: fixture(), directory: root)
+        let file = try FileHandle(forWritingTo: root.appendingPathComponent("features.bin"))
+        try file.truncate(atOffset: 4); try file.close()
+        XCTAssertThrowsError(try OfflineENCFeatureIndex.read(directory: root, viewport: nil, overview: false))
+    }
+    func testBufferedViewportContainsVisibleCorners() {
+        let projector = ENCProjector(bounds: .init(west:-124,south:48,east:-123,north:49),size:CGSize(width:390,height:800),zoom:4,pan:.zero)
+        let window = projector.bufferedGeographicViewport
+        let northwest = projector.screen(.init(longitude:window.west,latitude:window.north))
+        let southeast = projector.screen(.init(longitude:window.east,latitude:window.south))
+        XCTAssertLessThan(northwest.x, 0); XCTAssertLessThan(northwest.y, 0)
+        XCTAssertGreaterThan(southeast.x, 390); XCTAssertGreaterThan(southeast.y, 800)
+    }
+}
+
+final class OfflineStreamedGeometryTests: XCTestCase {
+    private func chart(_ features: [OfflineENCFeature]) -> OfflineENCChart {
+        let metadata = OfflineENCMetadata(cellID: "STREAM", edition: "1", update: "0", updateDate: "", issueDate: "",
+            exchangeStandard: "S-57", compilationScale: 22000, depthUnitCode: 1, verticalDatumCode: 28,
+            horizontalDatumCode: 2, catalogPresent: true, updateFilesApplied: [])
+        return .init(sourceName: "Test", originalFilename: "original.zip", sha256: "unchanged", importedAt: Date(), metadata: metadata, features: features)
+    }
+    private func denseRing(_ vertices: [(Double, Double)]) -> OfflineJSONValue {
+        var values: [OfflineJSONValue] = []
+        for i in vertices.indices {
+            let a = vertices[i], b = vertices[(i + 1) % vertices.count]
+            for j in 0..<300 {
+                let t = Double(j) / 300
+                values.append(.position(a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1)))
+            }
+        }
+        values.append(values[0]); return .array(values)
+    }
+    private func contains(_ feature: OfflineENCFeature, x: Double, y: Double) -> Bool {
+        guard case .array(let rings) = feature.coordinates else { return false }
+        var inside = false
+        for ring in rings {
+            var coordinates: [ChartCoordinate] = []; ring.collectCoordinates(into: &coordinates)
+            guard let last = coordinates.last else { continue }
+            var a = last
+            for b in coordinates {
+                if (a.latitude > y) != (b.latitude > y),
+                   x < (b.longitude - a.longitude) * (y - a.latitude) / (b.latitude - a.latitude) + a.longitude { inside.toggle() }
+                a = b
+            }
+        }
+        return inside
+    }
+    func testLargePolygonHolesAndAdjacentWindowsHaveNoFillGaps() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        // Concave C: clipping can produce disconnected filled regions joined only
+        // by cancelling boundary bridges. A hole spans both adjacent windows.
+        let outer = denseRing([(-10,-10),(10,-10),(10,-4),(-4,-4),(-4,4),(10,4),(10,10),(-10,10)])
+        let hole = denseRing([(-8,-8),(8,-8),(8,-6),(-8,-6)])
+        let feature = OfflineENCFeature(geometryType: "Polygon", coordinates: .array([outer,hole]),
+            attributes: ["OBJL":"42","RCID":"1","ATTL_87":"2","ATTL_88":"5"], soundingDepths: [])
+        let source = chart([feature]); try OfflineENCFeatureIndex.build(chart: source, directory: root)
+        let windows = [OfflineENCBounds(west:-2,south:-9,east:0.1,north:9), .init(west:-0.1,south:-9,east:2,north:9)]
+        for window in windows {
+            let result = try OfflineENCFeatureIndex.read(directory: root, viewport: window, overview: false)
+            let clipped = try XCTUnwrap(result.chart.features.first)
+            XCTAssertEqual(clipped.attributes, feature.attributes)
+            XCTAssertEqual(result.chart.metadata, source.metadata)
+            XCTAssertEqual(result.chart.sha256, source.sha256)
+            XCTAssertLessThan(result.estimatedBytes, OfflineENCWorkingSetBudget.estimate(source) / 3)
+            for x in stride(from: window.west + 0.03, to: window.east, by: 0.13) {
+                for y in stride(from: -8.9, to: 8.9, by: 0.19) {
+                    XCTAssertEqual(contains(clipped,x:x,y:y),contains(feature,x:x,y:y), "Fill mismatch at \(x),\(y)")
+                }
+            }
+            for point in clipped.chartCoordinates() {
+                XCTAssertGreaterThanOrEqual(point.longitude, window.west - 1e-10)
+                XCTAssertLessThanOrEqual(point.longitude, window.east + 1e-10)
+                XCTAssertGreaterThanOrEqual(point.latitude, window.south - 1e-10)
+                XCTAssertLessThanOrEqual(point.latitude, window.north + 1e-10)
+            }
+        }
+        let full = try OfflineENCFeatureIndex.read(directory: root, viewport: nil, overview: false)
+        XCTAssertEqual(full.chart.features, source.features)
+    }
+    func testLongLineChunkBoundariesDoNotLoseCrossingSegments() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let points: [OfflineJSONValue] = (0...4096).map { .position(-20 + Double($0) / 102.4, 0) }
+        let feature = OfflineENCFeature(geometryType:"LineString",coordinates:.array(points),attributes:["OBJL":"30","RCID":"1"],soundingDepths:[])
+        let source = chart([feature]); try OfflineENCFeatureIndex.build(chart: source, directory: root)
+        let result = try OfflineENCFeatureIndex.read(directory: root, viewport:.init(west:-0.1,south:-1,east:0.1,north:1), overview:false)
+        let clipped = try XCTUnwrap(result.chart.features.first)
+        XCTAssertEqual(clipped.geometryType, "MultiLineString")
+        let selected = clipped.chartCoordinates()
+        XCTAssertEqual(try XCTUnwrap(selected.first).longitude,-0.1,accuracy:1e-10)
+        XCTAssertEqual(try XCTUnwrap(selected.last).longitude,0.1,accuracy:1e-10)
+        XCTAssertLessThan(selected.count, 30)
+        XCTAssertLessThan(result.estimatedBytes, OfflineENCWorkingSetBudget.estimate(source) / 10)
+        let repeated = try OfflineENCFeatureIndex.read(directory: root, viewport:.init(west:-0.1,south:-1,east:0.1,north:1), overview:false)
+        XCTAssertEqual(repeated.chart.features,result.chart.features)
+        // Corrupt a valid-size derived chunk: it must throw, never silently omit it.
+        let indexURL = root.appendingPathComponent("index.json")
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let index = try decoder.decode(OfflineENCFeatureIndex.self, from: Data(contentsOf:indexURL))
+        let chunk = try XCTUnwrap(index.records.first?.geometry?.first?.first?.first)
+        let handle = try FileHandle(forWritingTo:root.appendingPathComponent("features.bin"))
+        try handle.seek(toOffset:chunk.offset); try handle.write(contentsOf:Data(repeating:0,count:chunk.length)); try handle.close()
+        XCTAssertThrowsError(try OfflineENCFeatureIndex.read(directory:root,viewport:nil,overview:false))
+    }
+    func testEnclosingHoleAndSeparatePolygonsStaySeparate() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let outer = denseRing([(-10,-10),(10,-10),(10,10),(-10,10)])
+        let hole = denseRing([(-2,-2),(2,-2),(2,2),(-2,2)])
+        let remote = denseRing([(30,30),(31,30),(31,31),(30,31)])
+        let feature = OfflineENCFeature(geometryType:"MultiPolygon",coordinates:.array([.array([outer,hole]),.array([remote])]),
+            attributes:["OBJL":"71","RCID":"1"],soundingDepths:[])
+        try OfflineENCFeatureIndex.build(chart:chart([feature]),directory:root)
+        let loaded = try OfflineENCFeatureIndex.read(directory:root,viewport:.init(west:-1,south:-1,east:1,north:1),overview:false)
+        let result = try XCTUnwrap(loaded.chart.features.first)
+        guard case .array(let polygons) = result.coordinates else { return XCTFail("Missing multipolygon") }
+        XCTAssertEqual(polygons.count,1)
+        let piece = OfflineENCFeature(geometryType:"Polygon",coordinates:polygons[0],attributes:result.attributes,soundingDepths:[])
+        XCTAssertFalse(contains(piece,x:0,y:0),"A surrounding hole must remain water even when none of its source vertices are visible")
+        XCTAssertFalse(contains(piece,x:0.8,y:0.8))
+    }
+    func testClippingUsesMercatorAndPreservesSlopeAcrossWindows() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var points = Array(repeating:OfflineJSONValue.position(-2,45),count:1024)
+        points.append(.position(2,55))
+        let feature = OfflineENCFeature(geometryType:"LineString",coordinates:.array(points),attributes:["OBJL":"30","RCID":"1"],soundingDepths:[])
+        try OfflineENCFeatureIndex.build(chart:chart([feature]),directory:root)
+        let result = try OfflineENCFeatureIndex.read(directory:root,viewport:.init(west:0,south:40,east:1,north:60),overview:false)
+        let first = try XCTUnwrap(result.chart.features.first?.chartCoordinates().first)
+        let y = (OfflineENCGeometryStream.Vertex.mercator(45) + OfflineENCGeometryStream.Vertex.mercator(55)) / 2
+        let expected = (2 * atan(exp(y)) - Double.pi / 2) * 180 / Double.pi
+        XCTAssertEqual(first.longitude,0,accuracy:1e-12)
+        XCTAssertEqual(first.latitude,expected,accuracy:1e-10)
+        XCTAssertNotEqual(first.latitude,50,"Linear latitude clipping would bend the displayed coastline")
+    }
+    func testSoundingsMetadataAndThreeDimensionalGeometryAreNotClipped() {
+        let ring = denseRing([(-10,-10),(10,-10),(10,10),(-10,10)])
+        for cls in [129,302,311] {
+            let feature = OfflineENCFeature(geometryType:"Polygon",coordinates:.array([ring]),attributes:["OBJL":String(cls)],soundingDepths:[12.75])
+            XCTAssertNil(OfflineENCGeometryStream.groups(feature))
+        }
+        let points = Array(repeating:OfflineJSONValue.position3D(1,2,3),count:2048)
+        let feature = OfflineENCFeature(geometryType:"LineString",coordinates:.array(points),attributes:["OBJL":"43"],soundingDepths:[])
+        XCTAssertNil(OfflineENCGeometryStream.groups(feature))
+    }
+}
+
+final class OfflineCruisingAreaTests: XCTestCase {
+    func testSelectedAreaReturnsToRegionalChartAtDisplayThreshold() {
+        let bounds = OfflineENCBounds(west: -124, south: 48, east: -123, north: 49)
+        let cells = ["CA471221", "CA571548", "CA571549"].map {
+            OfflineENCZip.CellCandidate(path: $0 + ".000", cellID: $0, title: $0, bounds: bounds)
+        }
+        let selected: Set<String> = ["CA571548", "CA571549"]
+        for threshold in [3_000.0, 6_000, 12_000, 24_000] {
+            func visible(_ distance: Double) -> [String] {
+                OfflineENCCruisingArea.renderCells(in: cells, areaID: "CA471221", selected: selected,
+                    overview: OfflineENCPackagePolicy.isOverview(metresAcross: distance, overviewDistance: threshold)).map(\.cellID)
+            }
+            XCTAssertEqual(visible(threshold), ["CA471221", "CA571548", "CA571549"])
+            XCTAssertEqual(visible(threshold + 1), ["CA471221"])
+            XCTAssertEqual(visible(threshold / 2), ["CA471221", "CA571548", "CA571549"])
+        }
+    }
+    func testPresetIdentifiersAndLabels() {
+        XCTAssertEqual(OfflineENCCruisingArea.presets.map(\.name), ["S.VanC","Pender","W. VanC","Georgia"])
+        XCTAssertEqual(OfflineENCCruisingArea.presets.map(\.cellID), ["CA471223","CA471221","CA471216","CA471212"])
+    }
+    func testAreaGridAndRenderingExcludeUnselectedOrOutsideCells() {
+        func cell(_ id: String, _ box: OfflineENCBounds?) -> OfflineENCZip.CellCandidate {
+            .init(path:id+".000",cellID:id,title:id,bounds:box)
+        }
+        let region = OfflineENCBounds(west:-124,south:48,east:-123,north:49)
+        let cells = [cell("CA471221",region), cell("CA271100",region),
+            cell("CA571551",.init(west:-123.8,south:48.2,east:-123.6,north:48.4)),
+            cell("CA571552",.init(west:-123.1,south:48.2,east:-122.9,north:48.4)),
+            cell("CA571553",.init(west:-122,south:48,east:-121,north:49)),
+            cell("CA571554",nil)]
+        XCTAssertEqual(OfflineENCCruisingArea.detailCells(in:cells,areaID:"CA471221").map(\.cellID),["CA571551","CA571552"])
+        XCTAssertEqual(OfflineENCCruisingArea.renderCells(in:cells,areaID:"CA471221",selected:["CA571551","CA571553"]).map(\.cellID),["CA471221","CA571551"])
+        XCTAssertEqual(OfflineENCCruisingArea.renderCells(in:cells,areaID:"CA471221",selected:[]).map(\.cellID),["CA471221"])
+        XCTAssertTrue(OfflineENCCruisingArea.detailCells(in:cells,areaID:"missing").isEmpty)
+        XCTAssertTrue(OfflineENCCruisingArea.renderCells(in:cells,areaID:"missing",selected:["CA571551"]).isEmpty)
+    }
+}
+
+@MainActor
+final class CoveredChartViewportTests: XCTestCase {
+    func testCameraSurvivesMapRecreationWithoutRetainingMap() {
+        let engine = AnchorWatchEngine(player: SilentAlarm(), defaults: UserDefaults(suiteName:UUID().uuidString)!, useGPSHardware:false)
+        let state = ChartMapViewportState()
+        let coordinate = CLLocationCoordinate2D(latitude:48.8,longitude:-123.3)
+        let original = MKMapView(frame:CGRect(x:0,y:0,width:320,height:480))
+        original.setCamera(MKMapCamera(lookingAtCenter:coordinate,fromDistance:4000,pitch:0,heading:25),animated:false)
+        let coordinator = ChartMapView.Coordinator(engine,viewportState:state,navigation:NavigationStore(defaults:UserDefaults(suiteName:UUID().uuidString)!))
+        coordinator.saveViewport(original)
+        let restored = MKMapView(frame:original.frame)
+        ChartMapView.Coordinator(engine,viewportState:state,navigation:NavigationStore(defaults:UserDefaults(suiteName:UUID().uuidString)!)).restoreViewport(restored)
+        XCTAssertEqual(restored.camera.centerCoordinate.latitude,original.camera.centerCoordinate.latitude,accuracy:0.00001)
+        XCTAssertEqual(restored.camera.centerCoordinate.longitude,original.camera.centerCoordinate.longitude,accuracy:0.00001)
+        XCTAssertEqual(restored.camera.heading,original.camera.heading,accuracy:0.1)
+        XCTAssertFalse(state.camera === original.camera)
+    }
+    func testRecenterWhileCoveredTakesPriorityOverSavedCamera() {
+        let engine = AnchorWatchEngine(player:SilentAlarm(),defaults:UserDefaults(suiteName:UUID().uuidString)!,useGPSHardware:false)
+        let state = ChartMapViewportState()
+        state.camera = MKMapCamera(lookingAtCenter:.init(latitude:48.8,longitude:-123.3),fromDistance:4000,pitch:0,heading:25)
+        state.recenterTick = engine.recenterTick
+        engine.recenter()
+        let map = MKMapView(frame:CGRect(x:0,y:0,width:320,height:480))
+        let before = map.camera.centerCoordinate
+        ChartMapView.Coordinator(engine,viewportState:state,navigation:NavigationStore(defaults:UserDefaults(suiteName:UUID().uuidString)!)).restoreViewport(map)
+        XCTAssertEqual(map.camera.centerCoordinate.latitude,before.latitude,accuracy:0.00001)
+        XCTAssertEqual(map.camera.centerCoordinate.longitude,before.longitude,accuracy:0.00001)
+    }
+}
+
+final class OfflineCurrentStationOverlayTests: XCTestCase {
+    func testMarkersFollowLiveProjectionAndCullOffscreenStations() {
+        let station = CurrentStation(id: "test", name: "Station", lat: 48.5, lng: -123.5)
+        let outside = CurrentStation(id: "far", name: "Far", lat: 20, lng: 0)
+        let bounds = OfflineENCBounds(west: -124, south: 48, east: -123, north: 49)
+        let projector = ENCProjector(bounds: bounds, size: CGSize(width: 390, height: 800), zoom: 3, pan: CGSize(width: 40, height: 20))
+        let markers = OfflineCurrentStationMarker.visible([station, outside], projector: projector)
+        XCTAssertEqual(markers.count, 1)
+        XCTAssertEqual(markers.first?.point, projector.screen(.init(longitude: station.lng, latitude: station.lat)))
+        let moved = ENCProjector(bounds: bounds, size: projector.size, zoom: 3, pan: CGSize(width: 80, height: 50))
+        let next = OfflineCurrentStationMarker.visible([station], projector: moved)[0]
+        XCTAssertEqual(next.point.x - markers[0].point.x, 40, accuracy: 0.001)
+        XCTAssertEqual(next.point.y - markers[0].point.y, 30, accuracy: 0.001)
+    }
+    func testProviderIdentityDeduplicationAndInvalidCoordinates() {
+        let noaa = CurrentStation(id: "same", name: "NOAA", lat: 48.5, lng: -123.5)
+        let chs = CurrentStation(id: "same", name: "CHS", lat: 48.5, lng: -123.5, provider: .chs)
+        let invalid = CurrentStation(id: "bad", name: "Invalid", lat: .nan, lng: 0)
+        let projector = ENCProjector(bounds: .init(west: -124, south: 48, east: -123, north: 49), size: CGSize(width: 390, height: 800), zoom: 1, pan: .zero)
+        XCTAssertEqual(OfflineCurrentStationMarker.visible([noaa, noaa, chs, invalid], projector: projector).map(\.id), ["noaa:same", "chs:same"])
+    }
+}
+
+final class OfflineTideOverlayTests: XCTestCase {
+    func testOverviewSymbolsAreTinyAndGrowWithDetail() {
+        XCTAssertEqual(OfflineStationSymbol.diameter(metresAcross: 200_000), 4)
+        XCTAssertEqual(OfflineStationSymbol.diameter(metresAcross: 80_000), 4)
+        XCTAssertEqual(OfflineStationSymbol.diameter(metresAcross: 1_000), 28)
+        XCTAssertLessThan(OfflineStationSymbol.diameter(metresAcross: 40_000), OfflineStationSymbol.diameter(metresAcross: 10_000))
+    }
+    func testTideMarkersUseProviderIdentityAndChartProjection() {
+        let a = TideStation(id: "1", name: "A", lat: 48.5, lng: -123.5)
+        let b = TideStation(id: "1", name: "B", lat: 48.5, lng: -123.5, source: TideStation.chs)
+        let far = TideStation(id: "2", name: "Far", lat: 0, lng: 0)
+        let projector = ENCProjector(bounds: .init(west: -124, south: 48, east: -123, north: 49), size: CGSize(width: 390, height: 800), zoom: 2, pan: .zero)
+        let markers = OfflineTideStationMarker.visible([a, a, b, far], projector: projector)
+        XCTAssertEqual(markers.map(\.id), ["noaa:1", "chs:1"])
+        XCTAssertEqual(markers[0].point, projector.screen(.init(longitude: a.lng, latitude: a.lat)))
+    }
+}
+
+final class OfflineAtomicTileTransitionTests: XCTestCase {
+    @MainActor
+    func testCompleteBatchReplacesOverviewAndFailureKeepsPreviousFrame() async throws {
+        let context = try XCTUnwrap(CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 32,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        let image = try XCTUnwrap(context.makeImage())
+        let cache = OfflineENCTileCache(byteLimit: 512)
+        let overview = OfflineENCTileCache.Key(namespace: "overview", scene: "1", address: .init(level: 0, x: 0, y: 0))
+        let detail = (0...1).map { OfflineENCTileCache.Key(namespace: "detail", scene: "2", address: .init(level: 1, x: $0, y: 0)) }
+        await cache.prepare(keys: [overview], displayDomain: "Pender") { _ in image }
+        await cache.prepare(keys: detail, displayDomain: "Pender") { _ in
+            XCTAssertEqual(cache.displayedEntries.map(\.key), [overview], "No partial batch may become visible")
+            return image
+        }
+        XCTAssertEqual(cache.displayedEntries.map(\.key), detail)
+        XCTAssertLessThanOrEqual(cache.byteCount + cache.displayedByteCount, 1024)
+        await cache.prepare(keys: [overview], displayDomain: "Pender") { _ in nil }
+        XCTAssertEqual(cache.displayedEntries.map(\.key), detail)
+        await cache.prepare(keys: [overview], displayDomain: "Pender") { _ in
+            cache.clear() // A superseded renderer must not publish after clear.
+            return image
+        }
+        XCTAssertTrue(cache.displayedEntries.isEmpty)
+        XCTAssertEqual(cache.byteCount, 0)
+        let roomy = OfflineENCTileCache(byteLimit: 1024)
+        await roomy.prepare(keys: [overview], displayDomain: "Pender", isOverview: true) { _ in image }
+        await roomy.prepare(keys: detail, displayDomain: "Pender") { _ in image }
+        XCTAssertEqual(roomy.overviewBackdrop.map(\.key), [overview])
+        XCTAssertLessThanOrEqual(roomy.displayedByteCount, roomy.byteLimit)
+        await roomy.prepare(keys: detail, displayDomain: "Other chart") { _ in image }
+        XCTAssertTrue(roomy.overviewBackdrop.isEmpty, "Never show a background from a different chart/projection")
+    }
+}
+
+final class OfflineStableRasterIdentityTests: XCTestCase {
+    @MainActor
+    func testReloadReusesTilesAndChangedWindowOrSourceInvalidates() async throws {
+        let viewport = OfflineENCBounds(west: -123.4, south: 48.6, east: -123.2, north: 48.8)
+        func identity(_ bounds: OfflineENCBounds? = nil, overview: Bool = false,
+                      versions: [String] = ["sha:CA571548:1:0", "sha:CA571549:2:2"],
+                      backgrounds: Set<String> = ["CA471221"]) -> String {
+            OfflineENCRasterIdentity.make(viewport: bounds ?? viewport, overview: overview,
+                overviewCellIDs: backgrounds, cellVersions: versions)
+        }
+        let original = identity()
+        XCTAssertEqual(original, identity(versions: ["sha:CA571549:2:2", "sha:CA571548:1:0"]))
+        XCTAssertNotEqual(original, identity(.init(west: -123.3, south: 48.6, east: -123.2, north: 48.8)))
+        XCTAssertNotEqual(original, identity(overview: true))
+        XCTAssertNotEqual(original, identity(backgrounds: []))
+        XCTAssertNotEqual(original, identity(versions: ["sha:CA571548:1:1", "sha:CA571549:2:2"]))
+        XCTAssertNotEqual(original, identity(versions: ["new-sha:CA571548:1:0", "sha:CA571549:2:2"]))
+        let context = try XCTUnwrap(CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 32,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        let image = try XCTUnwrap(context.makeImage())
+        let cache = OfflineENCTileCache(byteLimit: 1024)
+        func key(_ scene: String) -> OfflineENCTileCache.Key {
+            .init(namespace: "source-and-display-options", scene: scene, address: .init(level: 1, x: 0, y: 0))
+        }
+        await cache.prepare(keys: [key(original)]) { _ in image }
+        await cache.prepare(keys: [key(identity(overview: true))], isOverview: true) { _ in image }
+        await cache.prepare(keys: [key(identity())]) { _ in XCTFail("Returning to identical detail must hit cache"); return nil }
+        XCTAssertEqual(cache.hitCount, 1)
+        XCTAssertEqual(cache.renderCount, 2)
+        XCTAssertLessThanOrEqual(cache.byteCount, cache.byteLimit)
+        XCTAssertLessThanOrEqual(cache.displayedByteCount, cache.byteLimit)
+    }
+}
+
+final class OfflineMarkerSizingTests: XCTestCase {
+    func testSymbolsShrinkMonotonicallyWithReadableHazardAndTextFloors() {
+        let near = OfflineENCMarkerSizing(metresAcross: 1_000)
+        XCTAssertEqual(near.ordinary, 1)
+        var previous = near
+        for distance in stride(from: 1_100.0, through: 24_000, by: 100) {
+            let size = OfflineENCMarkerSizing(metresAcross: distance)
+            XCTAssertLessThanOrEqual(size.ordinary, previous.ordinary)
+            XCTAssertLessThanOrEqual(size.important, previous.important)
+            XCTAssertLessThanOrEqual(size.text, previous.text)
+            XCTAssertGreaterThanOrEqual(size.important, 0.8)
+            XCTAssertGreaterThanOrEqual(size.text * 8, 6)
+            XCTAssertGreaterThanOrEqual(size.important, size.ordinary)
+            previous = size
+        }
+        XCTAssertEqual(OfflineENCMarkerSizing(metresAcross: 6_000).ordinary, 0.55, accuracy: 0.001)
+        XCTAssertEqual(OfflineENCMarkerSizing(metresAcross: .nan).important, 0.8, accuracy: 0.001)
+        XCTAssertEqual(OfflineENCMarkerSizing(metresAcross: 0).text, 1)
+    }
+}
+
+final class OfflineLabelCollisionTests: XCTestCase {
+    func testPriorityAndProtectedSymbolsRegardlessOfSubmissionOrder() {
+        let layout = OfflineENCLabelLayout()
+        var drawn: [String] = []
+        let rect = CGRect(x: 10, y: 10, width: 60, height: 12)
+        layout.add(rect: rect, priority: 0) { drawn.append("place") }
+        layout.add(rect: rect, priority: 1) { drawn.append("depth") }
+        layout.add(rect: rect, priority: 3) { drawn.append("aid") }
+        layout.add(rect: CGRect(x: 100, y: 10, width: 20, height: 12), priority: 3) { drawn.append("over hazard") }
+        layout.protect(CGRect(x: 105, y: 15, width: 8, height: 8))
+        layout.draw()
+        XCTAssertEqual(drawn, ["aid"])
+    }
+
+    func testMeasuredBoundsAcrossBinsAndNegativeTileEdges() {
+        var layout = OfflineENCLabelOccupancy()
+        XCTAssertTrue(layout.claim(CGRect(x: -15, y: 28, width: 90, height: 12)))
+        XCTAssertFalse(layout.claim(CGRect(x: 70, y: 35, width: 100, height: 10)))
+        XCTAssertTrue(layout.claim(CGRect(x: 90, y: 50, width: 20, height: 10)))
+        XCTAssertFalse(layout.claim(.null))
+    }
+
+    func testStableOrderAndIndependentPasses() {
+        for _ in 0..<2 {
+            let layout = OfflineENCLabelLayout()
+            var drawn: [Int] = []
+            for index in 0..<3 {
+                layout.add(rect: CGRect(x: 0, y: 0, width: 40, height: 10), priority: 1) { drawn.append(index) }
+            }
+            layout.add(rect: CGRect(x: 100, y: 100, width: 40, height: 10), priority: 0) { drawn.append(3) }
+            layout.draw()
+            XCTAssertEqual(drawn, [0, 3])
+        }
+    }
+}
+
+final class OfflineSymbolDensityTests: XCTestCase {
+    func testIsolatedAndCrowdedSymbolsKeepReadableFloors() {
+        let isolated = OfflineENCSymbolDensity(points: [.zero])
+        XCTAssertEqual(isolated.scale(at: .zero, base: 0.8, important: true), 0.8)
+        let dense = OfflineENCSymbolDensity(points: Array(repeating: .zero, count: 30))
+        XCTAssertEqual(dense.scale(at: .zero, base: 0.8, important: true), 0.7, accuracy: 0.0001)
+        XCTAssertEqual(dense.scale(at: .zero, base: 0.55, important: false), 0.45, accuracy: 0.0001)
+    }
+
+    func testDensityCrossesBinsAndIsOrderAndTranslationIndependent() {
+        let points = [CGPoint(x: 23, y: -1), CGPoint(x: 25, y: 1), CGPoint(x: 30, y: 2)]
+        let normal = OfflineENCSymbolDensity(points: points)
+        let reversed = OfflineENCSymbolDensity(points: points.reversed())
+        let translated = OfflineENCSymbolDensity(points: points.map { CGPoint(x: $0.x + 500, y: $0.y - 300) })
+        let scale = normal.scale(at: points[0], base: 1, important: true)
+        XCTAssertLessThan(scale, 1)
+        XCTAssertEqual(scale, reversed.scale(at: points[0], base: 1, important: true))
+        XCTAssertEqual(scale, translated.scale(at: CGPoint(x: 523, y: -301), base: 1, important: true))
+        XCTAssertEqual(normal.scale(at: CGPoint(x: 500, y: 500), base: 1, important: true), 1)
+    }
+}
+
+final class OfflineNearbyGroupingTests: XCTestCase {
+    func testAidsAndHazardsArePrioritizedWhileOtherDetailsRemainSeparate() {
+        for code in OfflineENCFeature.aidClasses.union([21, 27, 58, 86, 112, 153, 156, 159, 160]) {
+            XCTAssertEqual(OfflineENCNearbyGroup.group(for: code), .aidsAndHazards)
+        }
+        XCTAssertEqual(OfflineENCNearbyGroup.group(for: 129), .soundings)
+        for code in [30, 42, 43, 71, 121, 3, 4, 999] {
+            XCTAssertEqual(OfflineENCNearbyGroup.group(for: code), .other)
+        }
+        let input = [129, 75, 43, 153, 129, 9, 71]
+        let groups: [OfflineENCNearbyGroup] = [.aidsAndHazards, .soundings, .other]
+        let grouped = groups.flatMap { group in input.filter { OfflineENCNearbyGroup.group(for: $0) == group } }
+        XCTAssertEqual(grouped, [75, 153, 9, 129, 129, 43, 71])
+        XCTAssertEqual(grouped.sorted(), input.sorted(), "Grouping must not drop candidates")
+    }
+}
+
+final class OfflineLandLabelTests: XCTestCase {
+    func testLabelFitsEntirelyInsideScreen() throws {
+        let viewport = CGRect(x: 0, y: 0, width: 400, height: 700)
+        let size = CGSize(width: 140, height: 18)
+        let safe = OfflineENCLandLabel.safeViewport(viewport, labelSize: size)
+        let land = Path(CGRect(x: -300, y: -200, width: 500, height: 1000))
+        let point = try XCTUnwrap(OfflineENCLandLabel.position(in: land, viewport: safe))
+        XCTAssertTrue(viewport.contains(CGRect(x: point.x - size.width/2, y: point.y - size.height/2, width: size.width, height: size.height)))
+        XCTAssertTrue(land.contains(point))
+    }
+    func testOversizedLabelIsNotClipped() {
+        XCTAssertTrue(OfflineENCLandLabel.safeViewport(CGRect(x: 0, y: 0, width: 100, height: 100), labelSize: CGSize(width: 150, height: 18)).isNull)
+    }
+
+    func testPlacementAvoidsHoleAndStaysVisible() throws {
+        var land = Path(CGRect(x: 0, y: 0, width: 300, height: 200))
+        land.addRect(CGRect(x: 100, y: 50, width: 100, height: 100))
+        let viewport = CGRect(x: 60, y: 0, width: 200, height: 200)
+        let point = try XCTUnwrap(OfflineENCLandLabel.position(in: land, viewport: viewport))
+        XCTAssertTrue(land.contains(point, eoFill: true))
+        XCTAssertTrue(viewport.contains(point))
+    }
+    func testOffscreenLandHasNoLabel() {
+        XCTAssertNil(OfflineENCLandLabel.position(in: Path(CGRect(x: 300, y: 300, width: 100, height: 100)), viewport: CGRect(x: 0, y: 0, width: 100, height: 100)))
+    }
+    func testNearbyNamesDeduplicateAcrossFeatures() {
+        let layout = OfflineENCLabelLayout()
+        XCTAssertTrue(layout.claimLandName("Mayne Island", at: .zero))
+        XCTAssertFalse(layout.claimLandName("MAYNE ISLAND", at: CGPoint(x: 40, y: 40)))
+        XCTAssertTrue(layout.claimLandName("Galiano Island", at: CGPoint(x: 40, y: 40)))
+    }
+}
+
+final class OfflineStationCoverageTests: XCTestCase {
+    func testCoverageRejectsOutsideAndNoData() {
+        var polygon = Path(CGRect(x: 0, y: 0, width: 100, height: 100))
+        polygon.addRect(CGRect(x: 20, y: 20, width: 10, height: 10))
+        let coverage = OfflineStationCoverage(included: [polygon], excluded: [Path(CGRect(x: 60, y: 60, width: 20, height: 20))])
+        XCTAssertTrue(coverage.contains(CGPoint(x: 10, y: 10)))
+        XCTAssertFalse(coverage.contains(CGPoint(x: 110, y: 10)))
+        XCTAssertFalse(coverage.contains(CGPoint(x: 25, y: 25)))
+        XCTAssertFalse(coverage.contains(CGPoint(x: 70, y: 70)))
+        XCTAssertFalse(OfflineStationCoverage(included: [], excluded: []).contains(.zero))
+    }
+    func testOverlappingCoverageRemainsIncluded() {
+        let coverage = OfflineStationCoverage(included: [Path(CGRect(x: 0, y: 0, width: 100, height: 100)), Path(CGRect(x: 50, y: 0, width: 100, height: 100))], excluded: [])
+        XCTAssertTrue(coverage.contains(CGPoint(x: 75, y: 50)))
+    }
+}
+
+@MainActor final class GPSNavigationTests: XCTestCase {
+    private let now = Date(timeIntervalSince1970: 1_800_000_000)
+    private func fix(speed: Double = 2) -> Fix { Fix(coordinate: .init(latitude: 48.7, longitude: -123.3), accuracy: 5, course: 90, speed: speed, timestamp: now) }
+    func testDistanceBearingAndETA() throws {
+        let origin = fix()
+        let target = Geo.destination(from: origin.coordinate, bearing: 90, meters: 1852)
+        let destination = NavigationWaypoint(name: "East", latitude: target.latitude, longitude: target.longitude)
+        let result = try XCTUnwrap(NavigationMetrics.calculate(fix: origin, destination: destination, speed: 2, now: now))
+        XCTAssertEqual(result.distance, 1852, accuracy: 0.1)
+        XCTAssertEqual(result.bearing, 90, accuracy: 0.1)
+        XCTAssertEqual(try XCTUnwrap(result.seconds), 926, accuracy: 0.1)
+    }
+    func testStalePoorAndStoppedFixes() {
+        let destination = NavigationWaypoint(name: "Port", latitude: 48.8, longitude: -123.2)
+        XCTAssertNil(NavigationMetrics.calculate(fix: fix(), destination: destination, speed: 2, now: now.addingTimeInterval(16)))
+        var poor = fix(); poor.accuracy = 101
+        XCTAssertFalse(NavigationMetrics.usable(poor, now: now))
+        let stopped = NavigationMetrics.calculate(fix: fix(speed: 0), destination: destination, speed: 0, now: now)
+        XCTAssertNotNil(stopped)
+        XCTAssertNil(stopped?.seconds)
+        XCTAssertNil(stopped?.course)
+    }
+    func testWaypointPersistenceEditingAndDeletion() {
+        let suite = UUID().uuidString, defaults = UserDefaults(suiteName: UUID().uuidString)!
+        defer { defaults.removeObject(forKey: "navigation.waypoints.v1") }
+        let store = NavigationStore(defaults: defaults)
+        var waypoint = NavigationWaypoint(name: suite, latitude: 48.7, longitude: -123.3)
+        XCTAssertTrue(store.save(waypoint))
+        waypoint.name = "Renamed"
+        XCTAssertTrue(store.save(waypoint))
+        let restored = NavigationStore(defaults: defaults)
+        XCTAssertEqual(restored.waypoints, [waypoint])
+        restored.activeID = waypoint.id
+        restored.delete(waypoint)
+        XCTAssertNil(restored.active)
+        XCTAssertTrue(NavigationStore(defaults: defaults).waypoints.isEmpty)
+    }
+    func testInvalidCoordinatesAndCorruptStorageAreRejected() {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        defer { defaults.removeObject(forKey: "navigation.waypoints.v1") }
+        let store = NavigationStore(defaults: defaults)
+        XCTAssertFalse(store.save(.init(name: "Bad", latitude: 91, longitude: 0)))
+        let data = Data("corrupt".utf8)
+        defaults.set(data, forKey: "navigation.waypoints.v1")
+        let broken = NavigationStore(defaults: defaults)
+        XCTAssertNotNil(broken.error)
+        XCTAssertFalse(broken.save(.init(name: "Port", latitude: 48, longitude: -123)))
+        XCTAssertEqual(defaults.data(forKey: "navigation.waypoints.v1"), data)
+    }
+    func testSpeedSmoothingAndDuplicateFixes() {
+        let store = NavigationStore(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        store.ingest(fix(speed: 2), now: now)
+        store.ingest(fix(speed: 20), now: now)
+        XCTAssertEqual(store.speed, 2)
+        var next = fix(speed: 4); next.timestamp = now.addingTimeInterval(2)
+        store.ingest(next, now: next.timestamp)
+        XCTAssertEqual(store.speed, 3)
+        store.ingest(next, now: now.addingTimeInterval(30))
+        XCTAssertNil(store.speed)
+    }
+    func testChartTapProjectionRoundTrip() {
+        let projector = ENCProjector(bounds: .init(west: -124, south: 48, east: -123, north: 49), size: .init(width: 390, height: 700), zoom: 3, pan: .init(width: 120, height: -60))
+        let coordinate = ChartCoordinate(longitude: -123.6, latitude: 48.6)
+        let restored = projector.coordinate(at: projector.screen(coordinate))
+        XCTAssertEqual(restored.latitude, coordinate.latitude, accuracy: 0.000001)
+        XCTAssertEqual(restored.longitude, coordinate.longitude, accuracy: 0.000001)
     }
 }

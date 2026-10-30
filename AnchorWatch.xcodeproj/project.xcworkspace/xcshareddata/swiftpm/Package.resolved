@@ -1,0 +1,14 @@
+{
+  "originHash" : "e764b46f4dcd899f6d0b9d7350e6eb60dafcfebdab285115d1019c196c59e07b",
+  "pins" : [
+    {
+      "identity" : "slackwater",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/openwatersio/slackwater.git",
+      "state" : {
+        "revision" : "27d66edee3444d773ca5dfcc54e33eb2de05c53e"
+      }
+    }
+  ],
+  "version" : 3
+}

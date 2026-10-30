@@ -1,10 +1,15 @@
 import Charts
 import SwiftUI
+import WebKit
 
 /// Tide, depth, keel clearance and scope over the next 24 hours, then the depth, tide and scope settings.
 /// Predictive: it says when the water gets thin and how the scope changes, not just what it is now.
 struct WaterView: View {
     @EnvironmentObject var engine: AnchorWatchEngine
+    @State private var page: WaterPage = .water
+    @State private var tideTableJSON: String?
+    @State private var tideTableUpdating = false
+    @State private var tideTableStatus = ""
 
     private var units: Units { engine.units }
 
@@ -13,19 +18,129 @@ struct WaterView: View {
             TimelineView(.periodic(from: .now, by: 60)) { context in
                 let points = engine.waterForecast
                 Form {
-                    DepthEntrySection()
-                    if !points.isEmpty {
-                        timeline(points, now: context.date)
-                        outlook(points)
+                    Section {
+                        Picker("Water page", selection: $page) {
+                            ForEach(WaterPage.allCases) { page in
+                                Text(page.rawValue).tag(page)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                     }
-                    currentSection(now: context.date)
-                    DepthSections()
+
+                    if page == .tides {
+                        tidesSection
+                    } else {
+                        DepthEntrySection()
+                        if !points.isEmpty {
+                            timeline(points, now: context.date)
+                            outlook(points)
+                        }
+                        currentSection(now: context.date)
+                        DepthSections()
+                    }
                 }
             }
-            .task { await engine.refreshTide() }
+            .task {
+                await engine.refreshTide()
+                if tideTableJSON == nil, let data = TideService.loadPugetTableData() {
+                    tideTableJSON = String(data: data, encoding: .utf8)
+                }
+            }
             .navigationTitle("Water")
             .navigationBarTitleDisplayMode(.inline)
         }
+    }
+
+    private var tidesSection: some View {
+        Group {
+            Section {
+                Toggle(isOn: Binding(
+                    get: { engine.tideStationsOverlayOn },
+                    set: { enabled in
+                        guard enabled != engine.tideStationsOverlayOn else { return }
+                        engine.toggleTideStationsOverlay()
+                    }
+                )) {
+                    Label("Show tide stations on chart", systemImage: "water.waves")
+                }
+                .tint(.teal)
+                Text("Tide station symbols appear on the Watch chart. A chart glyph marks stations that publish an operational water-level forecast. Tap a symbol to see station details.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Toggle(isOn: Binding(
+                    get: { engine.currentStationsOverlayOn },
+                    set: { enabled in
+                        guard enabled != engine.currentStationsOverlayOn else { return }
+                        engine.toggleCurrentStationsOverlay()
+                    }
+                )) {
+                    Label("Show current stations on chart", systemImage: "water.waves")
+                }
+                .tint(.indigo)
+                Text("Current station symbols show where NOAA or CHS current predictions are available. Tap a symbol for the estimated current and upcoming slack, flood, and ebb events.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            } header: {
+                Text("Chart")
+            }
+
+            Section {
+                Button {
+                    Task { await updateTideTables() }
+                } label: {
+                    HStack {
+                        Label("Update tide estimates", systemImage: "arrow.clockwise")
+                        Spacer()
+                        if tideTableUpdating { ProgressView() }
+                    }
+                }
+                .disabled(tideTableUpdating)
+                if !tideTableStatus.isEmpty {
+                    Text(tideTableStatus).font(.footnote).foregroundStyle(.secondary)
+                }
+                NavigationLink {
+                    TideStationsTableView(dataJSON: tideTableJSON)
+                } label: {
+                    Label {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Tide Stations")
+                            Text("Search tide predictions for 99 Puget Sound locations")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "list.bullet.rectangle.portrait")
+                    }
+                }
+            } header: {
+                Text("Tide tables")
+            } footer: {
+                Text("Refreshes the tide estimate near your boat and the 99 Puget Sound tables. Internet is required; saved data remains available offline.")
+            }
+        }
+    }
+
+    @MainActor private func updateTideTables() async {
+        tideTableUpdating = true
+        tideTableStatus = "Updating NOAA predictions for 99 stations…"
+        defer { tideTableUpdating = false }
+        do {
+            await engine.refreshTide(forceRefresh: true)
+            let data = try await TideService.refreshPugetTableData()
+            tideTableJSON = String(data: data, encoding: .utf8)
+            let result = try JSONDecoder().decode(PugetTideTableData.self, from: data)
+            if result.failedCount == 0 {
+                tideTableStatus = "Updated all 99 stations · \(Date.now.formatted(date: .abbreviated, time: .shortened))"
+            } else {
+                tideTableStatus = "Updated \(result.successCount) of 99 stations; saved predictions were retained for \(result.failedCount) stations."
+            }
+        } catch {
+            tideTableStatus = "Update failed. Saved tide tables are still available offline. \(error.localizedDescription)"
+        }
+    }
+
+    private enum WaterPage: String, CaseIterable, Identifiable {
+        case water = "Water"
+        case tides = "Tides"
+        var id: String { rawValue }
     }
 
     // MARK: Timeline
@@ -145,7 +260,8 @@ struct WaterView: View {
                 let km = engine.fix.map { Geo.distance(snapshot.station.coordinate, $0.coordinate) / 1000 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(snapshot.station.name).font(.subheadline.bold())
-                    Text((km.map { String(format: "%.0f km away · ", $0) } ?? "") + "NOAA current predictions").font(.caption).foregroundStyle(.secondary)
+                    Text((km.map { String(format: "%.0f km away · ", $0) } ?? "") + "\(snapshot.station.providerName) predictions")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 if let flow = engine.currentHere(at: now) {
                     LabeledContent("Here now (estimated)",
@@ -186,6 +302,62 @@ struct WaterView: View {
     private func color(underKeel: Double) -> Color {
         guard engine.boat.draft > 0 else { return .secondary }
         return underKeel <= 0 ? .red : underKeel < AnchorMath.keelClearance ? .orange : .secondary
+    }
+}
+
+private struct TideStationsTableView: View {
+    let dataJSON: String?
+
+    var body: some View {
+        Group {
+            if let url = Bundle.main.url(forResource: "PugetSoundTideTables", withExtension: "html") {
+                TideTablesWebView(url: url, dataJSON: dataJSON)
+                    .ignoresSafeArea(edges: .bottom)
+            } else {
+                ContentUnavailableView("Tide tables unavailable", systemImage: "water.waves",
+                                      description: Text("The offline tide table could not be loaded."))
+            }
+        }
+        .navigationTitle("Tide Stations")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct TideTablesWebView: UIViewRepresentable {
+    let url: URL
+    let dataJSON: String?
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let view = WKWebView()
+        view.navigationDelegate = context.coordinator
+        context.coordinator.webView = view
+        context.coordinator.dataJSON = dataJSON
+        view.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+        return view
+    }
+
+    func updateUIView(_ view: WKWebView, context: Context) {
+        context.coordinator.dataJSON = dataJSON
+        context.coordinator.applyLatestData()
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        weak var webView: WKWebView?
+        var dataJSON: String?
+        private var pageLoaded = false
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            pageLoaded = true
+            applyLatestData()
+        }
+
+        func applyLatestData() {
+            guard pageLoaded, let dataJSON, let webView else { return }
+            let safeJSON = dataJSON.replacingOccurrences(of: "<", with: "\\u003c")
+            webView.evaluateJavaScript("window.updateTideData && window.updateTideData(\(safeJSON));")
+        }
     }
 }
 

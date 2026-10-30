@@ -8,7 +8,9 @@ enum ChartLayer: String, CaseIterable, Identifiable {
     case noaa = "NOAA Charts (US)"
     case apple = "Apple Maps"
     case satellite = "Satellite + Seamarks"
+    case offlineENC = "Experimental offline ENC"
     var id: String { rawValue }
+    var displayName: String { self == .offlineENC ? "CHS Charts" : rawValue }
 
     /// Overlays to install, bottom to top.
     func makeOverlays() -> [MKTileOverlay] {
@@ -19,6 +21,7 @@ enum ChartLayer: String, CaseIterable, Identifiable {
         case .noaa: return [ChartTileOverlay.noaa()]
         case .apple: return []
         case .satellite: return [seamarks]
+        case .offlineENC: return []
         }
     }
 
@@ -81,7 +84,7 @@ extension ChartTileOverlay {
     /// The service has no pre-cut tiles, so each tile is an export request for that tile's
     /// Web Mercator bounding box. Covers US waters only; elsewhere tiles are blank.
     static func noaa() -> ChartTileOverlay {
-        let endpoint = "https://gis.charttools.noaa.gov/arcgis/rest/services/MCS/NOAAChartDisplay/MapServer/exts/MaritimeChartService/MapServer/export"
+        let endpoint = "https://gis.charttools.noaa.gov/arcgis/rest/services/MCS/ENCOnline/MapServer/exts/MaritimeChartService/MapServer/export"
         return ChartTileOverlay(template: "https://gis.charttools.noaa.gov/{z}/{x}/{y}", maxZoom: 20, replacesMap: true) { path in
             let world = 2 * 20_037_508.342789244
             let size = world / Double(1 << path.z)
