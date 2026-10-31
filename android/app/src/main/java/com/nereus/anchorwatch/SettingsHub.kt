@@ -94,7 +94,7 @@ internal fun SettingsHub(onSave: () -> Unit, onStop: () -> Unit, onSimulationSta
                     Text("Track also records while no anchor is set. Anchored watches always record their track.", color = Color.Gray, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp))
                     FormGroup { FormLink("Testing", R.drawable.settings_testing, false) { page = "Testing" } }
                     FormSection("") {
-                        FormGroup { FormLink("About Anchor Watch", R.drawable.settings_info, false) { page = "About Anchor Watch" } }
+                        FormGroup { FormLink("About NavAide", R.drawable.settings_info, false) { page = "About NavAide" } }
                         Text("Version ${BuildConfig.VERSION_NAME} · Build ${BuildConfig.VERSION_CODE}", color = Color.Gray, modifier = Modifier.padding(horizontal = 12.dp))
                     }
                 }
@@ -127,8 +127,8 @@ internal fun SettingsHub(onSave: () -> Unit, onStop: () -> Unit, onSimulationSta
                         }
                     }
                 }
-                "About Anchor Watch" -> PageColumn {
-                    SectionCard("Nereus Anchor Watch") {
+                "About NavAide" -> PageColumn {
+                    SectionCard("NavAide") {
                         Text("${BuildConfig.VERSION_NAME} · Android build ${BuildConfig.VERSION_CODE}")
                         Text("Circle monitoring, online charts, saved boat profile, manual depth and scope planning, Open-Meteo forecasts and NOAA tide predictions.")
                         Text("Boat profile inputs are saved for future load and holding calculations. The current rode graphic is a schematic.")

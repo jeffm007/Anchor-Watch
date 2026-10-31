@@ -2,7 +2,7 @@ import SwiftUI
 import WatchConnectivity
 import WatchKit
 
-/// Anchor Watch on the wrist: the phone's status at a glance, a haptic alarm, and Silence.
+/// NavAide on the wrist: the phone's status at a glance, a haptic alarm, and Silence.
 @main
 struct AnchorWatchWatchApp: App {
     @StateObject private var link = PhoneLink()
@@ -65,7 +65,7 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
     var tone: String { status["tone"] as? String ?? "gray" }
     var distance: String { status["distance"] as? String ?? "--" }
     var radius: String { status["radius"] as? String ?? "" }
-    var detail: String { status["detail"] as? String ?? "Open Anchor Watch on the iPhone." }
+    var detail: String { status["detail"] as? String ?? "Open NavAide on the iPhone." }
     var wind: String { status["wind"] as? String ?? "" }
     var alarm: String? { status["alarm"] as? String }
     var updated: Date? { (status["updated"] as? Double).map(Date.init(timeIntervalSince1970:)) }
@@ -166,7 +166,7 @@ struct StatusView: View {
                         Button("Silence") { link.silence() }
                             .tint(.red)
                     } else {
-                        Text(link.isStale(at: context.date) ? "Open Anchor Watch on iPhone to check current monitoring." : link.detail).font(.footnote).foregroundStyle(secondary).multilineTextAlignment(.center)
+                        Text(link.isStale(at: context.date) ? "Open NavAide on iPhone to check current monitoring." : link.detail).font(.footnote).foregroundStyle(secondary).multilineTextAlignment(.center)
                     }
                     if let result = link.silenceResult { Text(result).font(.footnote).multilineTextAlignment(.center) }
                     if !link.wind.isEmpty { Text(link.wind).font(.footnote).foregroundStyle(primary) }

@@ -30,7 +30,7 @@ struct AnchorLiveActivity: Widget {
                         .foregroundStyle(context.isStale ? Color.orange : context.state.status.color)
                 }
                 DynamicIslandExpandedRegion(.center) {
-                    Text(context.isStale ? "Monitoring status stale — open Anchor Watch" : context.state.headline).font(.caption).lineLimit(1)
+                    Text(context.isStale ? "Monitoring status stale — open NavAide" : context.state.headline).font(.caption).lineLimit(1)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     VStack(spacing: 2) {
@@ -72,7 +72,7 @@ struct LockScreenView: View {
             ProgressView(value: min(state.fraction, 1)).tint(state.status.color)
             Text(context.isStale ? "Monitoring status stale" : state.headline).font(.footnote.bold())
             if context.isStale {
-                Text("Not updating. Open Anchor Watch.").font(.footnote.bold()).foregroundStyle(.red)
+                Text("Not updating. Open NavAide.").font(.footnote.bold()).foregroundStyle(.red)
             } else {
                 Text("Updated \(Text(state.updated, style: .relative)) ago").font(.caption2).foregroundStyle(.secondary)
             }

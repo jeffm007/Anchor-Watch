@@ -150,7 +150,7 @@ internal fun NightModeScreen(onExit: () -> Unit) {
                             onCheckedChange = { WatchSession.setKeepNightDataVisible(context, it) },
                             colors = SwitchDefaults.colors(checkedTrackColor = NightRed, checkedThumbColor = Color.Black))
                     }
-                    Text(if (WatchSession.keepNightDataVisible) "Dims after 30 minutes; readings stay visible. Touch to brighten. Leave Nereus open; the side button still locks the phone."
+                    Text(if (WatchSession.keepNightDataVisible) "Dims after 30 minutes; readings stay visible. Touch to brighten. Leave NavAide open; the side button still locks the phone."
                         else "Dims after 30 minutes and goes black after 2 hours. Touch to restore.",
                         color = NightRed, style = MaterialTheme.typography.bodySmall)
                     if (showExit) OutlinedButton(onClick = onExit, border = androidx.compose.foundation.BorderStroke(1.dp, NightRed),

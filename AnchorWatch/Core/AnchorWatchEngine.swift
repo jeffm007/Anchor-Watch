@@ -357,7 +357,7 @@ final class AnchorWatchEngine: ObservableObject {
         charging = nowCharging
         if nowCharging { lowBatteryNoticed = false }
         if wasCharging && !nowCharging && armed {
-            player.notice(title: "Phone unplugged", message: "Anchor Watch is running on battery" + (level.map { String(format: " (%.0f%%)", $0 * 100) } ?? "") + ".")
+            player.notice(title: "Phone unplugged", message: "NavAide is running on battery" + (level.map { String(format: " (%.0f%%)", $0 * 100) } ?? "") + ".")
         }
     }
 

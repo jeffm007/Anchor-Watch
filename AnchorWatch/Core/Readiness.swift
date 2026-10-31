@@ -98,7 +98,7 @@ enum Readiness {
         }
         if let always = i.locationAlways {
             list.append(WatchCheck(id: "location", title: always ? "Location is set to Always" : "Location is not set to Always",
-                                   detail: always ? "" : "Settings > Privacy > Location Services > Anchor Watch > Always, so watching continues with the screen off.",
+                                   detail: always ? "" : "Settings > Privacy > Location Services > NavAide > Always, so watching continues with the screen off.",
                                    state: always ? .ok : .warning))
         }
 
@@ -108,7 +108,7 @@ enum Readiness {
             list.append(WatchCheck(id: "liveActivity", title: "Lock-screen status is showing", detail: "", state: .ok))
         case .disabled?:
             list.append(WatchCheck(id: "liveActivity", title: "Live Activities are turned off",
-                                   detail: "Turn them on in iOS Settings > Anchor Watch > Live Activities (and Settings > Face ID & Passcode > Live Activities).",
+                                   detail: "Turn them on in iOS Settings > NavAide > Live Activities (and Settings > Face ID & Passcode > Live Activities).",
                                    state: .warning))
         case .failed(let message)?:
             list.append(WatchCheck(id: "liveActivity", title: "Lock-screen status could not start", detail: message, state: .warning))

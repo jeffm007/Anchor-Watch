@@ -48,7 +48,7 @@ targets:
     info:
       path: AnchorWatch/Info.plist
       properties:
-        CFBundleDisplayName: Anchor Watch
+        CFBundleDisplayName: NavAide
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
@@ -57,9 +57,9 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         NSSupportsLiveActivities: true
         NSSupportsLiveActivitiesFrequentUpdates: true
-        NSLocationWhenInUseUsageDescription: Anchor Watch uses your location to track the boat relative to the anchor.
-        NSLocationAlwaysAndWhenInUseUsageDescription: Anchor Watch keeps tracking the boat while the screen is off so it can sound the drag alarm.
-        NSMotionUsageDescription: Anchor Watch reads the phone's barometer to warn when the pressure falls fast, a sign of wind coming.
+        NSLocationWhenInUseUsageDescription: NavAide uses your location to track the boat relative to the anchor.
+        NSLocationAlwaysAndWhenInUseUsageDescription: NavAide keeps tracking the boat while the screen is off so it can sound the drag alarm.
+        NSMotionUsageDescription: NavAide reads the phone's barometer to warn when the pressure falls fast, a sign of wind coming.
   AnchorWatchWidgets:
     type: app-extension
     platform: iOS
@@ -71,7 +71,7 @@ targets:
     info:
       path: AnchorWatchWidgets/Info.plist
       properties:
-        CFBundleDisplayName: Anchor Watch
+        CFBundleDisplayName: NavAide
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
@@ -88,7 +88,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "4"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: Anchor Watch
+        INFOPLIST_KEY_CFBundleDisplayName: NavAide
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         INFOPLIST_KEY_WKCompanionAppBundleIdentifier: com.jeffmitchell.anchorwatch
         INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp: NO

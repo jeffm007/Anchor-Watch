@@ -564,7 +564,7 @@ struct SettingsView: View {
                     NavigationLink {
                         AboutView()
                     } label: {
-                        Label("About Anchor Watch", systemImage: "info.circle")
+                        Label("About NavAide", systemImage: "info.circle")
                     }
                     .accessibilityIdentifier("about")
                 } footer: {
@@ -595,7 +595,7 @@ struct AboutView: View {
     var body: some View {
         Form {
             Section {
-                Label("Anchor Watch", systemImage: "info.circle.fill").font(.title2.bold())
+                Label("NavAide", systemImage: "info.circle.fill").font(.title2.bold())
                 Text("Anchor monitoring and anchorage planning").foregroundStyle(.secondary)
             }
             Section("Installed version") {
@@ -608,7 +608,7 @@ struct AboutView: View {
                 LabeledContent("iOS", value: UIDevice.current.systemVersion)
             }
         }
-        .navigationTitle("About Anchor Watch")
+        .navigationTitle("About NavAide")
         .navigationBarTitleDisplayMode(.inline)
     }
 }

@@ -97,7 +97,7 @@ internal fun NereusApp(onStart: () -> Unit, onStop: () -> Unit, onSave: () -> Un
     LaunchedEffect(WatchSession.simulation) {
         if (WatchSession.simulation != null) {
             if (android.os.Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                WatchSession.error = "Allow Nereus notifications in Android Settings to show simulation data on the lock screen."
+                WatchSession.error = "Allow NavAide notifications in Android Settings to show simulation data on the lock screen."
             } else runCatching { context.startForegroundService(android.content.Intent(context, MonitoringService::class.java)) }
                 .onFailure { WatchSession.error = "Simulation lock-screen service could not start: ${it.message}" }
         }
@@ -283,7 +283,7 @@ internal fun TestingScreen(onSave: () -> Unit, onStop: () -> Unit, onSimulationS
         ReadinessCalculations()
         SectionCard("Help & About") {
             TextButton(onClick = onGuide) { Text("User Guide") }
-            Text("Nereus Anchor Watch\n${BuildConfig.VERSION_NAME} · Android build ${BuildConfig.VERSION_CODE}", fontWeight = FontWeight.SemiBold)
+            Text("NavAide\n${BuildConfig.VERSION_NAME} · Android build ${BuildConfig.VERSION_CODE}", fontWeight = FontWeight.SemiBold)
             Text("Android preview: circle monitoring, online chart, manual depth and scope planning. Open-Meteo forecasts and Tide predictions are available. Modeled holding capacity, wind/current loads, catenary rode, forecast risks, swing clearance, anchor estimation and drift analysis are available.")
             Text("Maps: MapLibre Native · © OpenStreetMap contributors · OpenSeaMap · NOAA ENC. Online map requests reveal the viewed area to map providers. Weather and tide requests use your selected GPS, anchor or simulation location.", style = MaterialTheme.typography.bodySmall)
         }

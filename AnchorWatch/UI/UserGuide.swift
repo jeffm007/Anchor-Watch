@@ -51,7 +51,7 @@ enum UserGuideContent {
     // MARK: Getting started
 
     static let quickStart = GuideTopic(id: "quickstart", title: "Quick start", icon: "flag.checkered", blocks: [
-        .text("Anchor Watch uses your iPhone's GPS to follow Nereus relative to where the anchor was dropped, and sounds an alarm if the boat leaves a circle you choose."),
+        .text("NavAide uses your iPhone's GPS to follow Nereus relative to where the anchor was dropped, and sounds an alarm if the boat leaves a circle you choose."),
         .heading("First time only"),
         .bullets([
             "Allow **Location** when asked, and choose **Always**, so watching continues with the screen off.",
@@ -179,7 +179,7 @@ enum UserGuideContent {
             "Fit and adjust the snubber or bridle and chafe protection according to the vessel’s procedure. The windlass should not be the sole attachment carrying anchoring loads. Keep clear of loaded lines and fittings; check from a safe position.",
             "After returning to the normal anchored configuration, observe the boat again. Record baseline bearings, depth, position and nearby hazards, and note an escape route. A brief setting check cannot prove the anchor will withstand every later gust or reversal.",
         ]),
-        .heading("6. Finish setting up Anchor Watch"),
+        .heading("6. Finish setting up NavAide"),
         .bullets([
             "If entering the anchor after falling back, choose **Boat has settled on the rode** only when that describes the boat. Its upwind placement is an estimate; current, slack rode and changing wind can make it wrong. Use a known drop position to correct the mark on the chart when available.",
             "Confirm **Rode out** as the length actually paid out. If you entered an intended length at the drop and then deployed a different amount, update it on the Anchor tab. Changing a recommendation does not deploy or recover chain.",
@@ -325,12 +325,12 @@ enum UserGuideContent {
         .text("While an anchor is set, a card on the lock screen and a pill in the Dynamic Island show the distance from the anchor, the circle size and a progress bar."),
         .bullets([
             "Status follows the phone’s monitoring/readiness assessment, including circle ON/OFF, GPS interruption and critical problems. Green is not a statement of modeled holding capacity. Red identifies an active alarm.",
-            "If the app stops updating for \(GuideFacts.liveActivityStaleMinutes) minutes, the card says **Not updating. Open Anchor Watch.** Treat that as a warning.",
+            "If the app stops updating for \(GuideFacts.liveActivityStaleMinutes) minutes, the card says **Not updating. Open NavAide.** Treat that as a warning.",
         ]),
         .heading("If it doesn't appear"),
         .bullets([
             "It starts when you **drop the anchor with the app open**. If you reopen the app with an anchor already set, check the Watch check.",
-            "Turn it on in the iPhone's **Settings → Anchor Watch → Live Activities**.",
+            "Turn it on in the iPhone's **Settings → NavAide → Live Activities**.",
             "If you swipe the card away, it comes back when you next open the app.",
         ]),
     ])
@@ -338,7 +338,7 @@ enum UserGuideContent {
     // MARK: Charts and weather
 
     static let appleWatch = GuideTopic(id: "applewatch", title: "Apple Watch", icon: "applewatch", blocks: [
-        .text("Anchor Watch installs on a paired Apple Watch along with the phone app (if it doesn't, turn it on in the iPhone's Watch app under Available Apps)."),
+        .text("NavAide installs on a paired Apple Watch along with the phone app (if it doesn't, turn it on in the iPhone's Watch app under Available Apps)."),
         .heading("What it shows"),
         .text("The same circle alarm and readiness status as the phone (ON, OFF, monitoring interrupted or a warning), the distance from the anchor, the alarm radius, which way the anchor lies, the wind and when it last heard from the phone. The phone sends an update when anything changes, and at least every 30 seconds while it's within range; the line turns orange after two minutes without one."),
         .heading("Chart"),
@@ -420,7 +420,7 @@ enum UserGuideContent {
             "**Units**: Metric or Feet; the choice is remembered across relaunches.",
         ]),
         .heading("Version and saved information"),
-        .text("**Settings → About Anchor Watch** shows the installed version, build number and environment. Use the build number when reporting a problem. The Anchorage Log reports save/load failures and offers retry. If recovered from backup, review it because the latest changes may be missing. Keep the app open and retry an unsaved log; an edit appearing on screen does not guarantee it reached storage."),
+        .text("**Settings → About NavAide** shows the installed version, build number and environment. Use the build number when reporting a problem. The Anchorage Log reports save/load failures and offers retry. If recovered from backup, review it because the latest changes may be missing. Keep the app open and retry an unsaved log; an edit appearing on screen does not guarantee it reached storage."),
         .heading("Testing"),
         .bullets([
             "**Position source**: **iPhone GPS** for real use. **Simulator** moves a pretend boat around Roche Harbor or Sidney for practice, and the top of the screen says Simulated GPS whenever it's on.",
@@ -437,7 +437,7 @@ enum UserGuideContent {
         .bullets([
             "Indoors, GPS can be slow and off by 50 ft or more. A window, hatch or open deck is much better.",
             "A metal roof or cabin top blocks the signal. A GPS antenna outside the cabin is the real cure.",
-            "Check **Settings → Privacy & Security → Location Services → Anchor Watch**: **Always** and **Precise Location** on.",
+            "Check **Settings → Privacy & Security → Location Services → NavAide**: **Always** and **Precise Location** on.",
         ]),
         .heading("False alarms"),
         .bullets([
@@ -471,7 +471,7 @@ enum UserGuideContent {
     ])
 
     static let safety = GuideTopic(id: "safety", title: "Important limits", icon: "exclamationmark.shield", blocks: [
-        .warning("Anchor Watch is an aid, not a substitute for a proper anchor watch."),
+        .warning("NavAide is an aid, not a substitute for a proper anchor watch."),
         .bullets([
             "GPS can be wrong, or lost. The phone can run out of battery, be silenced, or be closed. Treat the alarm as a backup to your own judgement and your anchor.",
             "Forecasts, tide predictions and weather observations can be wrong or out of date. They need an internet connection.",

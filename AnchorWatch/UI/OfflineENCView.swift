@@ -236,7 +236,7 @@ struct OfflineENCView: View {
             Text(importStatus.isEmpty ? "Importing chart…" : importStatus)
                 .font(.subheadline.weight(.medium))
                 .multilineTextAlignment(.center)
-            Text("Large CHS collections can take a little while. Keep Anchor Watch open.")
+            Text("Large CHS collections can take a little while. Keep NavAide open.")
                 .font(.caption)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)

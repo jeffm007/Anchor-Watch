@@ -54,7 +54,7 @@ internal fun WatchScreen(onStart: () -> Unit, onStop: () -> Unit, onSave: () -> 
             Column(Modifier.fillMaxWidth().onSizeChanged { headerHeight = with(density) { it.height.toDp() } }, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Column(Modifier.weight(1f).padding(top = 8.dp)) {
-                        Text("NEREUS · ANCHOR WATCH", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.ExtraBold)
+                        Text("NavAide", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.ExtraBold)
                         Text(s.fix?.let { "${if (WatchSession.simulation != null) "Simulated GPS" else "Android GPS"} ±${meters(it.accuracy, 0)} · ${((WatchSession.now() - it.time) / 1000).coerceAtLeast(0)} s ago" } ?: "Waiting for GPS…", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                     }
                     Box {

@@ -162,7 +162,7 @@ class MonitoringService : Service(), LocationListener {
     private fun notification(summary: LockScreenSummary): Notification {
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         return Notification.Builder(this, "anchor_status_v2").setSmallIcon(android.R.drawable.ic_menu_mylocation)
-            .setContentTitle(if (simulationSession) "SIMULATION${if (WatchSession.simulationPaused) " · Paused" else ""} · ${WatchSession.simulationHarbor.title}" else "Nereus · Anchor watch active").setContentText(summary.compact).setContentIntent(open)
+            .setContentTitle(if (simulationSession) "SIMULATION${if (WatchSession.simulationPaused) " · Paused" else ""} · ${WatchSession.simulationHarbor.title}" else "NavAide · Anchor watch active").setContentText(summary.compact).setContentIntent(open)
             .setStyle(Notification.BigTextStyle().bigText(summary.expanded))
             .setVisibility(Notification.VISIBILITY_PUBLIC).setShowWhen(false)
             .setSubText(summary.wind)

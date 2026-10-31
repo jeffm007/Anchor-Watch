@@ -14,7 +14,7 @@ struct DashboardHeader: View {
         let layout = textSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6)) : AnyLayout(HStackLayout(alignment: .top, spacing: 8))
         layout {
             VStack(alignment: .leading, spacing: 2) {
-                Text(engine.boat.name.uppercased() + " · ANCHOR WATCH")
+                Text(engine.boat.name.uppercased() + " · NavAide")
                     .font(.headline.weight(.heavy)).dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                     .lineLimit(1).minimumScaleFactor(0.7)
                 subtitle

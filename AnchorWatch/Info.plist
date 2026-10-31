@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Anchor Watch</string>
+	<string>NavAide</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -23,11 +23,11 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Anchor Watch keeps tracking the boat while the screen is off so it can sound the drag alarm.</string>
+	<string>NavAide keeps tracking the boat while the screen is off so it can sound the drag alarm.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Anchor Watch uses your location to track the boat relative to the anchor.</string>
+	<string>NavAide uses your location to track the boat relative to the anchor.</string>
 	<key>NSMotionUsageDescription</key>
-	<string>Anchor Watch reads the phone's barometer to warn when the pressure falls fast, a sign of wind coming.</string>
+	<string>NavAide reads the phone's barometer to warn when the pressure falls fast, a sign of wind coming.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
